@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opticmix-vision"
+version = "0.0.1"
+description = "Python SDK for the Opticmix Vision stereo IR camera (UVC): capture, stereo split, KB4 calibration, rectify, IR LED control"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Opticmix" }]
+keywords = ["stereo", "infrared", "camera", "uvc", "fisheye", "kannala-brandt"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video :: Capture",
+]
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+hands = ["onnxruntime>=1.16"]
+
+[project.urls]
+Homepage = "https://github.com/Opticmix/opticmix-vision"
+Issues = "https://github.com/Opticmix/opticmix-vision/issues"
+
+[tool.setuptools.packages.find]
+include = ["opticmix_vision*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware: 실기기가 연결돼 있어야 하는 테스트 (환경변수 OPTICMIX_HW=1 로 활성화)",
+]
