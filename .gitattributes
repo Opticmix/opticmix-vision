@@ -1,0 +1,27 @@
+# What the published package contains.
+#
+# The public repository is a `git archive` of this directory, so export-ignore
+# is what decides. These modules are developed here and withheld from the
+# distribution because they have never been run against a camera — see
+# docs/ecosystem-roadmap.md, "What the SDK ships". Each one comes back when its
+# row in internal/qualification/capabilities.csv moves.
+opticmix_vision/calibration.py      export-ignore
+opticmix_vision/calibrate.py        export-ignore
+opticmix_vision/rectify.py          export-ignore
+opticmix_vision/depth.py            export-ignore
+opticmix_vision/ros.py              export-ignore
+opticmix_vision/hands.py            export-ignore
+opticmix_vision/hands_preprocess.py export-ignore
+opticmix_vision/_hands_runtime.py   export-ignore
+
+# Their tests and examples go with them; a test for a module that is not there
+# fails on collection.
+tests/test_calibration.py           export-ignore
+tests/test_calibrate.py             export-ignore
+tests/test_rectify.py               export-ignore
+tests/test_depth.py                 export-ignore
+tests/test_ros.py                   export-ignore
+tests/test_hands.py                 export-ignore
+tests/test_hands_preprocess.py      export-ignore
+tests/test_e2e_chain.py             export-ignore
+examples/hands_overlay.py           export-ignore
