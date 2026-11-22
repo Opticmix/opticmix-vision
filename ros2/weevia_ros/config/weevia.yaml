@@ -1,0 +1,7 @@
+/**:
+  ros__parameters:
+    zero_frames: 1        # 정지 감시 문턱(눈 하나가 전부 0 인 프레임 수) — 실험 값
+    same_frames: 90
+    fps: 90.0
+    max_frames: 300
+    loop: true

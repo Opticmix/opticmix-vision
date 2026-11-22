@@ -1,0 +1,7 @@
+*.egg-info/
+__pycache__/
+.pytest_cache/
+# maturin develop 이 패키지 안에 두는 Rust 확장(빌드 산출물)
+opticmix_vision/_core*.pyd
+opticmix_vision/_core*.so
+opticmix_vision/_core*.pdb

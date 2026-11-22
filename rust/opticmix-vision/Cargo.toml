@@ -1,0 +1,21 @@
+[package]
+name = "opticmix-vision"
+version = "0.0.3"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Camera control core for the Weevia S1 — what the Python package opticmix_vision calls into"
+license = "Apache-2.0"
+repository = "https://github.com/Opticmix/opticmix-vision"
+
+[features]
+# 시험용 대역(backend::mock::MockBackend)을 시험 밖(예: examples/dump_controls --sim)에서도 쓴다. 범위·기본값은 지어낸 값.
+test-support = []
+
+[dev-dependencies]
+serde_json = "1"
+
+# 빌드를 확인한 판·기능으로 고정한다. CLSID 두 개는 이 판에서 MediaFoundation 모듈에 있어
+# 그 큰 기능을 켜지 않고 dshow.rs 에 Python 과 같은 값으로 둔다.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_DirectShow", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Ole"] }

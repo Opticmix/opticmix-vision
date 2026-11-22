@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>weevia_ros</name>
+  <version>0.0.1</version>
+  <description>Weevia S1 ROS 2 driver (experimental): camera or replay to left/right mono images, per-eye camera_info, optional stereo_image_proc pipeline. No camera controls.</description>
+  <maintainer email="opticmix.lab@gmail.com">Opticmix</maintainer>
+  <license>Apache-2.0</license>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>diagnostic_updater</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>stereo_image_proc</exec_depend>
+  <exec_depend>image_proc</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

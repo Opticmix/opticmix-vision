@@ -1,0 +1,4 @@
+# Opticmix Vision SDK — the Rust core and its Python extension.
+[workspace]
+resolver = "2"
+members = ["opticmix-*"]
