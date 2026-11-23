@@ -15,11 +15,13 @@ pip install opticmix-vision
 ```
 
 On Windows x64 this installs a wheel — one abi3 wheel for Python 3.10 and newer;
-installed and tested on 3.10, 3.12 and 3.14 (no camera). The same wheel is
-attached to each [release](https://github.com/Opticmix/opticmix-vision/releases/latest).
+installed and tested on 3.10, 3.12 and 3.14 (no camera). The same file is
+attached to the GitHub release [v0.0.3.post1](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.3.post1).
 On Windows, verified on Windows 11 only. There is no wheel for macOS, and macOS
-has not been run. Where there is no wheel, pip builds the package from source,
-which needs a Rust toolchain, 1.88 or newer.
+has not been run. Elsewhere pip tries to build from source: Rust 1.88 or newer
+(on Windows also the Microsoft C++ Build Tools). A source install has been
+checked on Linux x86_64 only (Debian 12 container, Python 3.11, Rust 1.88.0,
+no camera).
 
 ### Linux (experimental)
 
@@ -192,7 +194,7 @@ this package publishes no such figures.
 frames (`python -m opticmix_vision.explorer --synthetic`), so the capture path
 runs with nothing attached. It is a generator, not measured data. The examples
 that open a camera, other than `quickstart.py`, take `--synthetic` as well;
-`torch_dataloader.py` needs no camera — see [examples/README.md](examples/README.md).
+`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.3.post1/python/examples/README.md).
 
 ## When something goes wrong
 
@@ -251,6 +253,6 @@ extension. Install the wheel into that environment as well.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE). The compiled extension also contains Rust
+Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.3.post1/python/LICENSE). The compiled extension also contains Rust
 crates under MIT / Apache-2.0; their notices are in
-[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
+[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.3.post1/python/THIRD_PARTY_NOTICES.txt).
