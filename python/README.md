@@ -8,22 +8,24 @@ No vendor driver, no GPU runtime. Two Python dependencies: `numpy` and `opencv-p
 Camera controls and device listing run in a compiled extension that ships inside
 the wheel, so there is nothing to build.
 
-Download the wheel from the
-[latest release](https://github.com/Opticmix/opticmix-vision/releases/latest) and install it:
+Install it from PyPI:
 
 ```bash
-pip install opticmix_vision-0.0.3-cp310-abi3-win_amd64.whl
+pip install opticmix-vision
 ```
 
-Windows x64, Python 3.10 or newer: an abi3 wheel for Python 3.10 and newer;
-installed and tested on 3.10, 3.12 and 3.14 (no camera). There is
-no package-index release yet. On Windows, verified on Windows 11 only. There is
-no wheel for macOS, and macOS has not been run.
+On Windows x64 this installs a wheel — one abi3 wheel for Python 3.10 and newer;
+installed and tested on 3.10, 3.12 and 3.14 (no camera). The same wheel is
+attached to each [release](https://github.com/Opticmix/opticmix-vision/releases/latest).
+On Windows, verified on Windows 11 only. There is no wheel for macOS, and macOS
+has not been run. Where there is no wheel, pip builds the package from source,
+which needs a Rust toolchain, 1.88 or newer.
 
 ### Linux (experimental)
 
-**Experimental — not a supported platform.** The release also carries a Linux
-x86_64 wheel, `opticmix_vision-0.0.3-cp310-abi3-linux_x86_64.whl`.
+**Experimental — not a supported platform.** The 0.0.3 release on GitHub also
+carries a Linux x86_64 wheel, `opticmix_vision-0.0.3-cp310-abi3-linux_x86_64.whl`.
+It is not on PyPI; there, Linux installs from source (Rust toolchain needed).
 
 What has been run: on 2026-11-22, on an Ubuntu 26.04 (kernel 7.0) mini PC with
 one Weevia S1 (firmware version not recorded) connected directly over USB

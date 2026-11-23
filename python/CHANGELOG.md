@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.3.post1 — 2026-11-23
+
+First release on PyPI: `pip install opticmix-vision`. The code is the same as
+0.0.3; only the package description changed — install from PyPI, where to get
+help, and how to open the camera on Linux. PyPI has the Windows x64 wheel and
+the source; Linux installs from source.
+
 ## 0.0.3 — 2026-11-22
 
 Camera controls and device listing now run in a compiled extension

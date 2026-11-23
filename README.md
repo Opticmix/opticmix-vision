@@ -7,20 +7,21 @@ Camera controls and the illuminator: measured with the earlier Python implementa
 
 ## Install
 
-Windows x64, Python 3.10 or newer. Download the wheel from the
-[latest release](https://github.com/Opticmix/opticmix-vision/releases/latest)
-and install it:
+Windows x64, Python 3.10 or newer:
 
 ```bash
-pip install opticmix_vision-<version>-cp310-abi3-win_amd64.whl
+pip install opticmix-vision
 ```
 
-The wheel carries a compiled extension, so nothing has to be built. There is no
-package-index release yet. On Windows, verified on Windows 11 only. There is no
-wheel for macOS, and macOS has not been run.
+This installs a wheel that carries a compiled extension, so nothing has to be
+built. The same wheel is attached to each
+[release](https://github.com/Opticmix/opticmix-vision/releases/latest).
+On Windows, verified on Windows 11 only. There is no wheel for macOS, and macOS
+has not been run.
 
-**Linux x86_64 — experimental, not a supported platform.** The release also
-carries `opticmix_vision-<version>-cp310-abi3-linux_x86_64.whl`. It has been run
+**Linux x86_64 — experimental, not a supported platform.** The 0.0.3 release on
+GitHub also carries `opticmix_vision-0.0.3-cp310-abi3-linux_x86_64.whl` (not on
+PyPI, where Linux installs from source and needs a Rust toolchain). It has been run
 on one Ubuntu 26.04 machine with one camera; camera controls on Linux have not
 been verified and are not supported. See [python/README.md](python/README.md#linux-experimental).
 
