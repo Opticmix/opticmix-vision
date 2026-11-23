@@ -209,6 +209,15 @@ that open a camera, other than `quickstart.py`, take `--synthetic` as well;
   see it either. On Linux, pass `device=` and `backend="v4l2"` — see
   Linux (experimental).
 - **A setting did not stick.** Look at `result.kept` — see Camera controls.
+- **Two Weevia S1 are connected.** Finding the camera by name stops (the camera
+  reports no USB serial number); the error begins "Weevia S1 ... not found" and ends
+  with the list ['WN Dual Camera', 'WN Dual Camera']. Using two units on one computer has not been tested —
+  connect one at a time.
+- **Which USB port.** Connect to a USB 3 port directly. The figures on this page whose
+  USB link was recorded were measured over SuperSpeed; USB 2 is not qualified.
+- **pip finds no version, or tries to build.** Python older than 3.10: pip finds no
+  version (3.10 or newer is required). Otherwise, without x64 Python on Windows, pip
+  tries to build from source (see the top of this page).
 
 ## Getting help
 

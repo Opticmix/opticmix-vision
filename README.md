@@ -44,8 +44,7 @@ What changed between releases: [python/CHANGELOG.md](python/CHANGELOG.md).
 
 ## Upgrading from 0.0.2
 
-Install the 0.0.3 wheel over 0.0.2 —
-`pip install --upgrade opticmix_vision-0.0.3-cp310-abi3-win_amd64.whl` — with no
+Upgrade over 0.0.2 with `pip install --upgrade opticmix-vision`, with no
 uninstall first. Every name 0.0.2 exported from the package is still there with
 the same arguments; 0.0.3 only adds optional ones. `set_prop()` and `get_prop()`
 behave differently in the cases listed under *Changed* of [python/CHANGELOG.md](python/CHANGELOG.md),
