@@ -37,10 +37,17 @@ width=1600, height=800, fps=90, fourcc="MJPG", stall_frames=0)`
 (`device` is the N of `/dev/videoN`; `stall_frames=0` because the script counted
 repeated images itself).
 
+On Linux, name the camera yourself:
+`DeviceConfig.weevia_s1(device="/dev/video0", backend="v4l2")`, with the
+Weevia's own `/dev/videoN` (on a laptop `/dev/video0` may be the built-in
+webcam). In 0.0.3,
+finding the camera by name uses DirectShow and works only on Windows.
+
 Not verified on Linux:
 
 - camera controls and the illuminator — not verified and not supported;
-- finding the camera by name (`DeviceConfig.weevia_s1()` without `device=`);
+- finding the camera by name (`DeviceConfig.weevia_s1()` without `device=`) —
+  Windows-only in 0.0.3;
 - the viewer, the explorer and the examples;
 - other distributions and more than one camera.
 
@@ -194,8 +201,18 @@ themselves need a real camera.
 - **The frame rate is far below 90.** Check that the mode is MJPG (`cam.mode`).
 - **"Weevia S1 not found".** The message lists the cameras Windows reported.
   Re-insert the cable; if the camera is missing from the list, Windows does not
-  see it either.
+  see it either. On Linux, pass `device=` and `backend="v4l2"` — see
+  Linux (experimental).
 - **A setting did not stick.** Look at `result.kept` — see Camera controls.
+
+## Getting help
+
+- Bugs and questions about the SDK: open an issue at
+  https://github.com/Opticmix/opticmix-vision/issues — include the output of
+  `cam.mode`, your OS, and the SDK version (`opticmix_vision.__version__`).
+- Anything else, or if you cannot post publicly: contact@opticmix.kr
+
+We reply to issues and email within 2 business days (Korea time).
 
 ## What is in this package, and what is not
 

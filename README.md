@@ -54,6 +54,12 @@ repository instead of the wheel: the package is now in `python/`, so add
 Windows the Microsoft C++ Build Tools, which Rust's default MSVC toolchain links with. New in the distribution: `THIRD_PARTY_NOTICES.txt`, the licenses of the
 Rust crates compiled into the extension.
 
+## Getting help
+
+Open an issue at https://github.com/Opticmix/opticmix-vision/issues, or write to
+contact@opticmix.kr if you cannot post publicly. We reply within 2 business days
+(Korea time). What to include: [python/README.md](python/README.md#getting-help).
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE). The compiled extension also contains Rust
