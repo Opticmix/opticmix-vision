@@ -189,7 +189,8 @@ this package publishes no such figures.
 `opticmix_vision.synthetic` drives the viewer and the explorer with generated
 frames (`python -m opticmix_vision.explorer --synthetic`), so the capture path
 runs with nothing attached. It is a generator, not measured data. The examples
-themselves need a real camera.
+that open a camera, other than `quickstart.py`, take `--synthetic` as well;
+`torch_dataloader.py` needs no camera — see [examples/README.md](examples/README.md).
 
 ## When something goes wrong
 
