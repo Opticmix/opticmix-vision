@@ -74,7 +74,7 @@ def main() -> int:
 
             # Right after an exposure change the two eyes can disagree in brightness for a short time
             # (about 90 ms on one unit, see the README; measured with the earlier Python implementation,
-            # the Rust implementation in 0.0.3 has not yet been verified against the camera).
+            # the Rust implementation (since 0.0.3) has not yet been verified against the camera).
             # Drop those frames before using any.
             while time.perf_counter() - t_written < 0.1:
                 cam.read()

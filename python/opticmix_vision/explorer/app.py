@@ -1,15 +1,16 @@
-"""Weevia S1 Explorer 창.
+"""Weevia S1 Explorer window.
 
-배치: 어두운 바탕, 왼쪽 위 모드 드롭다운, 오른쪽 위 장치 드롭다운, 양안을 검은
-바탕에 나란히, 영상 위 모노 통계, 아래 왼쪽 아이콘 줄. 슬라이더는 본 창이 아니라 톱니 뒤 Settings 창에 있다.
+Layout: dark background, mode dropdown top left, device dropdown top right, both eyes side by side
+on a black background, monospace stats over the video, icon row bottom left. The sliders are not in
+the main window but in the Settings window behind the gear.
 
-Tkinter 를 쓰는 이유: 표준 라이브러리이고, 콤보박스와 슬라이더가 있고,
-`PhotoImage` 가 PPM 바이트를 그대로 받아 **Pillow 없이** numpy 프레임을 그린다.
-OpenCV 창은 드롭다운을 못 그리고, Qt 는 실행 파일에 150MB 를 더한다.
+Why Tkinter: it is in the standard library, it has comboboxes and sliders, and `PhotoImage` takes
+PPM bytes as they are, so numpy frames are drawn **without Pillow**.
+An OpenCV window cannot draw dropdowns, and Qt adds 150MB to the executable.
 
-화면에 늘 띄우는 두 가지는 판정이 아니라 사실이다:
-  · 양안을 나란히 — 한쪽이 얼면 눈에 보인다
-  · FRAMERATE 는 **측정값** — 요청값이 아니라서, 포맷 협상이 어긋나면 90 이 아니라 9 로 보인다
+The two things always on screen are facts, not verdicts:
+  · both eyes side by side: if one freezes, you can see it
+  · FRAMERATE is **measured**, not the requested value, so if format negotiation goes wrong it shows 9, not 90
 """
 from __future__ import annotations
 
@@ -31,24 +32,24 @@ from .theme import BG, LIME, MONO, MONO_SMALL, PANEL, TEXT, TEXT_DIM, VIDEO_BG
 
 __all__ = ["ExplorerApp", "main"]
 
-REDRAW_MS = 33          # 약 30 fps. 카메라는 제 속도로 돌고 화면만 느리게 그린다.
+REDRAW_MS = 33          # about 30 fps. The camera runs at its own rate; only the screen draws slower.
 MODEL_NAME = "Weevia S1"
-VIEW_WIDTH = 960        # 위젯 크기를 아직 모를 때만 쓰는 기본 상자.
+VIEW_WIDTH = 960        # default box, used only while the widget size is not yet known.
 VIEW_HEIGHT = 460
 
 
 def _to_photo(gray: np.ndarray) -> tk.PhotoImage:
-    """(h, w) uint8 → PhotoImage. PPM(P5) 은 Tk 가 직접 읽으므로 Pillow 가 필요 없다."""
+    """(h, w) uint8 -> PhotoImage. Tk reads PPM (P5) directly, so Pillow is not needed."""
     h, w = gray.shape
     return tk.PhotoImage(data=f"P5 {w} {h} 255 ".encode() + gray.tobytes(), format="ppm")
 
 
 def _fit_step(w: int, h: int, box_w: int, box_h: int) -> int:
-    """상자 안에 들어가는 가장 작은 정수 서브샘플 간격.
+    """Smallest integer subsampling step that fits inside the box.
 
-    내림 나눗셈을 쓰면 1600 폭이 960 상자에 step 1 로 계산돼 축소가 아예 걸리지
-    않고, 원본이 창 밖으로 잘린다 (실제로 그렇게 보였다). 올림으로 계산하고,
-    가로뿐 아니라 세로도 함께 본다.
+    With floor division, a 1600 width in a 960 box gives step 1, so no shrinking happens at all
+    and the image is cut off outside the window (that is what was actually seen). Round up, and
+    check height as well as width.
     """
     if box_w <= 0 or box_h <= 0:
         return 1
@@ -56,10 +57,10 @@ def _fit_step(w: int, h: int, box_w: int, box_h: int) -> int:
 
 
 def _shrink(gray: np.ndarray, box_w: int, box_h: int) -> np.ndarray:
-    """정수배 서브샘플링으로 상자 안에 맞춘다.
+    """Fits the image inside the box by integer subsampling.
 
-    보간을 쓰지 않는 이유는 속도가 아니라 정직함이다 — 화면에 보이는 것이 센서가
-    준 화소 그대로여야 얼어붙은 눈도 그대로 보인다.
+    No interpolation, for honesty rather than speed: only if the screen shows the pixels exactly
+    as the sensor delivered them does a frozen eye also show up as frozen.
     """
     step = _fit_step(gray.shape[1], gray.shape[0], box_w, box_h)
     return gray[::step, ::step]
@@ -75,8 +76,8 @@ class ExplorerApp:
         self.synthetic = synthetic
         self.state = ExplorerState()
         self.device: Device | None = None
-        self.source = None               # 지금 스트리밍하는 것(Device 또는 합성) — 설정 창이 그 controls 를 쓴다
-        # 합성은 즉시 돌려주므로 90 fps 근처로 묶는다 — 실제 카메라와 같은 눈금으로 읽히도록.
+        self.source = None               # what is streaming now (Device or synthetic); the settings window uses its controls
+        # a synthetic source returns immediately, so cap it near 90 fps to read on the same scale as a real camera.
         self.worker = CaptureWorker(self._open_source, min_interval=1 / 90 if synthetic else 0.0)
         self.settings: SettingsWindow | None = None
         self._devices: list[DeviceInfo] = []
@@ -101,10 +102,10 @@ class ExplorerApp:
         st = ttk.Style(self.root)
         try:
             st.theme_use("clam")
-        except tk.TclError:                       # 테마가 없는 빌드에서도 창은 떠야 한다
+        except tk.TclError:                       # the window must still open on builds without the theme
             pass
-        # clam 의 Combobox 는 configure 만으로는 목록·눌린 상태 색이 안 바뀐다.
-        # map 까지 해 줘야 밝은 기본 스타일이 남지 않는다.
+        # configure alone does not change the list and pressed-state colors of clam's Combobox.
+        # map is needed too, or the light default style remains.
         st.configure("Dark.TCombobox", fieldbackground=PANEL, background=PANEL,
                      foreground=TEXT, arrowcolor=LIME, bordercolor=PANEL,
                      lightcolor=PANEL, darkcolor=PANEL, selectbackground=PANEL,
@@ -114,7 +115,7 @@ class ExplorerApp:
                background=[("readonly", PANEL), ("active", PANEL)],
                foreground=[("readonly", TEXT)],
                arrowcolor=[("active", LIME)])
-        # 펼쳐지는 목록은 ttk 가 아니라 Tk 옵션 데이터베이스로 칠한다.
+        # the drop-down list is colored via the Tk option database, not ttk.
         self.root.option_add("*TCombobox*Listbox.background", PANEL)
         self.root.option_add("*TCombobox*Listbox.foreground", TEXT)
         self.root.option_add("*TCombobox*Listbox.selectBackground", LIME)
@@ -135,7 +136,7 @@ class ExplorerApp:
         self.mode_combo.pack(side="left", padx=6)
         self.mode_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_mode())
 
-        # 오른쪽부터 채운다 — 톱니가 가장 바깥.
+        # fill from the right; the gear is outermost.
         tk.Button(bar, text="⚙", command=self._open_settings, bg=PANEL, fg=LIME,
                   font=("Segoe UI", 13), relief="flat", activebackground=PANEL,
                   activeforeground=LIME, borderwidth=0).pack(side="right", padx=(4, 12))
@@ -143,7 +144,7 @@ class ExplorerApp:
                   font=("Segoe UI", 13), relief="flat", activebackground=PANEL,
                   activeforeground=LIME, borderwidth=0).pack(side="right", padx=4)
 
-        # 시리얼이 없다는 사실을 빈칸으로 두지 않는다.
+        # a missing serial number is shown, not left blank.
         sn = tk.Label(bar, text="SN: —", bg=PANEL, fg=TEXT_DIM, font=MONO)
         sn.pack(side="right", padx=(8, 4))
         self._tooltip(sn, "This camera reports no USB serial number.\n"
@@ -161,7 +162,7 @@ class ExplorerApp:
         holder.pack(fill="both", expand=True)
         self.canvas = tk.Label(holder, bg=VIDEO_BG)
         self.canvas.pack(fill="both", expand=True)
-        # 통계는 영상 위 왼쪽 아래에 겹쳐 놓는다 — 그들의 배치 그대로.
+        # stats are overlaid on the bottom left of the video.
         self.stats_var = tk.StringVar(value="")
         self.stats = tk.Label(holder, textvariable=self.stats_var, bg=VIDEO_BG, fg=TEXT_DIM,
                               font=MONO_SMALL, justify="left", anchor="w")
@@ -245,8 +246,8 @@ class ExplorerApp:
                            device=self.state.device.index,
                            width=mode.width, height=mode.height,
                            fps=mode.max_fps, fourcc=mode.fourcc)
-        # 열 때 제어 값을 쓰지 않는다 — 쓰기 자체가 위험한 카메라다. 화면은 카메라에 남아 있던 값을 그대로 보여 주고,
-        # 바꾸려면 Settings 창(또는 Reset to defaults)을 쓴다.
+        # No control values are written on open; on this camera writing itself is risky. The screen shows the values
+        # left in the camera as they are; to change them, use the Settings window (or Reset to defaults).
         self.device = Device(cfg).__enter__()
         self.source = self.device
         return self.device
@@ -257,7 +258,7 @@ class ExplorerApp:
             return None
         try:
             return src.controls
-        except Exception:  # noqa: BLE001 — 열리는 중이거나 닫힌 장치
+        except Exception:  # noqa: BLE001 — device still opening or already closed
             return None
 
     def _restart(self) -> None:
@@ -280,7 +281,7 @@ class ExplorerApp:
         self.message_var.set(str(out))
         try:
             import os
-            os.startfile(out)                      # Windows 전용 — 창 앱이므로 실패해도 조용히
+            os.startfile(out)                      # Windows only; this is a GUI app, so fail quietly
         except Exception:
             pass
 
@@ -302,9 +303,9 @@ class ExplorerApp:
         frame = self.worker.latest()
         if frame is not None:
             self._frames += 1
-            pair = np.hstack([frame.left, frame.right])     # 양안은 늘 나란히
-            # 창 크기에 맞춘다. 위젯이 아직 배치 전이면 winfo_* 가 1 을 주므로
-            # 그때만 기본 상자를 쓴다.
+            pair = np.hstack([frame.left, frame.right])     # both eyes always side by side
+            # fit to the window size. Before the widget is laid out winfo_* returns 1,
+            # so only then is the default box used.
             box_w = self.canvas.winfo_width()
             box_h = self.canvas.winfo_height()
             if box_w <= 1 or box_h <= 1:
@@ -344,7 +345,7 @@ class ExplorerApp:
                 pass
             finally:
                 self.device = None
-        self.source = None                 # 합성 소스는 캡처 워커가 멈출 때 닫는다
+        self.source = None                 # the synthetic source is closed when the capture worker stops
 
     def close(self) -> None:
         self.worker.stop()
@@ -360,7 +361,7 @@ class ExplorerApp:
 
 def main(argv=None) -> int:
     if sys.platform == "win32":
-        try:                                   # 고DPI 화면에서 흐릿하게 뜨지 않도록
+        try:                                   # so it does not look blurry on high-DPI screens
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:

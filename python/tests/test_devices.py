@@ -8,6 +8,7 @@ from opticmix_vision.devices import (
     Mode,
     MultipleMatches,
     NoMatch,
+    find_v4l2_node,
     list_devices,
     list_modes,
     resolve_by_name,
@@ -75,3 +76,36 @@ def test_no_ffmpeg_output_gives_no_modes_rather_than_raising():
 
 def test_mode_label_is_what_a_combo_box_shows():
     assert Mode("MJPG", 1600, 800, 90.0).label() == "1600×800 MJPG · 90 fps"
+
+
+# ---------------------------------------------------------------- Linux: /sys/class/video4linux, faked in a folder
+def _sysfs(tmp_path, nodes):
+    for n, (name, index) in nodes.items():
+        (tmp_path / n).mkdir()
+        (tmp_path / n / "name").write_text(name + "\n")
+        (tmp_path / n / "index").write_text(f"{index}\n")
+    return str(tmp_path)
+
+
+def test_v4l2_node_is_the_named_node_with_index_0(tmp_path):
+    root = _sysfs(tmp_path, {"video0": ("Webcam gadget: WN Dual Camera", 0),
+                             "video1": ("Webcam gadget: WN Dual Camera", 1)})  # names as on the camera, 2026-11-23
+    assert find_v4l2_node("wn dual", _sysfs=root) == "/dev/video0"
+
+
+def test_v4l2_metadata_node_alone_is_not_a_match(tmp_path):
+    root = _sysfs(tmp_path, {"video0": ("Integrated Webcam", 0), "video1": ("WN Dual Camera", 1)})
+    with pytest.raises(NoMatch, match=r"Video nodes found: \['/dev/video0 Integrated Webcam', '/dev/video1 WN Dual Camera'\]"):
+        find_v4l2_node("WN Dual Camera", _sysfs=root)
+
+
+def test_v4l2_two_cameras_are_refused(tmp_path):
+    root = _sysfs(tmp_path, {"video0": ("WN Dual Camera", 0), "video1": ("WN Dual Camera", 1),
+                             "video2": ("WN Dual Camera", 0), "video3": ("WN Dual Camera", 1)})
+    with pytest.raises(MultipleMatches, match=r"^2 video capture nodes .*\['/dev/video0', '/dev/video2'\]$"):
+        find_v4l2_node("WN Dual Camera", _sysfs=root)
+
+
+def test_v4l2_no_sysfs_is_no_match(tmp_path):
+    with pytest.raises(NoMatch, match=r"Video nodes found: \[\]"):
+        find_v4l2_node("WN Dual Camera", _sysfs=str(tmp_path / "absent"))

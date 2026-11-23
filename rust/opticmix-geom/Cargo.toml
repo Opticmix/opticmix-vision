@@ -1,0 +1,18 @@
+[package]
+name = "opticmix-geom"
+version = "0.0.4"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Opticmix Vision geometry: calibration file schema v1 and the KB fisheye model"
+license = "Apache-2.0"
+
+# float_roundtrip: calibration numbers are read back without a 1-ulp error.
+[dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[features]
+# Rectification and depth (not in the published crate yet).
+stereo = []
+# Tests against the calibration files kept in this repository.
+repo-tests = []

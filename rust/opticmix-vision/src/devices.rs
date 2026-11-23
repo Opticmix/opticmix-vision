@@ -1,20 +1,20 @@
-//! 연결된 카메라 열거 — 이름 기준(Python `devices.py`).
+//! Enumerating connected cameras — by name (Python `devices.py`).
 //!
-//! 이 카메라는 USB 시리얼 번호를 보고하지 않는다. 인덱스는 다른 카메라를 꽂거나 빼는 것만으로 밀리므로,
-//! 인덱스로 장치를 고르면 조용히 다른 카메라를 연다. 그래서 선택은 항상 이름으로 한다.
+//! This camera does not report a USB serial number. Indexes shift just by plugging or unplugging another camera,
+//! so choosing by index silently opens a different camera. That is why selection is always by name.
 
 use std::process::Command;
 
 use crate::error::{Result, SdkError};
 
-/// DirectShow 열거 순서의 장치 하나.
+/// One device, in DirectShow enumeration order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub index: usize,
     pub name: String,
 }
 
-/// 장치가 스스로 보고하는 모드 하나.
+/// One mode the device reports itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mode {
     pub fourcc: String,
@@ -24,7 +24,7 @@ pub struct Mode {
 }
 
 impl Mode {
-    /// 콤보박스에 보일 문자열(Python `f"{w}×{h} {fourcc} · {max_fps:g} fps"`; max_fps 는 소수 1자리라 Display 와 같다).
+    /// Text shown in a combo box (Python `f"{w}×{h} {fourcc} · {max_fps:g} fps"`; max_fps has one decimal, so it equals Display).
     pub fn label(&self) -> String {
         format!(
             "{}×{} {} · {} fps",
@@ -33,7 +33,7 @@ impl Mode {
     }
 }
 
-/// Python 문자열 repr(작은따옴표, 안의 작은따옴표는 이스케이프).
+/// Python string repr (single quotes, single quotes inside escaped).
 fn repr(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
@@ -42,8 +42,8 @@ fn list_repr<'a>(names: impl Iterator<Item = &'a str>) -> String {
     format!("[{}]", names.map(repr).collect::<Vec<_>>().join(", "))
 }
 
-/// `ffmpeg -list_devices` 출력에서 영상 장치 이름만, 나온 순서대로.
-/// 규칙(Python `_VIDEO_LINE` 과 같음): `"이름"` 바로 뒤 ` (…)` 괄호에 video 가 있어야 한다.
+/// Video device names only from `ffmpeg -list_devices` output, in the order they appear.
+/// Rule (same as Python `_VIDEO_LINE`): the ` (…)` right after `"name"` must contain video.
 fn parse_video_devices(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|l| {
@@ -61,15 +61,15 @@ fn ffmpeg_stderr(args: &[&str]) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
-/// ffmpeg 가 없을 때 DirectShow 를 직접 열거한다(Windows). 실패는 빈 목록 — "못 찾음"으로 보인다.
+/// Enumerates DirectShow directly when ffmpeg is missing (Windows). A failure is an empty list — it shows as "not found".
 fn native_devices() -> Vec<String> {
     crate::dshow::enumerate_video_devices()
         .map(|v| v.into_iter().map(Option::unwrap_or_default).collect())
         .unwrap_or_default()
 }
 
-/// DirectShow 열거 순서 그대로의 영상 장치 목록. 노트북 웹캠도 포함한다 — 사용자가 그중에서 골라야 한다.
-/// `raw` 가 없으면 ffmpeg 를 부르고, ffmpeg 가 없으면(고객 PC 에 대개 없다) DirectShow 를 직접 열거한다.
+/// Video devices in DirectShow enumeration order. Laptop webcams are included — the user has to pick among them.
+/// Without `raw` this runs ffmpeg; without ffmpeg (most customer PCs) it enumerates DirectShow directly.
 pub fn list_devices(raw: Option<&str>) -> Vec<DeviceInfo> {
     let names = match raw {
         Some(r) => parse_video_devices(r),
@@ -93,13 +93,12 @@ pub fn list_devices(raw: Option<&str>) -> Vec<DeviceInfo> {
         .collect()
 }
 
-/// 이름 부분일치(대소문자 무시)로 장치 하나를 고른다. 애매하면 추측하지 않는다.
-/// 이름 부분일치(대소문자 무시)로 장치 하나를 고른다. 애매하면 추측하지 않는다.
+/// Picks one device by partial name match (case-insensitive). Does not guess when it is ambiguous.
 pub fn resolve_by_name(needle: &str, raw: Option<&str>) -> Result<DeviceInfo> {
     pick_by_name(needle, &list_devices(raw))
 }
 
-/// 이미 가진 목록에서 고른다(Python 래퍼는 ffmpeg/직접 열거를 Python 쪽에서 해 목록을 넘긴다).
+/// Picks from a list you already have (the Python wrapper enumerates via ffmpeg or directly on the Python side and passes the list).
 pub fn pick_by_name(needle: &str, devices: &[DeviceInfo]) -> Result<DeviceInfo> {
     let low = needle.to_lowercase();
     let hits: Vec<&DeviceInfo> = devices
@@ -108,20 +107,20 @@ pub fn pick_by_name(needle: &str, devices: &[DeviceInfo]) -> Result<DeviceInfo> 
         .collect();
     match hits.len() {
         0 => Err(SdkError::NoMatch(format!(
-            "{} 에 맞는 카메라가 없다. 보이는 장치: {}",
+            "No camera matches {}. Video devices found: {}",
             repr(needle),
             list_repr(devices.iter().map(|d| d.name.as_str()))
         ))),
         1 => Ok(hits[0].clone()),
         n => Err(SdkError::MultipleMatches(format!(
-            "{} 에 {n}개가 맞는다 — 시리얼이 없어 구분할 수 없다. 하나만 남기고 뽑아라: {}",
+            "{n} cameras match {} — they cannot be told apart (no USB serial number). Unplug all but one: {}",
             repr(needle),
             list_repr(hits.iter().map(|d| d.name.as_str()))
         ))),
     }
 }
 
-/// `vcodec=X|pixel_format=X  min s=WxH fps=F  max s=WxH fps=F` 한 줄.
+/// One `vcodec=X|pixel_format=X  min s=WxH fps=F  max s=WxH fps=F` line.
 fn parse_mode_line(l: &str) -> Option<Mode> {
     let (codec, rest) = ["vcodec=", "pixel_format="].iter().find_map(|k| {
         let i = l.find(k)? + k.len();
@@ -154,7 +153,7 @@ fn parse_mode_line(l: &str) -> Option<Mode> {
     })
 }
 
-/// 장치가 스스로 보고하는 모드들. 빈 목록은 "모드가 없다" 가 아니라 **"알아내지 못했다"** 이다.
+/// Modes the device reports itself. An empty list does not mean "no modes" — it means **"could not find out"**.
 pub fn list_modes(name: &str, raw: Option<&str>) -> Vec<Mode> {
     let text = match raw {
         Some(r) => r.to_string(),
@@ -189,7 +188,7 @@ pub fn list_modes(name: &str, raw: Option<&str>) -> Vec<Mode> {
 mod tests {
     use super::*;
 
-    /// Python tests/test_devices.py 의 표본(실제 실행에서 딴 형식, 다른 장치 이름·ID 는 가짜로 바꿈).
+    /// Sample from Python tests/test_devices.py (format taken from a real run, other device names and IDs replaced with fake ones).
     const FFMPEG_DEVICES: &str = r#"[dshow @ 000001] "WN Dual Camera" (video)
 [dshow @ 000001]   Alternative name "@device_pnp_\\?\usb#vid_1d6b&pid_0200"
 [dshow @ 000001] "Example Front Webcam" (video)
@@ -204,7 +203,7 @@ mod tests {
 [in#0]   pixel_format=yuyv422  min s=1600x800 fps=10 max s=1600x800 fps=45
 "#;
 
-    /// 실제 ffmpeg 8.x 출력에서 딴 목록(2026-09-07). 형식은 그대로, 장치 이름·인스턴스 ID 는 가짜로 바꿈.
+    /// List taken from real ffmpeg 8.x output (2026-09-07). Format kept, device names and instance IDs replaced with fake ones.
     const REAL_LISTING: &str = r#"[in#0 @ 000001ec2b2e9180] "Example Front Webcam" (video)
 [in#0 @ 000001ec2b2e9180]   Alternative name "@device_pnp_\\?\display#example_01#5&0000000a&0&uid0000000001#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\{00000000-0000-0000-0000-000000000001}"
 [in#0 @ 000001ec2b2e9180] "Example Rear Webcam" (video)
@@ -266,7 +265,7 @@ dummy: Immediate exit requested
         match resolve_by_name("nonexistent", Some(FFMPEG_DEVICES)) {
             Err(SdkError::NoMatch(m)) => assert_eq!(
                 m,
-                "'nonexistent' 에 맞는 카메라가 없다. 보이는 장치: ['WN Dual Camera', 'Example Front Webcam', 'Example Rear Webcam']"
+                "No camera matches 'nonexistent'. Video devices found: ['WN Dual Camera', 'Example Front Webcam', 'Example Rear Webcam']"
             ),
             other => panic!("{other:?}"),
         }
@@ -278,7 +277,7 @@ dummy: Immediate exit requested
         match resolve_by_name("wn dual", Some(&raw)) {
             Err(SdkError::MultipleMatches(m)) => assert_eq!(
                 m,
-                "'wn dual' 에 2개가 맞는다 — 시리얼이 없어 구분할 수 없다. 하나만 남기고 뽑아라: ['WN Dual Camera', 'WN Dual Camera']"
+                "2 cameras match 'wn dual' — they cannot be told apart (no USB serial number). Unplug all but one: ['WN Dual Camera', 'WN Dual Camera']"
             ),
             other => panic!("{other:?}"),
         }

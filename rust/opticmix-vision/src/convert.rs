@@ -1,9 +1,9 @@
-//! 사용자 값 ↔ 장치 값(Python `_as_int`·`_to_device`·`_from_device`·`_same`). 틀린 값은 여기서 막는다 — 장치에 보내지 않는다.
+//! User values ↔ device values (Python `_as_int`·`_to_device`·`_from_device`·`_same`). Bad values stop here — they are never sent to the device.
 
 use crate::error::{Result, SdkError};
 use crate::spec::{ControlSpec, Kind, Role};
 
-/// 사용자가 준 값. Python 바인딩은 bool → Bool, 정수(numpy 포함) → Int, float → Float, str → Choice 로 바꾼다.
+/// A value from the user. The Python binding maps bool → Bool, integers (numpy included) → Int, float → Float, str → Choice.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UserValue {
     Int(i64),
@@ -13,7 +13,7 @@ pub enum UserValue {
 }
 
 impl UserValue {
-    /// Python `repr()` 과 같은 표기 — 오류 문안이 Python 원문과 같도록.
+    /// Same notation as Python `repr()` — so error messages match the Python originals.
     pub fn repr(&self) -> String {
         match self {
             UserValue::Int(v) => v.to_string(),
@@ -25,7 +25,7 @@ impl UserValue {
     }
 }
 
-/// 백엔드로 갈 값: value 역할은 정수, auto 역할은 자동 여부.
+/// Value for the backend: an integer for the value role, on/off for the auto role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevValue {
     Value(i64),
@@ -41,7 +41,7 @@ fn tuple_repr(choices: &[&str]) -> String {
     }
 }
 
-/// Python `_as_int`: bool 은 TypeError, 정수·정수값 float 는 받고, 나머지는 ValueError.
+/// Python `_as_int`: bool is a TypeError, ints and integral floats are accepted, anything else is a ValueError.
 fn as_int(name: &str, value: &UserValue) -> Result<i64> {
     match value {
         UserValue::Bool(_) => Err(SdkError::WrongType(format!(
@@ -57,7 +57,7 @@ fn as_int(name: &str, value: &UserValue) -> Result<i64> {
     }
 }
 
-/// 사용자 값 → 백엔드 값. 범위 검사는 여기서 하지 않는다(장치 범위가 필요해 Controls 가 한다).
+/// User value → backend value. No range check here (it needs the device range, so Controls does it).
 pub fn to_device(spec: &ControlSpec, value: &UserValue) -> Result<DevValue> {
     match spec.kind {
         Kind::Menu => {
@@ -105,7 +105,7 @@ pub fn to_device(spec: &ControlSpec, value: &UserValue) -> Result<DevValue> {
     }
 }
 
-/// 백엔드 값 → 사용자 값. 모르는 것은 None — 지어내지 않는다.
+/// Backend value → user value. Unknown is None — never made up.
 pub fn from_device(spec: &ControlSpec, raw: Option<i64>, auto: Option<bool>) -> Option<UserValue> {
     if spec.role == Role::Auto {
         let a = auto?;
@@ -128,7 +128,7 @@ pub fn from_device(spec: &ControlSpec, raw: Option<i64>, auto: Option<bool>) -> 
     })
 }
 
-/// Python `==` 과 같은 비교: 숫자끼리는 값으로(40 == 40.0, True == 1), 문자열은 문자열끼리.
+/// Compares like Python `==`: numbers by value (40 == 40.0, True == 1), strings only with strings.
 pub fn py_eq(a: &UserValue, b: &UserValue) -> bool {
     fn num(v: &UserValue) -> Option<f64> {
         match v {
@@ -144,7 +144,7 @@ pub fn py_eq(a: &UserValue, b: &UserValue) -> bool {
     }
 }
 
-/// 요청 (value, auto) 가 장치 상태와 같으면 true. 모르는 것(None)은 같다고 보지 않는다.
+/// True when the requested (value, auto) equals the device state. Unknown (None) never counts as equal.
 pub fn same(
     value: Option<i64>,
     auto: Option<bool>,

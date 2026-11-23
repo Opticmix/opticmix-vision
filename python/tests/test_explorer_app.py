@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-tk = pytest.importorskip("tkinter")
+try:   # not importorskip: a Python with _tkinter but no Tk library raises ImportError, which it does not skip
+    import tkinter as tk  # noqa: F401
+except ImportError as exc:
+    pytest.skip(f"no Tk: {exc}", allow_module_level=True)
 
 
 @pytest.fixture(scope="module")

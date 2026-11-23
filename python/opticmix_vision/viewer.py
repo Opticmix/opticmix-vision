@@ -1,13 +1,13 @@
-"""Weevia S1 Viewer — 설치 없이 "카메라가 되는지" 5초 만에 보는 창 + 좌/우 프레임 저장.
+"""Weevia S1 Viewer — a window that shows in 5 seconds whether the camera works, with no install; saves left/right frames.
 
-    python -m opticmix_vision.viewer                                            # Weevia S1 (이름으로 찾음, 1600x800 MJPG 90)
+    python -m opticmix_vision.viewer                                            # Weevia S1 (found by name, 1600x800 MJPG 90)
     python -m opticmix_vision.viewer --device 1 --layout sbs --lr-order first_is_right --width 1600 --height 800 --fps 90 --fourcc MJPG
-    python -m opticmix_vision.viewer --synthetic                                # 하드웨어 없이
+    python -m opticmix_vision.viewer --synthetic                                # no hardware
 
-키:  q/ESC 종료 · s 좌/우 PNG 저장(--out) · l/L LED −/+ · e/E 노출 −/+ · g/G 게인 −/+ · a 자동노출 토글 · h 도움말
+Keys:  q/ESC quit · s save left/right PNG (--out) · l/L LED −/+ · e/E exposure −/+ · g/G gain −/+ · a auto-exposure toggle · h help
 
-헤드리스 모드(--headless)는 창 없이 같은 루프를 돌린다 — 테스트·CI 용.
-실장비 경로(VideoCapture)는 하드웨어 없이 검증하지 못했다. 합성 소스로 루프·키·저장만 검증됨.
+Headless mode (--headless) runs the same loop without a window — for tests and CI.
+The real-camera path (VideoCapture) cannot be verified without hardware; the synthetic source verifies only the loop, keys and saving.
 """
 
 from __future__ import annotations
@@ -27,8 +27,9 @@ from .device import StereoFrame
 
 __all__ = ["ViewerState", "compose_view", "run_viewer", "main", "KEY_HELP"]
 
-# 키를 누르는 동안은 목표값만 쌓고, 이만큼 조용하면 한 번 쓴다 — 쓰기 간격이 12 ms 라(2026-09-28) 키 반복(초당 ~30회)이
-# 그대로 쓰기가 되지 않게. Windows 키 반복 시작 지연(기본 약 0.5 s)보다 길어야 누르고 있는 동안 중간에 쓰지 않는다.
+# While a key is held only the target value accumulates; after this much quiet it is written once. The write gap is
+# 12 ms (2026-09-28), so key repeat (~30 per second) must not turn straight into writes. It has to be longer than the
+# Windows key-repeat start delay (about 0.5 s by default) so nothing is written midway while the key is held down.
 SETTLE_S = 0.6
 
 KEY_HELP = "q/ESC quit | s save | l/L LED -/+ | e/E exposure -/+ | g/G gain -/+ | a auto-exposure | h help"
@@ -52,12 +53,12 @@ class ViewerState:
             v = dev.get_prop(prop)
             ok = dev.set_prop(prop, v + delta)
             self.messages.append(f"{prop.replace('CAP_PROP_', '')} {v:g} -> {v + delta:g}" + ("" if ok else " (rejected)"))
-        except Exception as exc:                      # 장치가 컨트롤을 거부해도 뷰어는 계속
+        except Exception as exc:                      # the viewer keeps going even if the device refuses the control
             self.last_error = f"{prop}: {type(exc).__name__}: {exc}"
             self.messages.append(self.last_error)
 
     def _nudge(self, dev: Any, name: str, delta: float, legacy_prop: str, now: float | None = None) -> None:
-        """제어 하나를 delta 만큼 — 목표값만 쌓는다. 쓰기는 키가 멈춘 뒤 commit() 이 한 번."""
+        """Moves one control by delta, only accumulating the target value. commit() writes once after the key stops."""
         controls = getattr(dev, "controls", None)
         if controls is None:
             self._bump(dev, legacy_prop, delta)
@@ -75,12 +76,12 @@ class ViewerState:
             self._pending[name] = target
             self._pending_at = time.monotonic() if now is None else now
             self.messages.append(f"{name} {base:g} -> {target:g} (writes when you stop)")
-        except Exception as exc:                      # 장치가 컨트롤을 거부해도 뷰어는 계속
+        except Exception as exc:                      # the viewer keeps going even if the device refuses the control
             self.last_error = f"{name}: {type(exc).__name__}: {exc}"
             self.messages.append(self.last_error)
 
     def commit(self, dev: Any, now: float | None = None, *, force: bool = False) -> None:
-        """쌓인 목표값을 한 번 쓴다 — 마지막 키 뒤 SETTLE_S 만큼 조용했거나 force 일 때."""
+        """Writes the accumulated target value once, when it has been quiet for SETTLE_S after the last key, or with force."""
         if not self._pending:
             return
         t = time.monotonic() if now is None else now
@@ -95,12 +96,12 @@ class ViewerState:
                     self.messages.append(f"{name} {target:g} (no change)")
             except ControlStateError:
                 self.messages.append("auto-exposure is on — press a to switch to manual first")
-            except Exception as exc:                  # 장치가 컨트롤을 거부해도 뷰어는 계속
+            except Exception as exc:                  # the viewer keeps going even if the device refuses the control
                 self.last_error = f"{name}: {type(exc).__name__}: {exc}"
                 self.messages.append(self.last_error)
 
     def handle_key(self, key: int, dev: Any, now: float | None = None) -> str | None:
-        """키 하나 처리. 반환 'quit' | 'save' | None. 끝낼 때 기다리던 변경은 쓰고 나간다."""
+        """Handles one key. Returns 'quit' | 'save' | None. On quit, pending changes are written before exiting."""
         if key in (ord("q"), ord("Q"), 27):
             self.commit(dev, now, force=True)
             return "quit"
@@ -127,7 +128,7 @@ class ViewerState:
                     self.messages.append(f"auto-exposure {'on' if new == 'auto' else 'off'}")
                 else:
                     cur = dev.get_prop("CAP_PROP_AUTO_EXPOSURE")
-                    new_n = 0.25 if cur >= 0.5 else 0.75          # DirectShow 관례: 0.75 auto / 0.25 manual
+                    new_n = 0.25 if cur >= 0.5 else 0.75          # DirectShow convention: 0.75 auto / 0.25 manual
                     dev.set_prop("CAP_PROP_AUTO_EXPOSURE", new_n)
                     self.messages.append(f"auto-exposure {'off' if new_n == 0.25 else 'on'}")
             except Exception as exc:
@@ -140,7 +141,7 @@ class ViewerState:
 
 def compose_view(frame: StereoFrame, *, texts: Sequence[str] = (), gap: int = 8, scale: float = 1.0,
                  left: np.ndarray | None = None, right: np.ndarray | None = None) -> np.ndarray:
-    """좌|우 나란히 (BGR). texts 는 좌상단에 줄 단위로. left/right 를 주면 그걸 그린다(view 가 바꾼 영상)."""
+    """Left|right side by side (BGR). texts go line by line in the top-left. If left/right are given, those are drawn (images changed by view)."""
     import cv2
     L = frame.left if left is None else left
     R = frame.right if right is None else right
@@ -162,20 +163,20 @@ def compose_view(frame: StereoFrame, *, texts: Sequence[str] = (), gap: int = 8,
 
 
 def _imwrite(path: Path, img: np.ndarray) -> None:
-    """cv2.imwrite 는 비-ASCII(한글) 경로에서 False 를 돌려주고 파일을 안 만든다(Windows 실측).
-    imencode → tofile 로 쓰고, 실패는 예외로 올린다 — 조용히 '저장됨' 이 되면 안 된다."""
+    """cv2.imwrite returns False and writes no file for a non-ASCII (e.g. Korean) path (measured on Windows).
+    Writes with imencode -> tofile and raises on failure; it must never silently count as 'saved'."""
     import cv2
     ok, buf = cv2.imencode(".png", img)
     if not ok:
-        raise OSError(f"PNG 인코딩 실패: {path.name}")
+        raise OSError(f"PNG encoding failed: {path.name}")
     buf.tofile(str(path))
     if not path.exists() or path.stat().st_size == 0:
-        raise OSError(f"저장 실패 (파일이 생기지 않음): {path}")
+        raise OSError(f"save failed (no file was written): {path}")
 
 
 def _save_pair(frame: StereoFrame, out_dir: Path, left: np.ndarray, right: np.ndarray) -> tuple[Path, Path]:
     if out_dir.exists() and not out_dir.is_dir():
-        raise OSError(f"저장 경로가 디렉토리가 아니다: {out_dir}")
+        raise OSError(f"save path is not a directory: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{time.strftime('%Y%m%d_%H%M%S')}_{frame.index:06d}"
     lp, rp = out_dir / f"{stem}_left.png", out_dir / f"{stem}_right.png"
@@ -190,11 +191,11 @@ def run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = 
                out_dir: str | Path | None = None, key_feed: Iterable[int] | None = None,
                window: str = "Weevia S1 Viewer", scale: float = 1.0,
                state: ViewerState | None = None, view: View | None = None) -> dict[str, Any]:
-    """루프: read → view → compose → show → key.
+    """Loop: read -> view -> compose -> show -> key.
 
-    state: 키 처리 상태(기본 ViewerState()). view: 프레임 → (왼쪽, 오른쪽, 덧붙일 글줄) — 화면에 그릴 것만 바꾼다.
-    's' 저장은 view 와 상관없이 언제나 받은 그대로의 프레임(frame.left/right)이다.
-    반환 {'frames', 'saved', 'fps', 'last_error'}.
+    state: key-handling state (default ViewerState()). view: frame -> (left, right, extra text lines); it changes only what is drawn.
+    's' always saves the frame as received (frame.left/right), regardless of view.
+    Returns {'frames', 'saved', 'fps', 'last_error'}.
     """
     import cv2
     state = ViewerState() if state is None else state
@@ -208,13 +209,13 @@ def run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = 
             fed_key: Any = None
             if headless and keys is not None:
                 fed_key = next(keys, _EXHAUSTED)
-                if fed_key is _EXHAUSTED:                 # 키 시퀀스 소진 = 시나리오 끝 (무한루프 방지)
+                if fed_key is _EXHAUSTED:                 # key sequence exhausted = end of scenario (prevents an endless loop)
                     break
             frame = source.read()
             n += 1
             now = time.perf_counter()
             dt = now - t_prev; t_prev = now
-            if dt > 0:                                    # 간격을 평균하고 역수 — 1/dt 평균은 흔들림에 부푼다
+            if dt > 0:                                    # average the intervals, then invert; averaging 1/dt inflates under jitter
                 dt_avg = 0.9 * dt_avg + 0.1 * dt if dt_avg > 0 else dt
                 fps = 1.0 / dt_avg
             L, R, extra = (frame.left, frame.right, []) if view is None else view(frame, state)
@@ -235,14 +236,14 @@ def run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = 
             else:
                 key = fed_key if keys is not None else -1
             action = state.handle_key(key, source) if key not in (-1, 255) else None
-            state.commit(source)                                  # 키가 멈춘 지 SETTLE_S 가 지났으면 한 번 쓴다
+            state.commit(source)                                  # write once if SETTLE_S has passed since the key stopped
             if action == "save":
-                # 화면을 view 로 바꿔 두었어도 저장은 **받은 그대로**(frame.left/right)다 — 바뀐 영상이 저장되면
-                # 그 파일을 입력으로 쓰는 쪽이 조용히 틀린 결과를 낸다(실제로 있었던 일).
+                # Even if view changed the display, saving uses the frames **as received** (frame.left/right). If changed images
+                # were saved, whatever uses those files as input would silently give wrong results (this actually happened).
                 try:
                     lp, rp = _save_pair(frame, out, frame.left, frame.right)
                 except OSError as exc:
-                    state.last_error = f"저장 실패: {exc}"
+                    state.last_error = f"save failed: {exc}"
                     state.messages.append(state.last_error)
                 else:
                     state.saved += 1
@@ -264,19 +265,19 @@ def run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m opticmix_vision.viewer", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--synthetic", action="store_true", help="하드웨어 없이 합성 소스")
-    p.add_argument("--eye-size", default="320x200", help="합성 한 눈 크기 WxH")
-    p.add_argument("--constants", type=Path, default=None, help=argparse.SUPPRESS)   # 내부 브링업 산출물
-    p.add_argument("--device", default=None, help="카메라 인덱스 (또는 경로)")
+    p.add_argument("--synthetic", action="store_true", help="synthetic source, no hardware")
+    p.add_argument("--eye-size", default="320x200", help="synthetic eye size WxH")
+    p.add_argument("--constants", type=Path, default=None, help=argparse.SUPPRESS)   # bring-up tool output
+    p.add_argument("--device", default=None, help="camera index (or path)")
     p.add_argument("--backend", default="dshow", choices=("any", "dshow", "msmf"))
     p.add_argument("--layout", default=None, choices=("sbs", "tb", "plane_pack"))
     p.add_argument("--lr-order", default=None, choices=("first_is_left", "first_is_right"))
     p.add_argument("--width", type=int, default=None); p.add_argument("--height", type=int, default=None)
     p.add_argument("--fps", type=float, default=None); p.add_argument("--fourcc", default=None)
-    p.add_argument("--out", type=Path, default=Path("captures"), help="s 키 저장 폴더")
+    p.add_argument("--out", type=Path, default=Path("captures"), help="folder for the s key")
     p.add_argument("--scale", type=float, default=1.0)
     p.add_argument("--headless", action="store_true")
-    p.add_argument("--frames", type=int, default=None, help="이 수만큼 읽고 종료")
+    p.add_argument("--frames", type=int, default=None, help="read this many frames, then exit")
     return p
 
 
@@ -297,26 +298,26 @@ def _open_source(a: argparse.Namespace) -> Any:
         cfg = DeviceConfig.from_bringup_constants(a.constants, **over)
     elif a.device is None:
         over.pop("backend", None)
-        cfg = DeviceConfig.weevia_s1(**over)          # 이름으로 찾은 Weevia S1, 실측값 — 준 인자만 덮어쓴다
+        cfg = DeviceConfig.weevia_s1(**over)          # Weevia S1 found by name, measured settings; only the given arguments override them
     else:
         if "layout" not in over or "lr_order" not in over:
-            raise SystemExit("--device 를 주면 --layout 과 --lr-order 도 지정해야 한다 (추측하지 않는다)")
+            raise SystemExit("with --device, also give --layout and --lr-order (the viewer does not guess them)")
         cfg = DeviceConfig(**over)
     return Device(cfg).open()
 
 
 def serve(a: argparse.Namespace, run: Callable[[Any], dict[str, Any]]) -> int:
-    """인자로 카메라(또는 합성 소스)를 열고 run(source) 을 돌린 뒤 닫는다. 실패는 트레이스백 대신 한 줄."""
+    """Opens the camera (or synthetic source) from the arguments, runs run(source), then closes it. Failures print one line instead of a traceback."""
     from .device import DeviceError
     try:
         src = _open_source(a)
     except DeviceError as exc:
-        print(f"[viewer] 카메라를 열지 못했다: {exc}", file=sys.stderr)
+        print(f"[viewer] could not open the camera: {exc}", file=sys.stderr)
         return 2
     try:
         stats = run(src)
-    except DeviceError as exc:                      # 스트리밍 중 분리·타임아웃: 트레이스백 대신 한 줄
-        print(f"[viewer] 프레임 읽기 실패 (장치 분리?): {exc}", file=sys.stderr)
+    except DeviceError as exc:                      # unplugged or timed out while streaming: one line instead of a traceback
+        print(f"[viewer] frame read failed (camera unplugged?): {exc}", file=sys.stderr)
         return 2
     finally:
         try:
@@ -330,7 +331,7 @@ def serve(a: argparse.Namespace, run: Callable[[Any], dict[str, Any]]) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(errors="replace")   # cp949 콘솔에서 '—' 같은 문자로 죽지 않게
+        sys.stdout.reconfigure(errors="replace")   # so a cp949 console does not crash on characters like '—'
     a = build_parser().parse_args(argv)
     return serve(a, lambda src: run_viewer(src, headless=a.headless, max_frames=a.frames, out_dir=a.out,
                                            scale=a.scale))

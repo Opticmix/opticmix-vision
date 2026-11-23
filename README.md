@@ -3,7 +3,7 @@
 Python SDK for the **Weevia S1** stereo infrared camera. The camera presents
 itself to the host as a standard UVC device; the SDK opens it, splits the two
 eyes out of one frame, and drives the camera controls and the IR illuminator.
-Camera controls and the illuminator: measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not yet been verified against the camera.
+Camera controls and the illuminator: measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
 
 ## Install
 
@@ -15,15 +15,17 @@ pip install opticmix-vision
 
 This installs a wheel that carries a compiled extension, so nothing has to be
 built. The same file is attached to the GitHub release
-[v0.0.3.post1](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.3.post1).
+[v0.0.4](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.4).
 On Windows, verified on Windows 11 only. There is no wheel for macOS, and macOS
 has not been run.
 
-**Linux x86_64 — experimental, not a supported platform.** The 0.0.3 release on
-GitHub also carries `opticmix_vision-0.0.3-cp310-abi3-linux_x86_64.whl` (not on
-PyPI, where Linux installs from source and needs a Rust toolchain). It has been run
-on one Ubuntu 26.04 machine with one camera; camera controls on Linux have not
-been verified and are not supported. See [python/README.md](python/README.md#linux-experimental).
+**Linux x86_64 — experimental, not a supported platform.** From 0.0.4 the same
+`pip install opticmix-vision` installs a `manylinux2014_x86_64` wheel (glibc 2.17
+or newer), so nothing is compiled; a minimal system also needs `libGL.so.1` for
+OpenCV (Debian/Ubuntu: `sudo apt install libgl1 libglib2.0-0`). A manylinux build has been installed and tested
+in containers without a camera; an earlier Linux build has been run on one
+Ubuntu 26.04 machine with one camera. Camera controls on Linux have not been
+verified and are not supported. See [python/README.md](python/README.md#linux-experimental).
 
 To build from the repository instead you need a Rust toolchain, 1.88 or newer (the package has been built and tested with 1.88 and 1.99), and on
 Windows the Microsoft C++ Build Tools, which Rust's default MSVC toolchain links with:
@@ -36,11 +38,11 @@ pip install "git+https://github.com/Opticmix/opticmix-vision#subdirectory=python
 
 | Folder | What it holds |
 |---|---|
-| [`python/`](python/) | the `opticmix_vision` package, its tests and an example. Start with [python/README.md](python/README.md) |
-| [`rust/`](rust/) | the core behind camera controls and device listing, and the extension that exposes it to Python as `opticmix_vision._core` |
+| [`python/`](python/) | the `opticmix_vision` package, its tests and examples. Start with [python/README.md](python/README.md) |
+| [`rust/`](rust/) | `opticmix-vision`, the Rust crate behind camera controls and device listing, `opticmix-geom`, the calibration-file checks, and the extension that exposes them to Python as `opticmix_vision._core`. `opticmix-vision` can also be used from Rust as a preview that has not yet been verified against the camera — see [its README](rust/opticmix-vision/README.md) |
 | [`ros2/`](ros2/) | weevia_ros — experimental ROS 2 package, not a supported feature; see [ros2/README.md](ros2/README.md) |
 
-What changed between releases: [python/CHANGELOG.md](python/CHANGELOG.md).
+What changed between releases: [python/CHANGELOG.md](python/CHANGELOG.md). We aim to release about once a month.
 
 ## Upgrading from 0.0.2
 
@@ -59,6 +61,8 @@ Rust crates compiled into the extension.
 Open an issue at https://github.com/Opticmix/opticmix-vision/issues, or write to
 contact@opticmix.kr if you cannot post publicly. We reply within 2 business days
 (Korea time). What to include: [python/README.md](python/README.md#getting-help).
+Questions and ideas are also welcome in GitHub Discussions:
+https://github.com/Opticmix/opticmix-vision/discussions.
 
 ## License
 

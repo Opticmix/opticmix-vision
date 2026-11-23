@@ -1,26 +1,29 @@
-"""연결된 카메라 열거 — 이름 기준.
+"""Listing connected cameras — by name.
 
-이 카메라는 USB 시리얼 번호를 보고하지 않는다. 인덱스는 다른 카메라를 꽂거나
-빼는 것만으로 밀리므로, 인덱스로 장치를 고르면 조용히 다른 카메라를 연다.
-그래서 선택은 항상 이름으로 한다.
+This camera reports no USB serial number. Indexes shift just by plugging in or
+unplugging another camera, so picking a device by index silently opens a different
+camera. Selection is therefore always by name.
 
-같은 `find_camera()` 가 measurements 스크립트 3곳에 각자의 정규식으로 복사돼
-있었다. 여기가 그 하나다.
+Windows: parsing the ffmpeg output and picking by name run in the Rust core (`devices.rs`). Running ffmpeg,
+and falling back to enumerating DirectShow directly, stay here in Python so a caller can swap that step.
 
-구현(2026-10-29): ffmpeg 출력 파싱·이름으로 고르기는 Rust 코어(`devices.rs`)가 한다. ffmpeg 실행과
-DirectShow 직접 열거로 물러서기는 여기(Python)에 남는다 — 호출자가 그 단계를 바꿔 끼울 수 있게.
+Linux: `find_v4l2_node()` reads `/sys/class/video4linux` (no extension needed). Linux name lookup:
+implemented, not yet run on the camera.
 """
 from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from opticmix_vision import _native
 
 __all__ = [
     "DeviceInfo", "Mode", "NoMatch", "MultipleMatches",
-    "list_devices", "list_modes", "resolve_by_name",
+    "list_devices", "list_modes", "resolve_by_name", "find_v4l2_node",
 ]
+
+SYSFS_V4L = "/sys/class/video4linux"
 
 
 @dataclass(frozen=True)
@@ -37,16 +40,16 @@ class Mode:
     max_fps: float
 
     def label(self) -> str:
-        """콤보박스에 보일 문자열."""
+        """The text a combo box shows."""
         return f"{self.width}×{self.height} {self.fourcc} · {self.max_fps:g} fps"
 
 
 class NoMatch(LookupError):
-    """이름에 맞는 카메라가 없다."""
+    """No camera matches the name."""
 
 
 class MultipleMatches(LookupError):
-    """이름에 맞는 카메라가 둘 이상 — 시리얼이 없어 구분할 수 없다."""
+    """More than one camera matches the name — with no serial number they cannot be told apart."""
 
 
 def _ffmpeg_devices() -> str:
@@ -64,19 +67,19 @@ def _ffmpeg_options(name: str) -> str:
 
 
 def _native_devices() -> list[str]:
-    """ffmpeg 없이 DirectShow 를 직접 열거한다(Windows, 의존성 0). 다른 OS 나 실패는 빈 목록."""
+    """Enumerates DirectShow directly, without ffmpeg (Windows, no dependency). Other OSes or a failure: empty list."""
     try:
         from ._ctrl_dshow import enumerate_video_devices
         return [n or "" for n in enumerate_video_devices()]
-    except Exception:  # noqa: BLE001 — 열거 실패는 "못 찾음"으로 보인다
+    except Exception:  # noqa: BLE001 — a failed enumeration shows up as "not found"
         return []
 
 
 def list_devices(*, _raw: str | None = None) -> list[DeviceInfo]:
-    """DirectShow 열거 순서 그대로의 비디오 장치 목록. 노트북 웹캠도 포함한다 —
-    사용자가 그중에서 골라야 하므로 걸러내지 않는다.
+    """Video devices in DirectShow enumeration order (Windows). Laptop webcams are included — the user has to
+    pick among them, so nothing is filtered out.
 
-    ffmpeg 는 고객 PC 에 대개 없다. 없으면 DirectShow 를 직접 열거한다 — 순서는 OpenCV 와 같다."""
+    ffmpeg is usually not installed; without it DirectShow is enumerated directly, in the same order as OpenCV."""
     if _raw is None:
         try:
             _raw = _ffmpeg_devices()
@@ -86,17 +89,17 @@ def list_devices(*, _raw: str | None = None) -> list[DeviceInfo]:
 
 
 def resolve_by_name(needle: str, *, _raw: str | None = None) -> DeviceInfo:
-    """이름 부분일치(대소문자 무시)로 장치 하나를 고른다. 애매하면 추측하지 않는다."""
+    """Picks one device by partial name match (case-insensitive), Windows. Does not guess when it is ambiguous."""
     devices = list_devices(_raw=_raw)
     index, name = _native.core().pick_by_name(needle, [(d.index, d.name) for d in devices])
     return DeviceInfo(index=index, name=name)
 
 
 def list_modes(name: str, *, _raw: str | None = None) -> list[Mode]:
-    """장치가 스스로 보고하는 모드들.
+    """The modes the device reports itself (Windows, through ffmpeg).
 
-    빈 목록은 "모드가 없다" 가 아니라 **"알아내지 못했다"** 이다. 호출자는 확인된
-    모드 하나로 물러서야지, 모드가 없다고 말하면 안 된다.
+    An empty list does not mean "no modes" — it means **"could not find out"**. A caller should fall back
+    to one known mode, not say that there are no modes.
     """
     if _raw is None:
         try:
@@ -104,3 +107,29 @@ def list_modes(name: str, *, _raw: str | None = None) -> list[Mode]:
         except (OSError, subprocess.SubprocessError):
             return []
     return [Mode(fourcc=f, width=w, height=h, max_fps=fps) for f, w, h, fps in _native.core().list_modes(name, _raw)]
+
+
+def find_v4l2_node(needle: str, *, _sysfs: str | None = None) -> str:
+    """Linux: the `/dev/videoN` of the one video capture node whose name contains `needle` (case-insensitive).
+
+    A UVC camera gets more than one node with the same name (video and metadata); the capture node is the one
+    whose sysfs `index` is 0. One match: its path. None: `NoMatch`, listing what is there. Two or more (two
+    identical cameras): `MultipleMatches` — it does not open either. Linux name lookup: implemented, not yet
+    run on the camera.
+    """
+    root = Path(_sysfs or SYSFS_V4L)
+    nodes = []
+    for d in sorted(root.glob("video*")):
+        try:
+            nodes.append((f"/dev/{d.name}", (d / "name").read_text().strip(), (d / "index").read_text().strip()))
+        except OSError:          # a node that went away while we looked
+            continue
+    hits = [p for p, n, i in nodes if needle.lower() in n.lower() and i == "0"]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        seen = [f"{p} {n}" for p, n, _ in nodes]
+        raise NoMatch(f"No video capture node matches {needle!r}. Video nodes found: {seen}")
+    raise MultipleMatches(f"{len(hits)} video capture nodes match {needle!r} — they cannot be told apart "
+                          f"(no USB serial number). Unplug all but one: {hits}")
+

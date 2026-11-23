@@ -1,21 +1,50 @@
 [package]
 name = "opticmix-vision"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 rust-version = "1.88"
-publish = false
-description = "Camera control core for the Weevia S1 — what the Python package opticmix_vision calls into"
+description = "Rust API for the Weevia S1 stereo-IR camera (preview): device lookup, MJPG capture, stereo split, camera controls"
 license = "Apache-2.0"
 repository = "https://github.com/Opticmix/opticmix-vision"
+readme = "README.md"
+# Kept out of the published crate: tests/ reads the repository's Python package and other crates' sources;
+# examples/ holds internal check tools (camera probes, the read-back comparison step). The README carries the public example.
+exclude = ["tests/", "examples/"]
+keywords = ["camera", "stereo", "uvc", "infrared", "weevia"]
+categories = ["multimedia::video", "hardware-support"]
 
 [features]
-# 시험용 대역(backend::mock::MockBackend)을 시험 밖(예: examples/dump_controls --sim)에서도 쓴다. 범위·기본값은 지어낸 값.
+default = ["capture"]
+# Frame capture (Device, MJPG decoding, Media Foundation / V4L2) and the Linux V4L2 controls. Without it the crate keeps
+# the controls (DirectShow), stereo split, stall check and LED. The Python extension (opticmix-vision-py) turns it off
+# so it does not pull in the capture dependencies (bindgen on Linux in particular).
+capture = ["dep:zune-jpeg", "dep:zune-core", "dep:v4l", "windows/Win32_Media_MediaFoundation"]
+# Test doubles (backend::mock::MockBackend) outside the tests, e.g. for internal tools. Ranges and defaults are made up.
+# The capture double (capture::fake::FakeCapture) also needs `capture`.
 test-support = []
+
+[dependencies]
+zune-jpeg = { version = "0.5", optional = true }
+zune-core = { version = "0.5", optional = true }
 
 [dev-dependencies]
 serde_json = "1"
+jpeg-encoder = "0.6"
 
-# 빌드를 확인한 판·기능으로 고정한다. CLSID 두 개는 이 판에서 MediaFoundation 모듈에 있어
-# 그 큰 기능을 켜지 않고 dshow.rs 에 Python 과 같은 값으로 둔다.
+# Pinned to the version and features the build was checked with. `capture` adds MediaFoundation (mf.rs).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_DirectShow", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Ole"] }
+
+# Linux capture (v4l2.rs) and controls (v4l2_ctrl.rs), enabled by `capture`. v4l2-sys-mit 0.3.0 (default features of v4l)
+# runs bindgen on linux/videodev2.h at build time: a Linux build needs libclang and kernel headers
+# (Debian/Ubuntu: libclang-dev, linux-libc-dev).
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l = { version = "0.14", optional = true }
+
+# docs.rs (https://docs.rs/about/metadata): Windows is the main platform, so it is the landing page; Linux is built too.
+# Default features (`capture`) so `Device` is documented; not all-features (`test-support` is internal test doubles).
+# The Linux build runs bindgen: the docs.rs Linux image (https://docs.rs/about/builds -> rust-lang/crates-build-env,
+# linux/packages.txt) installs clang, libclang-dev and linux-libc-dev, and v4l2-sys-mit 0.3.0 itself builds there.
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]

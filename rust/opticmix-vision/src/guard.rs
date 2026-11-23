@@ -1,9 +1,9 @@
-//! 쓰기 가드 — 프로세스 전역(장치를 다시 열어도, Controls 가 여럿이어도 이어진다). Python `controls` 의
-//! `_guard`·`_last_group`·`_last_any`·`_counts`·`write_counts`·`reset_write_counts`·`_not_before`·`_record` 를 옮겼다.
+//! Write guard — process-wide (it carries over when the device is reopened and across several Controls). Ported from Python `controls`:
+//! `_guard`·`_last_group`·`_last_any`·`_counts`·`write_counts`·`reset_write_counts`·`_not_before`·`_record`.
 //!
-//! **이 가드는 안전을 보장하지 않는다.** 쓰기 뒤 가끔 한쪽 눈 스트림이 멈췄고,
-//! 횟수·속도 어느 쪽이 원인인지 증명되지 않았다(2026-09-24). 안전한 사용법은 '시작할 때 한 번만 쓰기'다.
-//! 쓰기 원장(`OPTICMIX_WRITE_LOG`)은 프로세스를 넘는 누적 횟수의 증거를 남기려는 것 — 기본은 꺼짐.
+//! **This guard does not guarantee safety.** After writes, one eye's stream has occasionally stopped,
+//! and it has not been shown whether the count or the rate is the cause (2026-09-24). The safe pattern is 'write once at startup'.
+//! The write log (`OPTICMIX_WRITE_LOG`) is there to keep evidence of the cumulative count across processes — off by default.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write as _;
@@ -13,21 +13,21 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::spec::{VENDOR_MIN_COMMAND_GAP_S, WARN_AFTER_TOTAL};
 
-/// 가드 설정. Python 래퍼는 모듈 전역(`GROUP_MIN_INTERVAL_S`·`GLOBAL_MIN_GAP_S`·`WARN_AFTER_TOTAL`)을
-/// 시험이 monkeypatch 할 수 있으므로 쓰기 요청 직전마다 `set_config` 로 넘긴다.
+/// Guard settings. The Python wrapper passes them with `set_config` before every write request, because tests may
+/// monkeypatch the module globals (`GROUP_MIN_INTERVAL_S`·`GLOBAL_MIN_GAP_S`·`WARN_AFTER_TOTAL`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GuardConfig {
-    /// 같은 그룹(= 같은 UVC 속성) 연속 쓰기 사이 최소 초.
+    /// Minimum seconds between consecutive writes to the same group (= the same UVC property).
     pub group_intervals: HashMap<String, f64>,
-    /// 어느 제어든 두 쓰기 사이 최소 초.
+    /// Minimum seconds between any two writes, whatever the control.
     pub global_gap_s: f64,
-    /// 쓰기 합계가 이 수에 닿을 때와 그 뒤 이 수마다 경고(0 = 끔).
+    /// Warn when the write total reaches this number and every this-many writes after (0 = off).
     pub warn_after_total: u64,
-    /// 쓰기 원장 경로. None 이면 남기지 않는다.
+    /// Write log path. None = no log.
     pub ledger: Option<PathBuf>,
 }
 
-/// 쓰기 원장 환경변수 — 있을 때만 켜진다(기본 꺼짐).
+/// Write log environment variable — logging is on only when it is set (off by default).
 pub const WRITE_LOG_ENV: &str = "OPTICMIX_WRITE_LOG";
 
 impl Default for GuardConfig {
@@ -59,7 +59,7 @@ fn state() -> MutexGuard<'static, State> {
         .unwrap_or_else(|e| e.into_inner())
 }
 
-/// 프로세스 단조 시계(초). 가드·Controls 가 같은 시계를 쓴다.
+/// Process monotonic clock (seconds). The guard and Controls share this clock.
 pub fn now_s() -> f64 {
     static T0: OnceLock<Instant> = OnceLock::new();
     T0.get_or_init(Instant::now).elapsed().as_secs_f64()
@@ -74,7 +74,7 @@ pub fn config() -> GuardConfig {
     s.config.get_or_insert_with(GuardConfig::default).clone()
 }
 
-/// 이 프로세스가 실제로 쓴 횟수 — 그룹별 + `_total`. 같은 값이라 건너뛴 것은 세지 않는다.
+/// Writes this process actually made — per group plus `_total`. Writes skipped because the value was the same are not counted.
 pub fn write_counts() -> BTreeMap<String, u64> {
     let mut out = state().counts.clone();
     let total = out.values().sum();
@@ -82,7 +82,7 @@ pub fn write_counts() -> BTreeMap<String, u64> {
     out
 }
 
-/// USB 를 다시 꽂아 장치 상태가 처음으로 돌아간 경우에만 부른다.
+/// Call only when the USB was re-plugged and the device state is back to its initial state.
 pub fn reset_write_counts() {
     let mut s = state();
     s.counts.clear();
@@ -90,7 +90,7 @@ pub fn reset_write_counts() {
     s.last_any = None;
 }
 
-/// 이 그룹에 다음으로 쓸 수 있는 가장 이른 단조 시각.
+/// Earliest monotonic time at which this group may be written next.
 pub fn not_before(group: &str) -> f64 {
     let mut s = state();
     let cfg = s.config.get_or_insert_with(GuardConfig::default).clone();
@@ -104,7 +104,7 @@ pub fn not_before(group: &str) -> f64 {
     t
 }
 
-/// 쓰기 한 번을 남긴다 → (직전 쓰기로부터 간격, 합계).
+/// Records one write → (gap since the previous write, total).
 pub fn record(group: &str, now: f64) -> (Option<f64>, u64) {
     let mut s = state();
     let gap = s.last_any.map(|last| now - last);
@@ -114,14 +114,14 @@ pub fn record(group: &str, now: f64) -> (Option<f64>, u64) {
     (gap, s.counts.values().sum())
 }
 
-/// 합계가 경고 주기에 닿았는가(Python: total >= W and (total - W) % W == 0).
+/// Whether the total hit a warning step (Python: total >= W and (total - W) % W == 0).
 pub fn should_warn(total: u64, warn_after_total: u64) -> bool {
     warn_after_total > 0
         && total >= warn_after_total
         && (total - warn_after_total).is_multiple_of(warn_after_total)
 }
 
-/// 쓰기 원장 한 줄 — 실제로 쓴 쓰기마다(건너뛴 것·실패한 것은 남기지 않는다).
+/// One write log line — for every write that actually went out (skipped and failed writes are not logged).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LedgerEntry<'a> {
     pub backend: &'a str,
@@ -155,7 +155,7 @@ fn opt<T: ToString>(v: Option<T>) -> String {
     v.map_or_else(|| "null".to_string(), |x| x.to_string())
 }
 
-/// 원장 파일에 한 줄 덧붙인다.
+/// Appends one line to the log file.
 pub fn append_ledger(path: &Path, e: &LedgerEntry) -> std::io::Result<()> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -183,7 +183,7 @@ pub fn append_ledger(path: &Path, e: &LedgerEntry) -> std::io::Result<()> {
     f.write_all(line.as_bytes())
 }
 
-/// 설정에 원장 경로가 있으면 한 줄 남긴다. 없으면 아무것도 하지 않는다.
+/// Writes one line if the settings have a log path; otherwise does nothing.
 pub fn ledger_record(e: &LedgerEntry) -> std::io::Result<()> {
     match config().ledger {
         Some(p) => append_ledger(&p, e),
@@ -191,7 +191,7 @@ pub fn ledger_record(e: &LedgerEntry) -> std::io::Result<()> {
     }
 }
 
-/// 전역 가드를 건드리는 시험은 이 잠금으로 줄을 세운다.
+/// Tests that touch the global guard queue up on this lock.
 #[cfg(test)]
 pub(crate) fn test_lock() -> MutexGuard<'static, ()> {
     static L: Mutex<()> = Mutex::new(());

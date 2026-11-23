@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.0.4 — 2026-11-24
+
+### Added
+
+- Per-unit calibration files (preview): `python -m opticmix_vision.calib add <file>`
+  installs the file for your camera and `Device.calibration` returns it
+  (`opticmix_vision.calibration`, schema v1, is now part of the package). Run on
+  Windows with two cameras, once each; installing by label (download) is not
+  available yet. See the README, "Calibration".
+- A Linux x86_64 wheel on PyPI (`cp310-abi3-manylinux2014_x86_64`, glibc 2.17 or
+  newer), so `pip install opticmix-vision` installs on Linux x86_64 without a Rust
+  toolchain. Experimental — not a supported platform. The 0.0.4 manylinux wheel
+  installed and passed the package tests in clean Python 3.10, 3.12 and 3.14
+  containers (no camera); no manylinux wheel has been run with the camera. On a minimal system OpenCV also needs `libGL.so.1`
+  (Debian/Ubuntu: `sudo apt install libgl1 libglib2.0-0`) — see the README, "Linux (experimental)".
+- `DeviceConfig.weevia_s1()` finds the camera by name on Linux too: the
+  `/dev/videoN` capture node whose name contains `WN Dual Camera` in `/sys/class/video4linux`
+  (the one whose `index` is 0). It refuses when two match, as on Windows. On Linux
+  `backend` now defaults to `"v4l2"` (it was `"dshow"`, which Linux does not have).
+  The lookup itself is `opticmix_vision.devices.find_v4l2_node()`. Linux name
+  lookup: implemented, not yet run on the camera.
+- Fifteen examples in `examples/` beside `quickstart.py`. Nine were on the
+  repository after 0.0.3.post1 — live preview, saving PNG pairs, recording video,
+  listing controls, writing controls once, the illuminator level, measuring fps,
+  collecting an `.npz` dataset and a PyTorch data loader. Six are new: listing
+  video devices, capturing on a thread, brightness statistics, reopening after a
+  read error, printing the installed calibration, and playing a recording back —
+  these six have been run without a camera only.
+  See `examples/README.md` for what each one writes to the camera.
+- A recording made by `examples/record_video.py` can be read back through
+  `Device`: `DeviceConfig.recording(path)`; `read()` raises `EndOfRecording`
+  after the last frame. Run on generated recordings only, not on a recording of
+  the camera.
+- Rust crate `opticmix-vision` 0.0.4 on crates.io (preview): frame capture, stereo
+  split and camera controls from Rust. Run on Windows 11 on one camera; not run on
+  Linux — see `rust/opticmix-vision/README.md`.
+- `API.md`: a reference for every public name of the package; a test keeps its
+  signatures equal to the code.
+- README: answers to common problems, by the message you see (the compiled
+  extension is missing, the camera does not open, a read fails, exposure while
+  auto exposure is on, calibration messages, `libGL.so.1`, two cameras connected,
+  which USB port, pip finds no version or tries to build), GitHub Discussions
+  under "Getting help", and the release cadence — we aim to release about once a
+  month.
+
+### Changed
+
+- Error messages, printed output and command-line help are in English.
+- Docstrings of the public modules (`device`, `devices`, `controls`, `led`,
+  `synthetic`, the package itself, the viewer and the explorer) are in English.
+
+### Fixed
+
+- The test suite skips the explorer tests when Python has `tkinter` but the Tk
+  library is missing (a slim Linux container); with pytest 9.2 it stopped with a
+  collection error.
+
 ## 0.0.3.post1 — 2026-11-23
 
 First release on PyPI: `pip install opticmix-vision`. The code is the same as

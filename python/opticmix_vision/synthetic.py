@@ -1,8 +1,10 @@
-"""합성 스테레오 소스 — 하드웨어 없이 뷰어·예제를 끝까지 돌리기 위한 것. **측정값이 아니다.**
+"""Synthetic stereo source, for running the viewer and examples end to end without hardware. **Not measured data.**
 
-물리 규약을 지킨다: 유한 거리의 점은 왼쪽 카메라에서 더 오른쪽에 맺히므로 R(x) = L(x + d), d > 0.
-UVC 제어 흉내: `controls` 가 SimBackend(지어낸 범위·기본값) 위의 Controls 다. 노출·게인·LED 값이 밝기에 반영된다 —
-뷰어의 키 조작이 화면에서 보이게 하려는 목적이지 실제 장치의 응답 곡선이 아니다.
+It keeps the physical convention: a point at finite distance lands further right in the left camera,
+so R(x) = L(x + d), d > 0.
+UVC control imitation: `controls` is a Controls on top of SimBackend (made-up ranges and defaults). Exposure,
+gain and LED values affect brightness; the purpose is to make the viewer's key controls visible on screen,
+not to model a real device's response curve.
 """
 
 from __future__ import annotations
@@ -32,10 +34,10 @@ def _texture(h: int, w: int, rng: np.random.Generator) -> np.ndarray:
 
 
 class SyntheticStereoSource:
-    """`Device` 와 같은 표면(read / get_prop / set_prop / controls / mode / close)을 가진 합성 카메라.
+    """A synthetic camera with the same surface as `Device` (read / get_prop / set_prop / controls / mode / close).
 
-    eye_size: 한 눈 (width, height). 프레임(sbs) 폭은 2×width 로 mode 에 보고한다.
-    realtime: True 면 fps 에 맞춰 대기한다 (뷰어에서 실제 속도감을 보려고). 테스트는 False.
+    eye_size: one eye's (width, height). The frame (sbs) width is reported in mode as 2×width.
+    realtime: if True, waits to match fps (to get a feel for real speed in the viewer). Tests use False.
     """
 
     def __init__(self, *, eye_size: tuple[int, int] = (320, 200), fps: float = 90.0, disparity: int = 8,
@@ -53,7 +55,7 @@ class SyntheticStereoSource:
         self.mode = NegotiatedMode(width=2 * self.w, height=self.h, fps=self.fps, fourcc="SYNT",
                                    backend_name="synthetic")
 
-    # ---- 제어 (SimBackend — 지어낸 범위, 간격 없음) -------------------------------------------
+    # ---- controls (SimBackend: made-up ranges, no gaps) ---------------------------------------
     @property
     def controls(self) -> Controls:
         if self._controls is None:
@@ -92,7 +94,7 @@ class SyntheticStereoSource:
             while (rem := target - time.perf_counter()) > 0:
                 time.sleep(min(rem, 0.002))
         wide = self._wide.copy()
-        # 움직이는 밝은 점 — 프레임이 살아 있다는 신호. 두 눈이 같은 시차로 본다 (wide 위에 그림).
+        # moving bright dot: a sign the frames are live. Both eyes see it with the same disparity (drawn on wide).
         cx = int((self._i * 3) % (self.w + self.disparity)); cy = int((self._i * 2) % self.h)
         wide[max(0, cy - 3): cy + 3, max(0, cx - 3): cx + 3] = 1.0
         img = np.clip(wide * 200.0 * self._brightness() + 20.0, 0, 255).astype(np.uint8)

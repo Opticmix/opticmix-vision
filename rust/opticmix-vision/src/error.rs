@@ -1,38 +1,40 @@
-//! 오류 하나로 모은다. 문안은 Python 원문 그대로 — Python 래퍼가 같은 예외 클래스로 다시 던지고,
-//! 기존 Python 시험이 `match=` 로 문안을 본다.
+//! One error type. Messages are the Python originals — the Python wrapper re-raises them as the same exception classes,
+//! and the existing Python tests check the text with `match=`.
 
 use std::fmt;
 
-/// Python 에서 보이는 예외: Unavailable·Closed → ControlsUnavailable, State → ControlStateError,
+/// Exceptions as seen from Python: Unavailable·Closed → ControlsUnavailable, State → ControlStateError,
 /// UnknownControl → KeyError, InvalidValue → ValueError, WrongType → TypeError, Backend → OSError,
 /// NoMatch / MultipleMatches → devices.NoMatch / MultipleMatches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SdkError {
-    /// 제어 통로를 열 수 없다 — 백엔드 연결 실패, 다른 장치.
+    /// The control path cannot be opened — backend connection failure, or a different device.
     Unavailable(String),
-    /// 닫힌 뒤의 호출.
+    /// Call after close.
     Closed,
-    /// 지금 모드에서 받을 수 없는 쓰기(예: 자동 노출 중 노출값만).
+    /// A write the current mode cannot take (e.g. an exposure value alone while auto exposure is on).
     State(String),
-    /// 이 카메라에 없는 제어 이름.
+    /// A control name this camera does not have.
     UnknownControl {
         name: String,
         have: Vec<String>,
     },
     InvalidValue(String),
     WrongType(String),
-    /// 백엔드(드라이버) 호출 실패. hresult 는 COM 호출일 때만.
+    /// Backend (driver) call failed. hresult only for COM calls.
     Backend {
         what: String,
         hresult: Option<i32>,
     },
     NoMatch(String),
     MultipleMatches(String),
-    /// 바깥(Python) 백엔드가 던진 예외 — 타입 이름을 그대로 들고 다닌다.
+    /// Exception raised by an outside (Python) backend — carries its type name as is.
     Foreign {
         type_name: String,
         message: String,
     },
+    /// Camera open, read or decode failure (Python `DeviceError`). Never returns an empty frame silently.
+    Device(String),
 }
 
 pub type Result<T> = std::result::Result<T, SdkError>;
@@ -62,7 +64,8 @@ impl fmt::Display for SdkError {
             | SdkError::WrongType(m)
             | SdkError::NoMatch(m)
             | SdkError::MultipleMatches(m)
-            | SdkError::Foreign { message: m, .. } => f.write_str(m),
+            | SdkError::Foreign { message: m, .. }
+            | SdkError::Device(m) => f.write_str(m),
         }
     }
 }
@@ -70,7 +73,7 @@ impl fmt::Display for SdkError {
 impl std::error::Error for SdkError {}
 
 impl SdkError {
-    /// Python 에서 보일 예외 타입 이름. 실패한 쓰기의 `error` 문자열("<타입>: <문안>")에 쓴다.
+    /// Exception type name as seen from Python. Used in a failed write's `error` string (`"<type>: <message>"`).
     pub fn python_type(&self) -> &str {
         match self {
             SdkError::Unavailable(_) | SdkError::Closed => "ControlsUnavailable",
@@ -82,6 +85,7 @@ impl SdkError {
             SdkError::NoMatch(_) => "NoMatch",
             SdkError::MultipleMatches(_) => "MultipleMatches",
             SdkError::Foreign { type_name, .. } => type_name,
+            SdkError::Device(_) => "DeviceError",
         }
     }
 }
@@ -151,6 +155,7 @@ mod tests {
             SdkError::WrongType("t".into()),
             SdkError::NoMatch("n".into()),
             SdkError::MultipleMatches("m".into()),
+            SdkError::Device("d".into()),
         ] {
             assert_eq!(e.to_string().len(), 1, "{e:?}");
         }

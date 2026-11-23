@@ -3,9 +3,12 @@
     python rust/tools/third_party_notices.py           # (re)write the file
     python rust/tools/third_party_notices.py --check   # exit 1 if the file is out of date
 
-Reads `cargo metadata --offline --locked` for the wheel's target and feature, walks the normal
-dependencies of opticmix-vision-py (proc-macro crates and build- or test-only crates are not linked)
-and copies each crate's license files as published. Python standard library and cargo only.
+Takes the crate set from `cargo tree -p opticmix-vision-py` for the wheel's target and feature —
+the features the wheel build really resolves (opticmix-vision with default-features = false), not the
+workspace-wide union `cargo metadata` reports — so dev-dependencies and crates behind features the
+wheel does not turn on never enter the file. Normal edges without proc-macro crates are linked; build
+edges and proc-macro crates are listed as build-only. License files come from `cargo metadata`, as
+published with each crate. Python standard library and cargo only.
 Fails if any crate in the build carries a license outside ALLOWED — check that case by hand.
 """
 import json
@@ -16,30 +19,30 @@ from pathlib import Path
 
 RUST = Path(__file__).resolve().parents[1]
 OUT = RUST.parent / "python" / "THIRD_PARTY_NOTICES.txt"
-ROOT, FEATURE, TARGET = "opticmix-vision-py", "opticmix-vision-py/extension-module", "x86_64-pc-windows-msvc"
+ROOT, FEATURE, TARGET = "opticmix-vision-py", "extension-module", "x86_64-pc-windows-msvc"
 ALLOWED = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "Unlicense", "BSL-1.0",
            "Unicode-3.0", "Unicode-DFS-2016", "LLVM-exception"}
 LICENSE_FILE = re.compile(r"(?i)^(licen[cs]e|copying|notice|copyright)")
 RULE = "=" * 78
 
 
-def walk(start, deps, follow):
-    seen, todo = set(), [start]
-    while todo:
-        i = todo.pop()
-        if i not in seen:
-            seen.add(i)
-            todo += [d["pkg"] for d in deps[i] if follow(d)]
-    return seen
+def cargo(*args):
+    return subprocess.run(["cargo", *args, "--offline", "--locked"], cwd=RUST, capture_output=True,
+                          check=True, text=True, encoding="utf-8").stdout
 
 
-def render(m):
+def tree(edges):
+    """(name, version) of every crate `cargo tree` shows for the wheel build over these edge kinds."""
+    out = cargo("tree", "-p", ROOT, "--target", TARGET, "-F", FEATURE, "-e", edges,
+                "--prefix", "none", "--format", "{p}")
+    return {(ln.split()[0], ln.split()[1].lstrip("v")) for ln in out.splitlines() if ln.strip()}
+
+
+def render(m, linked_nv, used_nv):
     pk = {p["id"]: p for p in m["packages"]}
-    deps = {n["id"]: n["deps"] for n in m["resolve"]["nodes"]}
-    root = next(i for i, p in pk.items() if p["name"] == ROOT and p["source"] is None)
-    is_macro = lambda i: any("proc-macro" in t["kind"] for t in pk[i]["targets"])
-    linked = walk(root, deps, lambda d: not is_macro(d["pkg"]) and any(k["kind"] is None for k in d["dep_kinds"]))
-    used = walk(root, deps, lambda d: True)
+    by_nv = {(p["name"], p["version"]): i for i, p in pk.items()}
+    root = by_nv[next(nv for nv in used_nv if nv[0] == ROOT)]
+    linked, used = {by_nv[nv] for nv in linked_nv}, {by_nv[nv] for nv in used_nv}
     bad = [f'{pk[i]["name"]} {pk[i]["version"]}: {pk[i]["license"]}' for i in used
            if not set(re.findall(r"[\w.+-]+", pk[i]["license"] or "?")) - {"OR", "AND", "WITH"} <= ALLOWED]
     if bad:
@@ -83,7 +86,7 @@ def render(m):
         lines += [f"{p['name']} {p['version']} — {p['license']}",
                   f"  {p.get('repository') or 'https://crates.io/crates/' + p['name']}"]
         lines += [f"  {n}" for n in dict.fromkeys(notices)] + [""]
-    lines += ["", "Used only to build or test, not contained in the extension", "-" * 58, ""]
+    lines += ["", "Used only to build, not contained in the extension", "-" * 50, ""]
     lines += [f"{pk[i]['name']} {pk[i]['version']} — {pk[i]['license']}" for i in other]
     for t, (name, users) in texts.items():
         lines += ["", "", RULE, f"{name} — {', '.join(users)}", RULE, "", t]
@@ -91,13 +94,11 @@ def render(m):
 
 
 def main():
-    meta = subprocess.run(["cargo", "metadata", "--offline", "--locked", "--format-version", "1",
-                           "--filter-platform", TARGET, "--features", FEATURE],
-                          cwd=RUST, capture_output=True, check=True).stdout
-    text = render(json.loads(meta))
+    meta = json.loads(cargo("metadata", "--format-version", "1", "--filter-platform", TARGET))
+    text = render(meta, tree("normal,no-proc-macro"), tree("normal,build"))
     if "--check" in sys.argv:
         ok = OUT.is_file() and OUT.read_text(encoding="utf-8") == text
-        print(f"{OUT.name}: {'up to date' if ok else 'OUT OF DATE — run without --check'}")
+        print(f"{OUT.name}: {'up to date' if ok else 'OUT OF DATE - run without --check'}")
         sys.exit(0 if ok else 1)
     OUT.write_bytes(text.encode("utf-8"))
     print(f"wrote {OUT} ({text.count(chr(10))} lines)")

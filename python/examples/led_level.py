@@ -8,7 +8,7 @@ Usage:
 The illuminator is the UVC backlight-compensation control: off up to 16, light from 24, ceiling 96
 (see IR illuminator in the README). This example uses value_range=(0, 96): --level 0.0-1.0 maps onto
 it, rounded to a whole number. Measured with the earlier Python implementation; the Rust
-implementation in 0.0.3 has not yet been verified against the camera.
+implementation (since 0.0.3) has not yet been verified against the camera.
 
 The readback is only what the driver accepted — it is not evidence that the light changed. The image
 is. Frame mean is a weak check here: the illuminator lights part of the field of view, so a lit patch

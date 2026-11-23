@@ -1,7 +1,7 @@
-//! 제어 표 14개와 상수. Python `controls.CONTROLS`·`_ctrl_dshow.KEYS`·`device.WEEVIA_S1*` 의 원본은 이제 여기다
-//! (Python 래퍼는 `controls_table()` 에서 CONTROLS 를 만든다 — 표가 두 벌이 되지 않게).
+//! The 14-control table and constants. The source of Python `controls.CONTROLS`·`_ctrl_dshow.KEYS`·`device.WEEVIA_S1*` now lives here
+//! (the Python wrapper builds CONTROLS from `controls_table()` — so there are not two copies of the table).
 
-/// 제어 값의 종류(Python `Kind`).
+/// Kind of control value (Python `Kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Int,
@@ -9,14 +9,14 @@ pub enum Kind {
     Menu,
 }
 
-/// value = 그 키의 값, auto = 그 키의 자동/수동 flags.
+/// value = the key's value, auto = the key's auto/manual flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Value,
     Auto,
 }
 
-/// 영상 효과 검증 상태(Python `Effect`).
+/// Image-effect verification state (Python `Effect`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
     Verified,
@@ -55,7 +55,7 @@ impl Effect {
     }
 }
 
-/// 제어 하나. `key` 는 백엔드 키 = 가드 그룹(Windows: KS 속성 하나).
+/// One control. `key` is the backend key = guard group (Windows: one KS property).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlSpec {
     pub name: &'static str,
@@ -63,11 +63,11 @@ pub struct ControlSpec {
     pub role: Role,
     pub kind: Kind,
     pub effect: Effect,
-    /// 내부 검증 기록 ID(지금은 전부 없음).
+    /// Internal verification record ID (none at present).
     pub ledger: Option<&'static str>,
-    /// menu: 장치 값 0,1,2… 순서의 이름(auto 역할은 manual/auto).
+    /// menu: names in device value order 0,1,2… (for the auto role: manual/auto).
     pub choices: Option<&'static [&'static str]>,
-    /// 흑백 센서라 영상에 효과가 없을 것.
+    /// Mono sensor, so no effect on the image is expected.
     pub mono: bool,
     pub note: &'static str,
 }
@@ -96,7 +96,7 @@ const fn mono(s: ControlSpec) -> ControlSpec {
     ControlSpec { mono: true, ..s }
 }
 
-/// Python `controls.CONTROLS` 그대로(순서·문안 포함).
+/// Python `controls.CONTROLS` as is (order and text included).
 pub const CONTROLS: [ControlSpec; 14] = {
     use Effect::*;
     use Kind::*;
@@ -111,7 +111,7 @@ pub const CONTROLS: [ControlSpec; 14] = {
         mono(c("white_balance", "white_balance", Value, Int, NoneExpectedMono)),
         mono(c("auto_white_balance", "white_balance", Auto, Bool, NoneExpectedMono)),
         ControlSpec {
-            note: "IR illuminator: off at 0-16, light from 24, no change above 96 (measured on two units)",
+            note: "IR illuminator: no change above 96 (two units); off at 0-16, light from 24 (one unit)",
             ..c("backlight_compensation", "backlight_compensation", Value, Int, Verified)
         },
         c("gain", "gain", Value, Int, Verified),
@@ -137,12 +137,12 @@ pub const CONTROLS: [ControlSpec; 14] = {
     ]
 };
 
-/// 이름으로 제어를 찾는다(Python `_BY_NAME`).
+/// Finds a control by name (Python `_BY_NAME`).
 pub fn spec(name: &str) -> Option<&'static ControlSpec> {
     CONTROLS.iter().find(|c| c.name == name)
 }
 
-/// 그룹(키) → 자동/수동 제어 이름(Python `_AUTO_NAME`).
+/// Group (key) → auto/manual control name (Python `_AUTO_NAME`).
 pub fn auto_name(key: &str) -> Option<&'static str> {
     CONTROLS
         .iter()
@@ -150,7 +150,7 @@ pub fn auto_name(key: &str) -> Option<&'static str> {
         .map(|c| c.name)
 }
 
-/// 자동 제어가 있는 그룹 → 값 제어 이름(Python `_VALUE_NAME`).
+/// Group with an auto control → value control name (Python `_VALUE_NAME`).
 pub fn value_name(key: &str) -> Option<&'static str> {
     auto_name(key)?;
     CONTROLS
@@ -159,7 +159,7 @@ pub fn value_name(key: &str) -> Option<&'static str> {
         .map(|c| c.name)
 }
 
-/// 자동 제어가 있는 그룹들(표 순서).
+/// Groups that have an auto control (table order).
 pub fn auto_groups() -> impl Iterator<Item = &'static str> {
     CONTROLS
         .iter()
@@ -169,7 +169,7 @@ pub fn auto_groups() -> impl Iterator<Item = &'static str> {
 
 // --- DirectShow KS id -----------------------------------------------------------------------
 
-/// DirectShow 인터페이스: IAMVideoProcAmp / IAMCameraControl.
+/// DirectShow interface: IAMVideoProcAmp / IAMCameraControl.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Iface {
     Procamp,
@@ -185,8 +185,8 @@ impl Iface {
     }
 }
 
-/// Python `_ctrl_dshow.KEYS`. id 13·19 는 DirectShow 열거형 밖이지만 kswdmcap.ax 10.0.26100.1 이 KS 속성으로 넘긴다
-/// (2026-09-24 확인). 26100 이전 빌드는 미검증.
+/// Python `_ctrl_dshow.KEYS`. ids 13 and 19 are outside the DirectShow enumerations, but kswdmcap.ax 10.0.26100.1 passes them on as KS properties
+/// (checked 2026-09-24). Builds before 26100 are not verified.
 pub const KEYS: [(&str, Iface, i32); 12] = [
     ("brightness", Iface::Procamp, 0),
     ("contrast", Iface::Procamp, 1),
@@ -206,7 +206,7 @@ pub fn ks_id(key: &str) -> Option<(Iface, i32)> {
     KEYS.iter().find(|k| k.0 == key).map(|k| (k.1, k.2))
 }
 
-/// 자동/수동 flags 가 뜻을 가지는 키.
+/// Keys where the auto/manual flags have a meaning.
 pub const AUTO_CAPABLE: [&str; 2] = ["exposure", "white_balance"];
 
 pub fn is_auto_capable(key: &str) -> bool {
@@ -218,23 +218,23 @@ pub const FLAG_MANUAL: i32 = 2;
 
 // --- 가드 기본값 -------------------------------------------------------------------------------
 
-/// 벤더 권고(2026-09-28): 노출 명령 사이 최소 12 ms. 다른 제어에는 벤더 수치가 없어 같은 간격을 쓴다.
+/// Vendor advice (2026-09-28): at least 12 ms between exposure commands. There is no vendor figure for other controls, so the same gap is used.
 pub const VENDOR_MIN_COMMAND_GAP_S: f64 = 0.012;
-/// 이 프로세스의 쓰기 합계가 이 수에 닿을 때와 그 뒤 이 수마다 경고.
+/// Warn when this process's write total reaches this number and every this-many writes after.
 pub const WARN_AFTER_TOTAL: u64 = 3;
 
 // --- 장치 ----------------------------------------------------------------------------------
 
-/// 🔴 펌웨어 USB 장치 이름. 제품명이 바뀌어도 이 값은 바꾸지 않는다.
+/// Firmware USB device name. **Do not change this value** when the product name changes.
 pub const WEEVIA_S1_NAME: &str = "WN Dual Camera";
-/// DirectShow 백엔드가 받아들이는 이름(대소문자 무시 부분일치) — 다른 카메라에 쓰지 않는다.
+/// Names the DirectShow backend accepts (case-insensitive partial match) — nothing is written to another camera.
 pub const EXPECTED_NAMES: [&str; 1] = [WEEVIA_S1_NAME];
 
 pub const LAYOUTS: [&str; 3] = ["sbs", "tb", "plane_pack"];
 pub const LR_ORDERS: [&str; 2] = ["first_is_left", "first_is_right"];
 pub const BACKENDS: [&str; 5] = ["any", "dshow", "msmf", "v4l2", "avfoundation"];
 
-/// 실측 설정(Python `device.WEEVIA_S1`): SBS 의 첫 반쪽이 오른쪽 눈(2026-09-16), MJPG 를 요청해야 90 fps.
+/// Measured settings (Python `device.WEEVIA_S1`): the first half of SBS is the right eye (2026-09-16); MJPG must be requested to get 90 fps.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StreamConfig {
     pub layout: &'static str,
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(by("gain").effect, Effect::Verified);
         assert!(by("backlight_compensation")
             .note
-            .starts_with("IR illuminator: off at 0-16"));
+            .starts_with("IR illuminator: no change above 96"));
         assert!(by("auto_exposure_priority")
             .note
             .ends_with("not 0/1 — writes untested"));

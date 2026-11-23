@@ -198,7 +198,7 @@ def test_device_reads_stereo_frames_and_reports_negotiated_mode():
         assert f0.size == (24, 16)
         assert (f0.index, f1.index) == (0, 1)
         assert f1.host_ns >= f0.host_ns > 0
-        with pytest.raises(DeviceError, match="읽기 실패"):
+        with pytest.raises(DeviceError, match="read failed"):
             cam.read()                                       # 프레임 소진 → 조용한 실패 금지
     assert cap.released is False                             # 주입한 capture 는 SDK 가 닫지 않는다
     assert cam.is_open is False
@@ -247,7 +247,7 @@ def test_device_plane_pack_disables_rgb_conversion():
 
 def test_device_open_failure_raises():
     cap = FakeCapture([], opened=False)
-    with pytest.raises(DeviceError, match="열기 실패"):
+    with pytest.raises(DeviceError, match="failed to open"):
         Device(DeviceConfig(layout="sbs", lr_order="first_is_left"), capture=cap).open()
 
 

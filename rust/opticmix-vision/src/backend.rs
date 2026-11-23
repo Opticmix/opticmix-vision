@@ -1,11 +1,11 @@
-//! 제어층이 부르는 백엔드(Python `controls.Backend` Protocol 1:1). 모든 메서드는 Controls 의 워커 스레드 한 곳에서만 불린다.
+//! The backend the control layer calls (1:1 with the Python `controls.Backend` Protocol). Every method is called from one place only: the Controls worker thread.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::error::{Result, SdkError};
 
-/// 백엔드가 준 장치 값 범위. default 는 장치가 주지 않으면 None — 지어내지 않는다.
+/// Device value range from the backend. `default` is None when the device does not report one — it is never made up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawRange {
     pub minimum: i64,
@@ -15,28 +15,28 @@ pub struct RawRange {
     pub can_auto: bool,
 }
 
-/// Python `Backend` Protocol 과 같은 메서드. Controls 가 워커 스레드로 옮겨 가므로 `Send`.
+/// Same methods as the Python `Backend` Protocol. `Send` because Controls moves it to its worker thread.
 pub trait Backend: Send {
     fn name(&self) -> &str;
-    /// 노출 단위 이름("log2_s_nominal" | "100us" | "raw").
+    /// Name of the exposure unit ("log2_s_nominal" | "100us" | "raw").
     fn exposure_units(&self) -> &str;
     fn note(&self) -> &str;
-    /// 쓰기 원장에 남길 장치 이름. 모르면 빈 문자열.
+    /// Device name for the write log. Empty string if unknown.
     fn device_name(&self) -> &str {
         ""
     }
     fn start(&mut self) -> Result<()>;
     fn supports(&mut self, key: &str) -> bool;
     fn query(&mut self, key: &str) -> Result<Option<RawRange>>;
-    /// (값, 자동 여부). 자동 여부를 모르거나 의미 없는 키는 None.
+    /// (value, auto). auto is None for keys where it is unknown or has no meaning.
     fn read(&mut self, key: &str) -> Result<(i64, Option<bool>)>;
-    /// value None = 값은 그대로(자동으로 가는 쓰기), auto None = 모드는 건드리지 않음.
+    /// value None = keep the value (a write that switches to auto); auto None = leave the mode alone.
     fn write(&mut self, key: &str, value: Option<i64>, auto: Option<bool>) -> Result<()>;
     fn close(&mut self) -> Result<()>;
 }
 
-/// 읽기 전용 감싸개 — 쓰기는 안쪽 백엔드에 닿기 전에 거부하고 시도 횟수만 센다. 읽기만 하는 점검에서
-/// 쓰기 0회를 보장하는 첫째 장치다.
+/// Read-only wrapper — rejects writes before they reach the inner backend and only counts the attempts. It is the first
+/// safeguard that guarantees zero writes in a read-only check.
 pub struct ReadOnly<B: Backend> {
     inner: B,
     attempts: Arc<AtomicU64>,
@@ -50,7 +50,7 @@ impl<B: Backend> ReadOnly<B> {
         }
     }
 
-    /// 거부한 쓰기 시도 수(감싸개를 Controls 에 넘긴 뒤에도 볼 수 있게 공유).
+    /// Number of rejected write attempts (shared, so it stays visible after the wrapper is handed to Controls).
     pub fn attempts(&self) -> Arc<AtomicU64> {
         self.attempts.clone()
     }
@@ -93,7 +93,7 @@ impl<B: Backend> Backend for ReadOnly<B> {
     }
 }
 
-/// 시험용 대역 — Python `_ctrl_sim.SimBackend` 와 같은 기능. **범위·기본값은 지어낸 값**(Python SIM_RANGES 그대로).
+/// Test double — same as Python `_ctrl_sim.SimBackend`. **Ranges and defaults are made-up values** (Python SIM_RANGES as is).
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock {
     use super::*;
@@ -144,7 +144,7 @@ pub mod mock {
         pub closed: bool,
     }
 
-    /// 복제하면 같은 상태를 본다 — 하나는 Controls 에 넘기고 하나로 시험이 들여다본다.
+    /// Clones see the same state — hand one to Controls and inspect it through the other in tests.
     #[derive(Clone)]
     pub struct MockBackend(Arc<Mutex<MockState>>);
 

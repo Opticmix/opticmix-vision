@@ -1,7 +1,7 @@
-//! 카메라 하나의 제어 전부(Python `controls.Controls`). 읽기는 바로 하고, 쓰기는 워커 하나가 가드를 지키며 순서대로 한다.
-//! 백엔드(COM 등)는 워커 스레드 한 곳에서만 불린다 — 시작·닫기 포함.
+//! All controls of one camera (Python `controls.Controls`). Reads run immediately; writes run in order on one worker that keeps the guard.
+//! The backend (COM etc.) is called from the worker thread only — start and close included.
 //!
-//! **쓰기는 위험하다**(guard.rs 머리말). 안전한 사용법은 '시작할 때 한 번만 쓰기'다: `set_many` 한 번 → `wait`.
+//! **Writes are risky** (see [`crate::guard`]). The safe pattern is 'write once at startup': one `set_many`, then `wait`.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
@@ -15,7 +15,7 @@ use crate::error::{Result, SdkError};
 use crate::guard::{self, LedgerEntry};
 use crate::spec::{self, auto_name, ControlSpec, Effect, Kind, Role, CONTROLS};
 
-/// describe() 한 줄. 모르는 값은 None — 지어내지 않는다.
+/// One row of describe(). Unknown values are None — never made up.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlInfo {
     pub name: &'static str,
@@ -34,7 +34,7 @@ pub struct ControlInfo {
     pub note: &'static str,
 }
 
-/// 요청 하나의 상태(Python `Status`).
+/// State of one request (Python `Status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Written,
@@ -58,9 +58,9 @@ impl Status {
     }
 }
 
-/// 요청 하나의 결과. ticket 으로 나중에 최종 결과를 찾는다(wait/result).
-/// written 은 드라이버가 받았다는 뜻일 뿐이다 — 카메라가 값을 지켰는지는 readback/kept 를 본다
-/// (2026-09-24: 게인 8 을 드라이버가 받았는데 다시 읽으니 0 이었다).
+/// Result of one request. Use the ticket to find the final result later (wait/result).
+/// written only means the driver accepted it — whether the camera kept the value is in readback/kept
+/// (2026-09-24: the driver accepted gain 8, but it read back as 0).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WriteResult {
     pub name: String,
@@ -69,7 +69,7 @@ pub struct WriteResult {
     pub due_in_s: Option<f64>,
     pub error: Option<String>,
     pub ticket: u64,
-    /// written 일 때 쓴 직후 다시 읽은 값(못 읽었으면 None).
+    /// When written: the value read back right after the write (None if it could not be read).
     pub readback: Option<UserValue>,
 }
 
@@ -86,7 +86,7 @@ impl WriteResult {
         }
     }
 
-    /// 카메라가 요청한 값을 지켰는가. written 이 아니거나 다시 읽지 못했으면 None.
+    /// Whether the camera kept the requested value. None if not written or not read back.
     pub fn kept(&self) -> Option<bool> {
         if self.status != Status::Written {
             return None;
@@ -95,7 +95,7 @@ impl WriteResult {
     }
 }
 
-/// 누적 쓰기 경고 문안(Python warnings.warn 원문).
+/// Warning text for the cumulative write count (the Python warnings.warn text).
 pub fn warn_total_message(total: u64) -> String {
     format!(
         "{total} camera control writes in this process. On the units we have tested, a control \
@@ -104,10 +104,10 @@ pub fn warn_total_message(total: u64) -> String {
     )
 }
 
-/// 워커가 알리는 일. Python 래퍼는 이것을 `logging`("opticmix_vision.controls") 과 `warnings.warn` 으로 바꾼다.
+/// What the worker reports. The Python wrapper turns these into `logging` ("opticmix_vision.controls") and `warnings.warn`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// 실제로 쓴 쓰기(가드가 켜졌을 때만). gap = 직전 쓰기로부터 초(첫 쓰기면 None).
+    /// A write that actually went out (only with the guard on). gap = seconds since the previous write (None for the first).
     Wrote {
         group: String,
         value: Option<i64>,
@@ -115,24 +115,24 @@ pub enum Event {
         gap: Option<f64>,
         total: u64,
     },
-    /// 드라이버가 거부한 쓰기.
+    /// A write the driver rejected.
     WriteFailed {
         group: String,
         value: Option<i64>,
         auto: Option<bool>,
         error: String,
     },
-    /// 드라이버는 받았는데 다시 읽으니 다른 값.
+    /// The driver accepted it, but it reads back a different value.
     NotKept {
         name: String,
         requested: UserValue,
         readback: UserValue,
     },
-    /// 이 프로세스의 쓰기 합계가 경고 주기에 닿았다(Python 은 RuntimeWarning).
+    /// This process's write total reached a warning step (Python: RuntimeWarning).
     WarnTotal { total: u64 },
-    /// 닫으며 보내지 않은 쓰기.
+    /// A write not sent because the controls were closing.
     Cancelled { name: String, requested: UserValue },
-    /// 쓰기 원장에 덧붙이지 못했다(쓰기 자체는 끝났다).
+    /// Could not append to the write log (the write itself completed).
     LedgerFailed { error: String },
 }
 
@@ -149,12 +149,12 @@ fn bool_repr(v: Option<bool>) -> String {
 }
 
 impl Event {
-    /// 경고 수준인가(아니면 info).
+    /// Warning level? (otherwise info).
     pub fn is_warning(&self) -> bool {
         !matches!(self, Event::Wrote { .. } | Event::Cancelled { .. })
     }
 
-    /// Python 로그 문안과 같은 한 줄.
+    /// One line, same as the Python log text.
     pub fn message(&self) -> String {
         match self {
             Event::Wrote {
@@ -204,12 +204,12 @@ impl Event {
     }
 }
 
-/// 이벤트 콜백. 워커 스레드(또는 close 를 부른 스레드)에서, 내부 잠금 밖에서 불린다.
+/// Event callback. Called on the worker thread (or the thread that called close), outside the internal locks.
 pub type EventHook = Box<dyn Fn(&Event) + Send + Sync>;
 
 type Job = Box<dyn FnOnce(&mut dyn Backend) + Send>;
 
-/// 결과 보관 상한(Python `_MAX_KEPT`).
+/// Upper bound on kept results (Python `_MAX_KEPT`).
 const MAX_KEPT: usize = 4096;
 
 struct Req {
@@ -224,7 +224,7 @@ struct Pending {
     seq: u64,
     value: Option<i64>,
     auto: Option<bool>,
-    /// 역할별 요청 하나씩, 처음 들어온 순서(Python dict 처럼 바꿔도 자리는 그대로).
+    /// One request per role, in the order they first came in (changing a value keeps its place, like a Python dict).
     reqs: Vec<Req>,
 }
 
@@ -327,7 +327,7 @@ impl Shared {
     }
 }
 
-/// 대기 중인 쓰기 하나를 실행한다(워커 스레드).
+/// Runs one pending write (worker thread).
 fn execute(sh: &Shared, backend: &mut dyn Backend, pend: Pending) {
     let group = pend.group;
     let (cur_v, cur_a) = match backend.read(group) {
@@ -460,10 +460,10 @@ fn worker_loop(sh: &Shared, backend: &mut dyn Backend) {
     }
 }
 
-/// 한 그룹(키)에 대한 이번 호출의 요청들(역할별 하나, 들어온 순서).
+/// This call's requests for one group (key): one per role, in the order they came in.
 type Roles = Vec<(Role, &'static str, UserValue, DevValue)>;
 
-/// 카메라 하나의 제어. `guard=false` 는 합성 카메라용이다 — 간격·카운터를 쓰지 않는다(실제 장치에는 쓰지 말 것).
+/// Controls of one camera. `guard=false` is for synthetic cameras — no spacing, no counters (do not use it on a real device).
 pub struct Controls {
     sh: Arc<Shared>,
     worker: Mutex<Option<(thread::JoinHandle<()>, mpsc::Receiver<()>)>>,
@@ -475,7 +475,7 @@ pub struct Controls {
 }
 
 impl Controls {
-    /// 백엔드를 워커 스레드에서 시작한다. 시작 실패는 `Unavailable("<백엔드 이름>: <원인>")`.
+    /// Starts the backend on the worker thread. A start failure is `Unavailable("<backend name>: <cause>")`.
     pub fn new(
         mut backend: Box<dyn Backend>,
         guard: bool,
@@ -566,7 +566,7 @@ impl Controls {
 
     // ---- 백엔드 호출 ---------------------------------------------------------------------------
 
-    /// 백엔드 호출은 워커에서만 — COM 같은 스레드 규칙을 지키려고. 결과가 올 때까지 기다린다.
+    /// Backend calls only on the worker — to keep thread rules such as COM's. Waits for the result.
     fn call<R: Send + 'static>(
         &self,
         f: impl FnOnce(&mut dyn Backend) -> R + Send + 'static,
@@ -610,7 +610,7 @@ impl Controls {
         Ok(v)
     }
 
-    /// 장치 범위. 모르면 None(지어내지 않는다). 닫힘·연결 실패는 그대로 올린다.
+    /// Device range. None if unknown (nothing made up). Closed or connection failure is passed up as is.
     pub(crate) fn range(&self, key: &str) -> Result<Option<RawRange>> {
         if let Some(v) = self
             .ranges
@@ -648,7 +648,7 @@ impl Controls {
         }
     }
 
-    /// 이 카메라에서 쓸 수 있는 제어 이름 — 이름 표 순서, 백엔드가 지원하는 것만.
+    /// Control names usable on this camera — in table order, only those the backend supports.
     pub fn names(&self) -> Result<Vec<&'static str>> {
         let mut out = Vec::new();
         for c in CONTROLS.iter() {
@@ -661,12 +661,12 @@ impl Controls {
 
     // ---- 쓰기 ----------------------------------------------------------------------------------
 
-    /// 기다리지 않는다. 결과는 pending / skipped_same. 최종 결과는 wait()·result()·flush().
+    /// Does not wait. The result is pending / skipped_same. Final results come from wait(), result(), flush().
     pub fn set(&self, name: &str, value: UserValue) -> Result<WriteResult> {
         Ok(self.set_many(&[(name.to_string(), value)])?.remove(0))
     }
 
-    /// 같은 그룹(예: auto_exposure + exposure)은 한 번의 쓰기로 합친다. 검증이 하나라도 실패하면 아무것도 넣지 않는다.
+    /// Merges one group (e.g. auto_exposure + exposure) into one write. If any check fails, nothing is queued.
     pub fn set_many(&self, values: &[(String, UserValue)]) -> Result<Vec<WriteResult>> {
         if self.closed() {
             return Err(SdkError::Closed);
@@ -823,7 +823,7 @@ impl Controls {
         Ok(results)
     }
 
-    /// 자동 상태의 값은 모드와 같이 줄 때만 받는다.
+    /// A value in auto state is taken only together with the mode.
     fn check_mode(&self, group: &str, roles: &Roles) -> Result<()> {
         let auto_n = auto_name(group).expect("checked by caller");
         let value_n = roles
@@ -868,7 +868,7 @@ impl Controls {
         end.map(|e| e.saturating_duration_since(Instant::now()).as_secs_f64())
     }
 
-    /// 대기 중인 쓰기가 끝날 때까지 기다린 뒤, 지난 flush 이후 끝난 결과를 돌려준다.
+    /// Waits for pending writes to finish, then returns the results finished since the last flush.
     pub fn flush(&self, timeout: Option<f64>) -> Vec<WriteResult> {
         let end = Self::deadline(timeout);
         let mut g = self.sh.lock();
@@ -882,7 +882,7 @@ impl Controls {
         std::mem::take(&mut g.unflushed)
     }
 
-    /// 주어진 요청들이 끝날 때까지 기다려 최종 결과를 돌려준다(시간 안에 안 끝난 것은 pending).
+    /// Waits for the given requests and returns their final results (those not done in time stay pending).
     pub fn wait(&self, tickets: &[u64], timeout: Option<f64>) -> Vec<WriteResult> {
         let end = Self::deadline(timeout);
         let mut g = self.sh.lock();
@@ -909,12 +909,12 @@ impl Controls {
             .collect()
     }
 
-    /// 끝났으면 최종 결과, 아직이면 None.
+    /// Final result if done, otherwise None.
     pub fn result(&self, ticket: u64) -> Option<WriteResult> {
         self.sh.lock().finals.get(&ticket).cloned()
     }
 
-    /// 대기 중인 요청 이름 → 쓰기까지 남은 초.
+    /// Pending request names → seconds until they are written.
     pub fn pending(&self) -> Vec<(String, f64)> {
         let now = guard::now_s();
         let g = self.sh.lock();
@@ -930,13 +930,13 @@ impl Controls {
 
     // ---- 닫기 ----------------------------------------------------------------------------------
 
-    /// 대기 중인 쓰기는 보내지 않고 cancelled 로 끝낸다 — 닫히는 장치에 쓰지 않는다. 두 번 불러도 된다.
+    /// Ends pending writes as cancelled without sending them — nothing is written to a closing device. Safe to call twice.
     pub fn close(&self) {
         self.close_inner(true);
     }
 
-    /// close() 와 같되 워커가 끝나기를 기다리지 않는다(워커는 백엔드를 닫고 혼자 끝난다).
-    /// Python 바인딩이 GC 중(GIL 을 쥔 채) 닫을 때 쓴다 — 기다리면 GIL 이 필요한 Python 백엔드의 close 와 교착한다.
+    /// Like close() but does not wait for the worker (the worker closes the backend and ends on its own).
+    /// For the Python binding closing during GC (holding the GIL) — waiting would deadlock with a Python backend's close that needs the GIL.
     pub fn close_nowait(&self) {
         self.close_inner(false);
     }
@@ -985,14 +985,14 @@ impl Controls {
 
     // ---- 읽기 ----------------------------------------------------------------------------------
 
-    /// 장치의 지금 값. 모드를 읽을 수 없는 백엔드면 None.
+    /// The device's current value. None if the backend cannot read the mode.
     pub fn get(&self, name: &str) -> Result<Option<UserValue>> {
         let s = self.spec(name)?;
         let (v, a) = self.read(s.key)?;
         Ok(from_device(s, Some(v), a))
     }
 
-    /// 읽기만 한다.
+    /// Read-only.
     pub fn describe(&self, name: &str) -> Result<ControlInfo> {
         let s = self.spec(name)?;
         let rng = self.range(s.key)?;
@@ -1046,7 +1046,7 @@ impl Controls {
         })
     }
 
-    /// describe() 전부(이름 표 순서).
+    /// describe() for every control (table order).
     pub fn describe_all(&self) -> Result<Vec<ControlInfo>> {
         self.names()?
             .into_iter()
@@ -1054,7 +1054,7 @@ impl Controls {
             .collect()
     }
 
-    /// 지금 값 전부(읽을 수 없는 것은 뺀다). restore() 로 되돌린다.
+    /// All current values (those that cannot be read are left out). Undo with restore().
     pub fn snapshot(&self) -> Result<Vec<(String, UserValue)>> {
         let mut out = Vec::new();
         for n in self.names()? {
@@ -1065,7 +1065,7 @@ impl Controls {
         Ok(out)
     }
 
-    /// 스냅샷 값으로 되돌린다 — 다른 것만 쓴다. 자동으로 돌아가는 그룹의 값은 뺀다. 기다리지 않는다.
+    /// Restores snapshot values — writes only those that differ. Values of groups going back to auto are left out. Does not wait.
     pub fn restore(&self, snap: &[(String, UserValue)]) -> Result<Vec<WriteResult>> {
         let have = self.names()?;
         let mut target: Vec<(String, UserValue)> = snap
@@ -1111,9 +1111,9 @@ impl Controls {
         self.set_many(&diff)
     }
 
-    /// 기본값 복원으로 바뀔 것 (이름, 지금, 기본값) — 쓰지 않는다.
-    /// 모드(자동/수동)는 건드리지 않고, 자동 상태인 값도 뺀다(AMCap 기본값 버튼과 같다).
-    /// 흑백 무효 제어는 include_mono 일 때만. 장치가 기본값을 주지 않은 제어는 뺀다.
+    /// What a reset to defaults would change: (name, current, default) — writes nothing.
+    /// Leaves the mode (auto/manual) alone and skips values that are in auto (same as the AMCap Default button).
+    /// Controls with no effect on the mono sensor only with include_mono. Controls without a device default are left out.
     pub fn plan_reset(
         &self,
         include_mono: bool,
@@ -1138,7 +1138,7 @@ impl Controls {
         Ok(plan)
     }
 
-    /// plan_reset() 을 쓴다. 기다리지 않는다.
+    /// Writes plan_reset(). Does not wait.
     pub fn reset_to_defaults(&self, include_mono: bool) -> Result<Vec<WriteResult>> {
         let plan: Vec<(String, UserValue)> = self
             .plan_reset(include_mono)?
@@ -1166,7 +1166,7 @@ mod tests {
     use crate::guard::{self, GuardConfig};
     use crate::spec::CONTROLS;
 
-    /// conftest 의 _fast_control_guard 와 같다: 간격 0, 경고 사실상 끔, 카운터 0. 반환한 잠금을 시험 끝까지 쥔다.
+    /// Same as conftest's _fast_control_guard: gap 0, warnings effectively off, counters 0. Hold the returned lock until the test ends.
     pub(crate) fn fast() -> std::sync::MutexGuard<'static, ()> {
         let l = guard::test_lock();
         guard::set_config(GuardConfig {
@@ -1340,7 +1340,7 @@ mod tests {
     }
 }
 
-/// Python test_controls_writes.py 이식.
+/// Ported from Python test_controls_writes.py.
 #[cfg(test)]
 mod write_tests {
     use super::tests::{controls, fast};
@@ -1871,7 +1871,7 @@ mod write_tests {
     }
 }
 
-/// Python test_controls_reads.py 의 restore·plan_reset 과 test_controls_writes.py 의 경고 시험 이식.
+/// Ported from restore and plan_reset in Python test_controls_reads.py and the warning tests in test_controls_writes.py.
 #[cfg(test)]
 mod reset_tests {
     use super::tests::{controls, fast};

@@ -1,6 +1,6 @@
 [package]
 name = "opticmix-vision-py"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 rust-version = "1.88"
 publish = false
@@ -16,7 +16,10 @@ test = false
 doctest = false
 
 [dependencies]
-opticmix-vision = { path = "../opticmix-vision" }
+# 받기(capture)는 끈다 — Python 패키지는 프레임을 OpenCV 로 받고, 받기 의존성(Linux bindgen 등)을 휠 빌드에 끌어오지 않는다.
+opticmix-vision = { path = "../opticmix-vision", default-features = false }
+# Calibration file checks (schema v1, KB4) for opticmix_vision.calibration.
+opticmix-geom = { path = "../opticmix-geom" }
 # abi3-py310: one cp310-abi3 wheel serves Python 3.10 and newer.
 pyo3 = { version = "=0.29.3", features = ["abi3-py310"] }
 

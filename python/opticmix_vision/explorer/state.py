@@ -1,4 +1,4 @@
-"""선택 상태와 설정 창의 행 만들기. Tk 를 import 하지 않으므로 화면 없이 테스트된다."""
+"""Selection state and building the settings window rows. Does not import Tk, so it is tested without a display."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -10,11 +10,11 @@ from ..devices import DeviceInfo, Mode
 __all__ = ["ExplorerState", "KNOWN_MODE", "LED_MAX", "LED_ONSET", "Row", "build_rows", "locked", "value_text",
            "banner_text", "reset_lines", "MONO_NOTE", "RANGE_NOTE"]
 
-# 실측값 — 2개체에서 재현됐다. 0..16 은 소등, 24 에서 점등, 96 초과는 무시된다.
+# Measured: values above 96 are ignored (two units); 0..16 is off and it lights at 24 (one unit).
 LED_MAX = 96
 LED_ONSET = 24
 
-# 모드를 알아내지 못했을 때 물러설 곳. 51분 연속 90.5 fps 로 확인된 모드다.
+# Fallback when the modes could not be determined. This mode was confirmed at 90.5 fps for 51 minutes straight.
 KNOWN_MODE = Mode(fourcc="MJPG", width=1600, height=800, max_fps=90.0)
 
 
@@ -26,14 +26,14 @@ class ExplorerState:
     mode_note: str = ""
 
     def select_device(self, device: DeviceInfo) -> None:
-        """장치를 바꾸면 모드는 비운다 — 이전 장치의 모드는 새 장치의 것이 아니다."""
+        """Changing the device clears the mode; the previous device's mode does not belong to the new device."""
         self.device = device
         self.mode = None
         self.modes = []
         self.mode_note = ""
 
     def set_modes(self, modes: list[Mode]) -> None:
-        """빈 목록은 '모드가 없다' 가 아니라 '알아내지 못했다' 이다."""
+        """An empty list means 'could not determine', not 'there are no modes'."""
         if modes:
             self.modes = list(modes)
             self.mode_note = ""
@@ -50,8 +50,8 @@ class ExplorerState:
 
     @staticmethod
     def illuminator_label(value: float) -> str:
-        """24 아래는 숫자가 아니라 '꺼짐' 이라고 말한다 — 슬라이더가 움직이는데
-        화면이 그대로인 이유를 사용자가 짐작하지 않게."""
+        """Below 24 it says 'off' instead of a number, so the user does not have to guess why the
+        slider moves but the image stays the same."""
         return "off" if value < LED_ONSET else f"{value:g}"
 
 
@@ -77,7 +77,7 @@ class Row:
 
 
 def _order() -> list[str]:
-    """이름 표 순서, 단 모드(auto_*)는 그 값 바로 위."""
+    """Name-table order, except that a mode (auto_*) goes right above its value."""
     names = [c.name for c in CONTROLS]
     for mode, (value, _on) in LOCKS.items():
         names.remove(mode)
@@ -86,7 +86,7 @@ def _order() -> list[str]:
 
 
 def build_rows(infos: Mapping[str, ControlInfo]) -> tuple[list[Row], list[Row]]:
-    """(주 행, 흑백 무효 행). describe() 결과에서 만든다 — 범위는 장치가 준 것만 쓴다."""
+    """(main rows, rows with no effect on a monochrome sensor). Built from describe() results; only ranges the device reported are used."""
     main: list[Row] = []
     mono: list[Row] = []
     for name in _order():
@@ -108,7 +108,7 @@ def build_rows(infos: Mapping[str, ControlInfo]) -> tuple[list[Row], list[Row]]:
 
 
 def locked(values: Mapping[str, Any]) -> set[str]:
-    """모드가 자동이라 손댈 수 없는 값 이름."""
+    """Names of values that cannot be changed because their mode is auto."""
     return {value for mode, (value, on) in LOCKS.items() if values.get(mode) == on}
 
 

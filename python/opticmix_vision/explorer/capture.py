@@ -1,8 +1,8 @@
-"""배경 스레드에서 프레임을 읽고, 가장 최근 것 하나만 들고 있는다.
+"""Reads frames on a background thread and holds only the most recent one.
 
-카메라는 90 fps 를 낸다. Tk 는 그 속도로 다시 그릴 수 없다. 큐를 쓰면 지연이
-쌓여 화면이 과거를 보여주게 되므로, 최신 프레임 한 장만 두고 나머지는 버린다 —
-화면은 30 fps 근처로 그리고 카메라는 제 속도로 돈다.
+The camera delivers 90 fps. Tk cannot redraw at that rate. A queue would build up latency
+and the screen would show the past, so only the latest frame is kept and the rest are dropped;
+the screen draws at around 30 fps and the camera runs at its own rate.
 """
 from __future__ import annotations
 
@@ -14,16 +14,16 @@ __all__ = ["CaptureWorker"]
 
 
 class CaptureWorker:
-    """`open_source()` 로 소스를 열고, 멈출 때까지 읽는다.
+    """Opens a source with `open_source()` and reads until stopped.
 
-    소스는 `read()` 만 있으면 된다 — `Device` 든 합성 소스든 같다. `close()` 가
-    있으면 멈출 때 불러 준다.
+    The source only needs `read()`; a `Device` and a synthetic source work the same. If it has
+    `close()`, that is called on stop.
     """
 
     def __init__(self, open_source: Callable[[], Any], *, min_interval: float = 0.0) -> None:
-        """min_interval 은 합성 소스용이다. 카메라는 스스로 속도를 정하지만 합성
-        소스는 즉시 돌려주므로, 그대로 두면 FRAMERATE 에 수천이 찍혀 '측정값'
-        이라는 표시가 무의미해진다."""
+        """min_interval is for synthetic sources. A camera sets its own rate, but a synthetic
+        source returns immediately; left alone, FRAMERATE would show thousands and the
+        'measured' label would be meaningless."""
         self._open_source = open_source
         self._min_interval = float(min_interval)
         self._thread: threading.Thread | None = None
@@ -57,7 +57,7 @@ class CaptureWorker:
             t.join(timeout)
 
     def _note_interval(self, dt: float) -> None:
-        """간격을 평균하고 그 역수를 fps 로 — 1/dt 를 평균하면 간격이 흔들릴 때 부푼다(5·17 ms 교대 → 129 vs 실제 91)."""
+        """fps = inverse of the averaged interval; averaging 1/dt inflates when intervals jitter (alternating 5 and 17 ms -> 129 vs actual 91)."""
         if dt <= 0:
             return
         self._dt_avg = 0.9 * self._dt_avg + 0.1 * dt if self._dt_avg > 0 else dt
@@ -78,7 +78,7 @@ class CaptureWorker:
                 if self._min_interval:
                     self._stop.wait(self._min_interval)
         except Exception as exc:
-            # 창이 아무 설명 없이 얼어붙지 않도록 남긴다. 화면이 이걸 읽어 띄운다.
+            # kept so the window does not freeze without explanation; the screen reads this and shows it.
             self.error = f"{type(exc).__name__}: {exc}"
         finally:
             closer = getattr(source, "close", None)

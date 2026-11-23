@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/Opticmix/opticmix-vision/discussions
+    about: Ask how to do something, share what you built, or suggest a feature.
+  - name: Contact us privately
+    url: mailto:contact@opticmix.kr
+    about: If you cannot post publicly. We reply within 2 business days (Korea time).

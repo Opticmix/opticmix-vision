@@ -3,8 +3,10 @@
 use pyo3::prelude::*;
 
 mod bindings;
+mod calib;
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    bindings::register(m)
+    bindings::register(m)?;
+    calib::register(m)
 }

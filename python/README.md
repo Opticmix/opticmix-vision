@@ -16,18 +16,29 @@ pip install opticmix-vision
 
 On Windows x64 this installs a wheel — one abi3 wheel for Python 3.10 and newer;
 installed and tested on 3.10, 3.12 and 3.14 (no camera). The same file is
-attached to the GitHub release [v0.0.3.post1](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.3.post1).
-On Windows, verified on Windows 11 only. There is no wheel for macOS, and macOS
-has not been run. Elsewhere pip tries to build from source: Rust 1.88 or newer
-(on Windows also the Microsoft C++ Build Tools). A source install has been
-checked on Linux x86_64 only (Debian 12 container, Python 3.11, Rust 1.88.0,
-no camera).
+attached to the GitHub release [v0.0.4](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.4).
+On Windows, verified on Windows 11 only. On Linux x86_64 it installs a
+manylinux wheel — experimental, see Linux (experimental) below.
+There is no wheel for macOS, and macOS has not been run. Elsewhere pip tries to
+build from source: Rust 1.88 or newer (on Windows also the Microsoft C++ Build
+Tools). A source install has been checked on Linux x86_64 only (Debian 12
+container, Python 3.11, Rust 1.88.0, no camera).
 
 ### Linux (experimental)
 
-**Experimental — not a supported platform.** The 0.0.3 release on GitHub also
-carries a Linux x86_64 wheel, `opticmix_vision-0.0.3-cp310-abi3-linux_x86_64.whl`.
-It is not on PyPI; there, Linux installs from source (Rust toolchain needed).
+**Experimental — not a supported platform.** From 0.0.4, PyPI also has a Linux
+x86_64 wheel (`manylinux2014_x86_64`: glibc 2.17 or newer, Python 3.10 or newer),
+so `pip install opticmix-vision` installs on Linux x86_64 without compiling
+anything. The 0.0.4 manylinux wheel installed and passed the package tests in
+clean Python 3.10, 3.12 and 3.14 containers (no camera). No manylinux wheel has
+been run with the camera.
+
+On a minimal system (a server, a slim container image) OpenCV needs `libGL.so.1`
+from the system: on Debian/Ubuntu, `sudo apt install libgl1 libglib2.0-0`. Without it
+`import opticmix_vision` still works, but everything that uses OpenCV, opening
+the camera included, fails with `libGL.so.1: cannot open shared object file`.
+In our container tests, installing `libgl1` and `libglib2.0-0` removed those
+failures.
 
 What has been run: on 2026-11-22, on an Ubuntu 26.04 (kernel 7.0) mini PC with
 one Weevia S1 (firmware version not recorded) connected directly over USB
@@ -41,17 +52,22 @@ width=1600, height=800, fps=90, fourcc="MJPG", stall_frames=0)`
 (`device` is the N of `/dev/videoN`; `stall_frames=0` because the script counted
 repeated images itself).
 
-On Linux, name the camera yourself:
+From 0.0.4, `DeviceConfig.weevia_s1()` also finds the camera by name on Linux:
+it picks the `/dev/videoN` capture node whose name contains `WN Dual Camera` in
+`/sys/class/video4linux` (the node whose `index` is 0) and uses
+`backend="v4l2"`. As on Windows, it stops when two match. Linux name lookup:
+implemented, not yet run on the camera. To name the node yourself — the way the
+camera has been opened on Linux so far —
 `DeviceConfig.weevia_s1(device="/dev/video0", backend="v4l2")`, with the
 Weevia's own `/dev/videoN` (on a laptop `/dev/video0` may be the built-in
-webcam). In 0.0.3,
-finding the camera by name uses DirectShow and works only on Windows.
+webcam).
 
 Not verified on Linux:
 
 - camera controls and the illuminator — not verified and not supported;
 - finding the camera by name (`DeviceConfig.weevia_s1()` without `device=`) —
-  Windows-only in 0.0.3;
+  implemented in 0.0.4, not yet run on the camera;
+- the manylinux wheel with the camera;
 - the viewer, the explorer and the examples;
 - other distributions and more than one camera.
 
@@ -70,7 +86,7 @@ with Device(DeviceConfig.weevia_s1()) as cam:
 measured on it: both eyes side by side, the first half is the **right** eye
 (measured on one unit, 2026-09-16), 1600×800 MJPG at 90 fps. It does not pick a camera by index — plugging in any
 other camera shifts the order, and a laptop webcam is often listed first.
-Override any field, e.g. `DeviceConfig.weevia_s1(fps=60)`. Finding the camera by name: measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not yet been verified against the camera.
+Override any field, e.g. `DeviceConfig.weevia_s1(fps=60)`. Finding the camera by name: measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera. On Linux it reads `/sys/class/video4linux` instead (implemented, not yet run on the camera).
 
 `examples/quickstart.py` runs this end to end; `python -m opticmix_vision.viewer`
 and `python -m opticmix_vision.explorer` open the same camera in a window.
@@ -108,7 +124,7 @@ for — read `cam.mode` rather than assuming. Request the fourcc: without
 
 `cam.controls` covers every control the camera advertises — the same set the Windows driver's property
 page (and the vendor's AMCap tool) shows. Ranges and defaults come from the device, not from this package.
-Measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not yet been verified against the camera.
+Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
 
 ```python
 cfg = DeviceConfig.weevia_s1()
@@ -135,7 +151,7 @@ with Device(cfg) as cam:
 Focus, zoom, pan, tilt and iris are not advertised — the lens is mechanically fixed. The driver still answers
 for iris, which is why AMCap shows that row; the SDK does not expose it.
 
-The table was measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not
+The table was measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not
 yet been verified against the camera.
 
 **Writing is risky on this camera.** On the units we have tested, a control write has occasionally been
@@ -146,11 +162,11 @@ write once when released and the viewer's keys once you stop pressing, so a drag
 The guard does not make writes safe. **Write once at startup.** Right after an exposure change the two eyes can
 disagree in brightness for about 90 ms (measured on one unit) — drop those frames before stereo matching or
 training. Writing exposure while
-`auto_exposure` is `auto` raises `ControlStateError`; give both in one `set_many`. Measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not yet been verified against the camera.
+`auto_exposure` is `auto` raises `ControlStateError`; give both in one `set_many`. Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
 
 A `written` result only means the driver accepted the value. Every write is read back:
 `result.readback` is what the camera reports afterwards and `result.kept` says whether it matches — on
-this camera a gain of 8 was accepted and read back as 0 while auto exposure was on. Measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not yet been verified against the camera.
+this camera a gain of 8 was accepted and read back as 0 while auto exposure was on. Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
 
 `plan_reset()` lists what differs and writes nothing; `reset_to_defaults()` writes those values — not yet
 run against the camera. It leaves auto/manual modes alone. `snapshot()`/`restore()` undo your own changes.
@@ -160,7 +176,7 @@ numbers for integer controls: `set_prop("CAP_PROP_GAIN", 28.5)` raises `ValueErr
 On Windows the SDK talks to DirectShow directly (no extra dependency), and it reads controls while OpenCV
 streams. If that fails, it falls back to OpenCV, which has no power line frequency, no
 low-light compensation and no ranges — `cam.controls.backend_note` says so. The property page opened by
-AMCap or `CAP_PROP_SETTINGS` writes outside the guard. Measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not yet been verified against the camera.
+AMCap or `CAP_PROP_SETTINGS` writes outside the guard. Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
 
 ## IR illuminator
 
@@ -178,7 +194,7 @@ on one. **0–16 is off** — no pixel rose more than 10 DN above the off frame.
 Light first appears at **24** and grows to **96**. Values above 96 are ignored; 112, 128 and
 255 all read back as 96. So the usable range is 24–96, and the normalized
 0.0–1.0 interface takes `value_range=(0, 96)` and rounds to a whole number before writing.
-The figures in this paragraph: measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not yet been verified against the camera.
+The figures in this paragraph: measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
 
 A readback only means the driver accepted the number. Check the image — and note
 that frame mean is a poor check here, because the illuminator lights part of a
@@ -191,10 +207,61 @@ this package publishes no such figures.
 ## Without a camera
 
 `opticmix_vision.synthetic` drives the viewer and the explorer with generated
-frames (`python -m opticmix_vision.explorer --synthetic`), so the capture path
-runs with nothing attached. It is a generator, not measured data. The examples
+frames (`python -m opticmix_vision.explorer --synthetic`): the window, keys and
+saving run with nothing attached; the camera's own capture path does not. It is a
+generator, not measured data. The examples
 that open a camera, other than `quickstart.py`, take `--synthetic` as well;
-`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.3.post1/python/examples/README.md).
+`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.4/python/examples/README.md).
+
+A video written by `examples/record_video.py` can be read back the same way as the
+camera: `Device(DeviceConfig.recording("recording.avi"))` — see
+`examples/play_recording.py`. Run on generated recordings only (`record_video.py --synthetic`); a
+recording of the camera has not been played back yet. Every public name is in
+[API.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.4/python/API.md).
+
+## Calibration
+
+A calibration file belongs to one unit: a fisheye (Kannala-Brandt, `cv2.fisheye`)
+model per eye and the left-to-right rotation and translation (mm), in JSON. The
+camera does not report a serial number, so you install the file for your camera
+once:
+
+```
+python -m opticmix_vision.calib add D:/S1-NNNN.json   # install the file for your camera
+python -m opticmix_vision.calib list                  # what is installed, and where
+```
+
+Downloading a file by the label under the camera is not available yet.
+
+The file is checked before it is installed (format, and that it carries an
+S1-NNNN serial) and stored under that serial: `%APPDATA%\opticmix\calib\` on
+Windows; on Linux `$XDG_CONFIG_HOME/opticmix/calib/` or `~/.config/opticmix/calib/`
+(not run on Linux). After that:
+
+```python
+from opticmix_vision import Device, DeviceConfig
+
+with Device(DeviceConfig.weevia_s1()) as cam:
+    c = cam.calibration              # StereoCalibration
+    print(c.left.K, c.left.D, c.extrinsics.R, c.extrinsics.t)
+```
+
+`cam.calibration` uses the installed file when there is exactly one; with more
+than one it raises and lists them — keep only the file for the camera you use.
+Two cameras on one computer are not supported yet. The video does not need a
+calibration — without one, only `cam.calibration` raises, and its message says
+what to do.
+
+**The SDK cannot check that a file belongs to the camera you opened** — the camera
+does not send a USB serial number, so another unit's file loads without an error.
+
+Run against the camera (Windows, once each): on one camera, a file that had fit
+it in an earlier check, installed with `calib add <file>` and read back through
+`cam.calibration`, gave a median epipolar error of 0.44 px (USB 2 link). Its
+`left` and `right` are the same eyes as `cam.read().left` and `.right` (on that
+camera, 97.9 % of matches had positive disparity; with the eyes swapped, 7.9 %).
+On one other camera the same file gave 30.4 px. Installing by label, Linux, and
+two cameras on one computer have not been run.
 
 ## When something goes wrong
 
@@ -206,27 +273,71 @@ that open a camera, other than `quickstart.py`, take `--synthetic` as well;
 - **The frame rate is far below 90.** Check that the mode is MJPG (`cam.mode`).
 - **"Weevia S1 not found".** The message lists the cameras Windows reported.
   Re-insert the cable; if the camera is missing from the list, Windows does not
-  see it either. On Linux, pass `device=` and `backend="v4l2"` — see
-  Linux (experimental).
+  see it either. On Linux the message lists the video nodes it found; you can
+  also pass `device="/dev/videoN"` — see Linux (experimental).
 - **A setting did not stick.** Look at `result.kept` — see Camera controls.
 - **Two Weevia S1 are connected.** Finding the camera by name stops (the camera
   reports no USB serial number); the error begins "Weevia S1 ... not found" and ends
-  with the list ['WN Dual Camera', 'WN Dual Camera']. Using two units on one computer has not been tested —
-  connect one at a time.
+  with the list ['WN Dual Camera', 'WN Dual Camera'] (on Linux, the list of their `/dev/video` paths).
+  Using two units on one computer has not been tested — connect one at a time.
 - **Which USB port.** Connect to a USB 3 port directly. The figures on this page whose
   USB link was recorded were measured over SuperSpeed; USB 2 is not qualified.
 - **pip finds no version, or tries to build.** Python older than 3.10: pip finds no
-  version (3.10 or newer is required). Otherwise, without x64 Python on Windows, pip
-  tries to build from source (see the top of this page).
+  version (3.10 or newer is required). Otherwise, when no wheel fits — Windows
+  without x64 Python, Linux other than x86_64 with glibc 2.17 or newer — pip tries
+  to build from source (see the top of this page).
+- **"ControlsUnavailable: opticmix_vision._core (the compiled extension) is not installed".**
+  The package was imported without its compiled extension, as from a source checkout; frames can
+  still be read, but finding the camera by name on Windows, the camera controls and reading a
+  calibration file cannot. Install
+  the wheel — `pip install opticmix-vision` — instead of using a checkout on its own.
+- **"failed to open the camera: device=… backend=… (unplugged, wrong index, or in use by another
+  app?)".** OpenCV could not open the device named in the message; the SDK cannot tell which of the
+  three it was. Check the cable, the `device` you passed, and any other program that may have the
+  camera open — close it and try again.
+- **"frame read failed (timeout or camera unplugged)".** `read()` raises this when OpenCV returns
+  no image. Check that the camera is still connected, then open it again.
+- **"ControlStateError: auto_exposure is on — set it to 'manual' in the same call" or "exposure
+  cannot be set in the same call that turns auto_exposure on".** An exposure value is refused while
+  `auto_exposure` is `auto`, or in the same call that switches it to `auto`. Give the mode and the
+  value in one call: `set_many({"auto_exposure": "manual", "exposure": -5})` — see Camera controls.
+- **"… is not a camera control — set resolution, fps and format in DeviceConfig", or "… must not be
+  set through extra_props".** Resolution, frame rate and format are set when the camera opens;
+  `set_prop()` and `extra_props` refuse them. Pass them to the config instead, e.g.
+  `DeviceConfig.weevia_s1(fps=60)`, and read `cam.mode` for what the driver gave.
+- **Left and right look swapped.** `lr_order` decides which half of the frame is the left eye;
+  `DeviceConfig.weevia_s1()` uses `first_is_right`, measured on one unit. Check the order with the
+  finger test under Quickstart and pass the matching `lr_order` (`DeviceConfig.weevia_s1(lr_order=...)`
+  takes it too).
+- **"value_range not set — the normalized (0..1) API needs a range".** `LedControl.set_level()` and
+  `get_level()` need the control's range, and `LedControl` has none unless you give it. Create it as
+  `LedControl(cam, value_range=(0, 96))`, or use `set()`/`get()` with raw values — see IR illuminator.
+- **"No calibration installed" or "N calibrations installed (…)".** `cam.calibration` uses the
+  installed file only when there is exactly one. Install the file for your camera with
+  `python -m opticmix_vision.calib add <file.json>`, or delete the other files from the folder the
+  message names — see Calibration.
+- **"This calibration is for 800x800 eyes. Open the 1600x800 mode."** `cam.calibration` compares
+  the eye size in the file with the mode the camera was opened in (half the frame width, the full
+  height). Open the mode the message names; `DeviceConfig.weevia_s1()` opens 1600×800 unless you
+  override `width` or `height`.
+- **"libGL.so.1: cannot open shared object file" (Linux).** OpenCV needs `libGL.so.1` from the
+  system; without it `import opticmix_vision` still works, but everything that uses OpenCV, opening
+  the camera included, fails. On Debian/Ubuntu, `sudo apt install libgl1 libglib2.0-0` — see
+  Linux (experimental).
 
 ## Getting help
 
 - Bugs and questions about the SDK: open an issue at
   https://github.com/Opticmix/opticmix-vision/issues — include the output of
   `cam.mode`, your OS, and the SDK version (`opticmix_vision.__version__`).
+- Questions, ideas and show-and-tell: GitHub Discussions,
+  https://github.com/Opticmix/opticmix-vision/discussions
 - Anything else, or if you cannot post publicly: contact@opticmix.kr
 
 We reply to issues and email within 2 business days (Korea time).
+
+We aim to release about once a month; what changed in each release is in
+[CHANGELOG.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.4/python/CHANGELOG.md).
 
 ## What is in this package, and what is not
 
@@ -234,9 +345,11 @@ Run against the camera: capture, stereo split, the illuminator, and camera
 controls — all fourteen read through the native path on one unit (with ranges
 and defaults, while streaming). Native writes have been checked on one unit for power line
 frequency and the auto-exposure mode; writes of exposure, gain and the
-illuminator were checked earlier through OpenCV. Measured with the earlier Python implementation; the Rust implementation in 0.0.3 has not yet been verified against the camera.
+illuminator were checked earlier through OpenCV. Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
+Calibration files (install and read): run on two cameras on Windows, once each —
+see Calibration.
 
-**Not in this package:** calibration, rectification, depth and hand tracking.
+**Not in this package:** rectification, depth and hand tracking.
 The code for them exists but has not been validated for release, so it is
 withheld rather than shipped with a warning label. Each returns when it has been.
 
@@ -262,6 +375,6 @@ extension. Install the wheel into that environment as well.
 
 ## License
 
-Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.3.post1/python/LICENSE). The compiled extension also contains Rust
+Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.4/python/LICENSE). The compiled extension also contains Rust
 crates under MIT / Apache-2.0; their notices are in
-[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.3.post1/python/THIRD_PARTY_NOTICES.txt).
+[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.4/python/THIRD_PARTY_NOTICES.txt).

@@ -1,22 +1,26 @@
-"""카메라 제어 — Weevia S1 이 광고하는 UVC 제어 14개를 읽고, 범위·기본값을 알려 주고, 쓴다.
+"""Camera controls: read the 14 UVC controls the Weevia S1 advertises, report their ranges and defaults, and write them.
 
-AMCap 의 제어 창은 Windows UVC 드라이버의 표준 속성 페이지이고, 장치 디스크립터가 광고하는
-제어를 그대로 보여 준다. 이 모듈은 그 전부를 코드로 연다.
+The AMCap control window is the standard property page of the Windows UVC driver and shows the
+controls the device descriptor advertises, as they are. This module opens all of them from code.
 
-**쓰기는 위험하다.** 시험한 유닛에서 제어를 쓴 직후 가끔 한쪽 눈 스트림이 멈췄고, USB 재삽입으로 돌아왔다.
-횟수·속도 어느 쪽이 원인인지 증명되지 않았다(2026-09-24). 그래서 모든 쓰기는 워커 하나가 순서대로 하고, 같은 값은 쓰지 않고, 간격 안에
-들어온 요청은 최신 값 하나로 합친다. **이 가드는 안전을 보장하지 않는다.** 안전한 사용법은 '시작할 때 한 번만 쓰기'다.
+**Writing is risky.** On the units we have tested, a control write has occasionally been followed by one
+eye's stream stopping; re-inserting the USB cable brought it back. Whether the count or the rate of writes is the cause has not been
+proven (2026-09-24). So all writes go through one worker in order, identical values are not written, and
+requests that arrive within the minimum interval are merged into the latest value.
+**This guard does not guarantee safety.** The safe way to use it is "write once, at start-up".
 
     with Device(cfg) as cam:
         c = cam.controls
-        c.describe("gain")                     # 현재값·범위·기본값·검증 상태 (읽기만)
-        c.set("gain", 28)                      # 기다리지 않는다 → WriteResult(status="pending")
-        c.set_many({"auto_exposure": "manual", "exposure": -5})   # 모드 전환과 값은 한 번에
-        c.flush()                              # 대기 중인 쓰기가 끝날 때까지
+        c.describe("gain")                     # current value, range, default, verification state (read only)
+        c.set("gain", 28)                      # does not wait -> WriteResult(status="pending")
+        c.set_many({"auto_exposure": "manual", "exposure": -5})   # mode switch and value in one go
+        c.flush()                              # until pending writes are done
 
-구현(2026-10-29): 제어 표·값 변환·쓰기 가드·워커 상태 기계는 Rust 코어(`rust/opticmix-vision`) 한 벌이고,
-이 모듈은 그것을 `opticmix_vision._core` 로 부르는 얇은 래퍼다. 공개 이름·예외·결과 타입은 그대로다.
-환경변수 OPTICMIX_WRITE_LOG=<경로> 를 주면 실제 쓰기마다 JSON 한 줄(되읽은 값 포함)을 그 파일에 덧붙인다(기본 꺼짐).
+Implementation (2026-10-29): the control table, value conversion, write guard and worker state machine
+live once, in the Rust core (`rust/opticmix-vision`); this module is a thin wrapper that calls it as
+`opticmix_vision._core`. Public names, exceptions and result types are unchanged.
+Set the environment variable OPTICMIX_WRITE_LOG=<path> to append one JSON line per actual write
+(including the read-back value) to that file (off by default).
 """
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ import weakref
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Mapping, NamedTuple, Protocol
 
-from opticmix_vision import _native  # 절대 import — 시험이 이 파일을 패키지 밖 이름으로 다시 읽는다
+from opticmix_vision import _native  # absolute import: tests re-load this file under a name outside the package
 
 __all__ = [
     "Controls", "ControlInfo", "WriteResult", "ControlSpec", "CONTROLS", "RawRange", "Backend",
@@ -38,14 +42,16 @@ __all__ = [
 
 log = logging.getLogger("opticmix_vision.controls")
 
-# --- 가드 상수 ------------------------------------------------------------------------------
-# 벤더 권고(2026-09-28): 노출 명령 사이 최소 12 ms — 90 fps 한 프레임(11.1 ms)보다 조금 길다.
-# 다른 제어(게인·LED 등)에는 벤더 수치가 없어 같은 간격을 쓴다. 사망 기록에는 노출·게인·LED 연속 쓰기가 섞여 있었다.
-# 값은 Rust 코어가 쓴다 — 쓰기 요청 직전마다 이 모듈 전역을 코어로 넘긴다(바꾸면 다음 요청부터 적용).
+# --- Guard constants ---------------------------------------------------------------------------
+# Vendor recommendation (2026-09-28): at least 12 ms between exposure commands, slightly longer than one
+# frame at 90 fps (11.1 ms). Other controls (gain, LED, ...) have no vendor figure, so the same gap is used.
+# The recorded stream stalls involved back-to-back exposure, gain and LED writes.
+# The Rust core applies these values: this module's globals are passed to the core right before every
+# write request (a change takes effect from the next request).
 VENDOR_MIN_COMMAND_GAP_S = 0.012
-GROUP_MIN_INTERVAL_S: dict[str, float] = {"exposure": VENDOR_MIN_COMMAND_GAP_S}   # 같은 그룹(= 같은 UVC 속성) 연속 쓰기 사이
-GLOBAL_MIN_GAP_S = VENDOR_MIN_COMMAND_GAP_S     # 어느 제어든 두 쓰기 사이
-WARN_AFTER_TOTAL = 3       # 이 프로세스의 쓰기 합계가 이 수에 닿을 때와 그 뒤 이 수마다 경고
+GROUP_MIN_INTERVAL_S: dict[str, float] = {"exposure": VENDOR_MIN_COMMAND_GAP_S}   # between consecutive writes to the same group (= same UVC property)
+GLOBAL_MIN_GAP_S = VENDOR_MIN_COMMAND_GAP_S     # between any two writes, whatever the control
+WARN_AFTER_TOTAL = 3       # warn when this process's total write count reaches this number, then every this many after
 
 Kind = Literal["int", "bool", "menu"]
 Effect = Literal["verified", "partial", "unverified", "none_expected_mono"]
@@ -53,15 +59,15 @@ Status = Literal["written", "skipped_same", "pending", "superseded", "cancelled"
 
 
 class ControlsUnavailable(RuntimeError):
-    """제어 통로를 열 수 없다 — 백엔드 연결 실패, 다른 장치, 닫힌 뒤의 호출."""
+    """The control channel cannot be opened: backend connection failed, a different device, or a call after close."""
 
 
 class ControlStateError(RuntimeError):
-    """지금 모드에서 받을 수 없는 쓰기 — 예: 자동 노출 중에 노출값만 쓰기."""
+    """A write that the current mode cannot accept, e.g. writing only the exposure value while auto exposure is on."""
 
 
 class RawRange(NamedTuple):
-    """백엔드가 준 장치 값 범위. default 는 장치가 주지 않으면 None."""
+    """Device value range reported by the backend. default is None if the device does not report one."""
     minimum: int
     maximum: int
     step: int
@@ -70,7 +76,7 @@ class RawRange(NamedTuple):
 
 
 class Backend(Protocol):
-    """제어층이 부르는 백엔드. 모든 메서드는 Controls 의 워커 스레드 한 곳에서만 불린다."""
+    """The backend the control layer calls. Every method is called only from the one Controls worker thread."""
     name: str
     exposure_units: str
     note: str
@@ -86,77 +92,78 @@ class Backend(Protocol):
 @dataclass(frozen=True)
 class ControlSpec:
     name: str
-    key: str                                  # 백엔드 키 = 가드 그룹 (Windows: KS 속성 하나)
-    role: Literal["value", "auto"]            # auto = 그 키의 자동/수동 flags
+    key: str                                  # backend key = guard group (Windows: one KS property)
+    role: Literal["value", "auto"]            # auto = the auto/manual flags of that key
     kind: Kind
     effect: Effect
-    ledger: str | None = None                 # 내부 검증 기록 ID
-    choices: tuple[str, ...] | None = None    # menu: 장치 값 0,1,2… 순서의 이름 (auto 역할은 manual/auto)
-    mono: bool = False                        # 흑백 센서라 영상에 효과가 없을 것
+    ledger: str | None = None                 # verification record ID
+    choices: tuple[str, ...] | None = None    # menu: names in device-value order 0,1,2... (manual/auto for the auto role)
+    mono: bool = False                        # expected to have no effect on the image because the sensor is monochrome
     note: str = ""
 
 
-# 표의 원본은 Rust 코어(spec.rs) — 두 벌이 되지 않게 거기서 만든다.
-# _core 가 없으면(editable 설치) 빈 표 — 제어를 실제로 쓸 때 _native.core() 가 설치 안내로 실패한다.
+# The table's source is the Rust core (spec.rs); it is built from there so there are not two copies.
+# Without _core (editable install) the table is empty; actually using a control then fails in
+# _native.core() with install instructions.
 CONTROLS: tuple[ControlSpec, ...] = (tuple(ControlSpec(**row) for row in _native.core().controls_table())
                                      if _native.available() else ())
 _BY_NAME: dict[str, ControlSpec] = {c.name: c for c in CONTROLS}
-_AUTO_NAME: dict[str, str] = {c.key: c.name for c in CONTROLS if c.role == "auto"}   # 그룹 → 모드 이름
+_AUTO_NAME: dict[str, str] = {c.key: c.name for c in CONTROLS if c.role == "auto"}   # group -> mode name
 _VALUE_NAME: dict[str, str] = {c.key: c.name for c in CONTROLS if c.role == "value" and c.key in _AUTO_NAME}
 
 
 def _sync_guard() -> None:
-    """이 모듈의 가드 상수를 코어로 넘긴다(시험·사용자가 바꿨을 수 있다)."""
+    """Pass this module's guard constants to the core (tests or users may have changed them)."""
     _native.core().set_guard_config({str(k): float(v) for k, v in GROUP_MIN_INTERVAL_S.items()},
                            float(GLOBAL_MIN_GAP_S), int(WARN_AFTER_TOTAL))
 
 
-# --- 값 변환 (코어 위임) -----------------------------------------------------------------------
+# --- Value conversion (delegated to the core) --------------------------------------------------
 
 def _to_device(spec: ControlSpec, value: Any) -> int | bool:
-    """사용자 값 → 백엔드 값. 틀린 값은 여기서 막는다(장치에 보내지 않는다)."""
+    """User value -> backend value. Invalid values are stopped here (never sent to the device)."""
     return _native.core().to_device(spec.name, value)
 
 
 def _from_device(spec: ControlSpec, raw: int | None, auto: bool | None) -> Any:
-    """백엔드 값 → 사용자 값. 모르는 것은 None."""
+    """Backend value -> user value. Unknown is None."""
     return _native.core().from_device(spec.name, raw, auto)
 
 
 def _same(value: int | None, auto: bool | None, cur_value: int | None, cur_auto: bool | None) -> bool:
-    """요청 (value, auto) 가 장치 상태와 같으면 True. 모르는 것(None)은 같다고 보지 않는다."""
+    """True if the requested (value, auto) equals the device state. Unknown (None) is never treated as equal."""
     return _native.core().same(value, auto, cur_value, cur_auto)
 
 
-# --- 가드 상태 (프로세스 전역, 코어에 있다) ---------------------------------------------------------
+# --- Guard state (process-wide, held in the core) ----------------------------------------------
 
 def write_counts() -> dict[str, int]:
-    """이 프로세스가 실제로 쓴 횟수 — 그룹별 + '_total'. 같은 값이라 건너뛴 것은 세지 않는다."""
+    """Number of actual writes by this process, per group plus '_total'. Writes skipped as identical are not counted."""
     return dict(_native.core().write_counts())
 
 
 def reset_write_counts() -> None:
-    """USB 를 다시 꽂아 장치 상태가 처음으로 돌아간 경우에만 부른다."""
+    """Call only when USB was re-plugged and the device state is back to its initial state."""
     _native.core().reset_write_counts()
 
 
 def _not_before(group: str) -> float:
-    """이 그룹에 다음으로 쓸 수 있는 가장 이른 단조 시각(코어 시계)."""
+    """Earliest monotonic time (core clock) at which this group may be written next."""
     _sync_guard()
     return _native.core().not_before(group)
 
 
 def _record(group: str, now: float) -> tuple[float | None, int]:
-    """쓰기 한 번을 남긴다 → (직전 쓰기로부터 간격, 합계)."""
+    """Record one write -> (gap since the previous write, total)."""
     _sync_guard()
     return _native.core().record(group, now)
 
 
-# --- 결과·정보 타입 ------------------------------------------------------------------------------
+# --- Result and info types ---------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ControlInfo:
-    """describe() 한 줄. 모르는 값은 None — 지어내지 않는다."""
+    """One row of describe(). Unknown values are None, never made up."""
     name: str
     kind: Kind
     current: Any
@@ -174,10 +181,10 @@ class ControlInfo:
 
 @dataclass(frozen=True)
 class WriteResult:
-    """요청 하나의 결과. ticket 으로 나중에 최종 결과를 찾는다(wait/result).
+    """Result of one request. Use ticket to look up the final result later (wait/result).
 
-    written 은 드라이버가 받았다는 뜻일 뿐이다 — 카메라가 값을 지켰는지는 readback/kept 를 본다
-    (2026-09-24: 게인 8 을 드라이버가 받았는데 다시 읽으니 0 이었다).
+    written only means the driver accepted it. Whether the camera kept the value is shown by readback/kept
+    (2026-09-24: the driver accepted gain 8, but reading it back gave 0).
     """
     name: str
     requested: Any
@@ -185,11 +192,11 @@ class WriteResult:
     due_in_s: float | None = None
     error: str | None = None
     ticket: int = 0
-    readback: Any = None          # written 일 때 쓴 직후 다시 읽은 값 (못 읽었으면 None)
+    readback: Any = None          # when written, the value read back right after the write (None if it could not be read)
 
     @property
     def kept(self) -> bool | None:
-        """카메라가 요청한 값을 지켰는가. written 이 아니거나 다시 읽지 못했으면 None."""
+        """Whether the camera kept the requested value. None if not written or if it could not be read back."""
         if self.status != "written" or self.readback is None:
             return None
         return self.readback == self.requested
@@ -200,7 +207,7 @@ def _result(t: tuple) -> WriteResult:
 
 
 def _on_event(kind: str, message: str, is_warning: bool) -> None:
-    """코어 워커의 알림 → 예전과 같은 로그 줄·RuntimeWarning."""
+    """Core worker notification -> the same log line / RuntimeWarning as before."""
     if kind == "warn_total":
         warnings.warn(message, RuntimeWarning, stacklevel=2)
     elif is_warning:
@@ -217,19 +224,19 @@ def _close_all() -> None:
     for c in list(_live):
         try:
             c.close()
-        except Exception:  # noqa: BLE001 — 종료 중
+        except Exception:  # noqa: BLE001 — shutting down
             pass
 
 
 class Controls:
-    """카메라 하나의 제어 전부. 읽기는 바로 하고, 쓰기는 워커 하나가 가드를 지키며 순서대로 한다.
+    """All controls of one camera. Reads happen immediately; writes are done in order by one worker that keeps the guard.
 
-    guard=False 는 합성 카메라용이다 — 간격·카운터를 쓰지 않는다(실제 장치에는 쓰지 말 것).
+    guard=False is for the synthetic camera: no gaps and no counters (do not use it on a real device).
     """
 
     def __init__(self, backend: Backend, *, guard: bool = True, note: str = "") -> None:
         _sync_guard()
-        # _ctrl_dshow.DShowBackend 는 안의 Rust 백엔드를 그대로 넘긴다(Python 을 거치지 않는다)
+        # _ctrl_dshow.DShowBackend passes its inner Rust backend straight through (no Python in between)
         inner = getattr(backend, "_core_backend", None)
         self._core = _native.core().CoreControls(inner if inner is not None else backend, guard, note, _on_event)
         self.backend_name: str = self._core.backend_name
@@ -237,43 +244,43 @@ class Controls:
         _live.add(self)
 
     def names(self) -> tuple[str, ...]:
-        """이 카메라에서 쓸 수 있는 제어 이름 — 이름 표 순서, 백엔드가 지원하는 것만."""
+        """Control names usable on this camera, in table order, only those the backend supports."""
         return tuple(self._core.names())
 
-    # ---- 쓰기 ----------------------------------------------------------------------------------
+    # ---- Writing -----------------------------------------------------------------------------
     def set(self, name: str, value: Any) -> WriteResult:
-        """기다리지 않는다. 결과는 pending / skipped_same. 최종 결과는 wait()·result()·flush()."""
+        """Does not wait. The result is pending / skipped_same. Final results come from wait(), result(), flush()."""
         return self.set_many({name: value})[0]
 
     def set_many(self, values: Mapping[str, Any]) -> list[WriteResult]:
-        """같은 그룹(예: auto_exposure + exposure)은 한 번의 쓰기로 합친다. 검증이 하나라도 실패하면 아무것도 넣지 않는다."""
+        """Merges the same group (e.g. auto_exposure + exposure) into one write. If any validation fails, nothing is queued."""
         _sync_guard()
         return [_result(t) for t in self._core.set_many(list(values.items()))]
 
     def flush(self, timeout: float | None = None) -> list[WriteResult]:
-        """대기 중인 쓰기가 끝날 때까지 기다린 뒤, 지난 flush 이후 끝난 결과를 돌려준다."""
+        """Waits until pending writes are done, then returns the results finished since the last flush."""
         return [_result(t) for t in self._core.flush(timeout)]
 
     def wait(self, tickets: Iterable[int], timeout: float | None = None) -> list[WriteResult]:
-        """주어진 요청들이 끝날 때까지 기다려 최종 결과를 돌려준다(시간 안에 안 끝난 것은 pending)."""
+        """Waits until the given requests are done and returns their final results (those not done in time are pending)."""
         return [_result(t) for t in self._core.wait([int(t) for t in tickets], timeout)]
 
     def result(self, ticket: int) -> WriteResult | None:
-        """끝났으면 최종 결과, 아직이면 None."""
+        """The final result if done, None if not yet."""
         t = self._core.result(int(ticket))
         return None if t is None else _result(t)
 
     def pending(self) -> dict[str, float]:
-        """대기 중인 요청 이름 → 쓰기까지 남은 초."""
+        """Pending request name -> seconds left until the write."""
         return dict(self._core.pending())
 
-    # ---- 닫기 ----------------------------------------------------------------------------------
+    # ---- Closing -----------------------------------------------------------------------------
     @property
     def closed(self) -> bool:
         return self._core.closed
 
     def close(self) -> None:
-        """대기 중인 쓰기는 보내지 않고 cancelled 로 끝낸다 — 닫히는 장치에 쓰지 않는다."""
+        """Pending writes are not sent; they end as cancelled. Nothing is written to a device that is closing."""
         self._core.close()
         _live.discard(self)
 
@@ -283,35 +290,36 @@ class Controls:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    # ---- 읽기 ----------------------------------------------------------------------------------
+    # ---- Reading -----------------------------------------------------------------------------
     def get(self, name: str) -> Any:
-        """장치의 지금 값. 모드를 읽을 수 없는 백엔드면 None."""
+        """The device's current value. None if the backend cannot read the mode."""
         return self._core.get(name)
 
     def describe(self, name: str | None = None) -> Any:
-        """이름 하나면 ControlInfo, 없으면 {이름: ControlInfo} 전부. 읽기만 한다."""
+        """ControlInfo for one name, or {name: ControlInfo} for all if no name is given. Read only."""
         if name is None:
             return {n: self.describe(n) for n in self.names()}
         return ControlInfo(**self._core.describe(name))
 
     def snapshot(self) -> dict[str, Any]:
-        """지금 값 전부(읽을 수 없는 것은 뺀다). restore() 로 되돌린다."""
+        """All current values (those that cannot be read are left out). Restore them with restore()."""
         return dict(self._core.snapshot())
 
     def restore(self, snap: Mapping[str, Any]) -> list[WriteResult]:
-        """스냅샷 값으로 되돌린다 — 다른 것만 쓴다. 자동으로 돌아가는 그룹의 값은 뺀다."""
+        """Restores snapshot values, writing only the ones that differ. Values of groups that are returned to auto are left out."""
         _sync_guard()
         return [_result(t) for t in self._core.restore([(n, v) for n, v in snap.items() if v is not None])]
 
     def plan_reset(self, *, include_mono: bool = False) -> dict[str, tuple[Any, Any]]:
-        """기본값 복원으로 바뀔 것 {이름: (지금, 기본값)} — 쓰지 않는다.
+        """What restoring defaults would change, as {name: (current, default)}. Does not write.
 
-        모드(자동/수동)는 건드리지 않고, 자동 상태인 값도 뺀다(AMCap 기본값 버튼과 같다).
-        흑백 무효 제어는 include_mono=True 일 때만. 장치가 기본값을 주지 않은 제어는 뺀다.
+        The mode (auto/manual) is not touched, and values currently in auto are left out (same as the
+        AMCap Default button). Controls with no effect on a monochrome sensor are included only with
+        include_mono=True. Controls for which the device reports no default are left out.
         """
         return {n: (c, d) for n, c, d in self._core.plan_reset(include_mono)}
 
     def reset_to_defaults(self, *, include_mono: bool = False) -> list[WriteResult]:
-        """plan_reset() 을 쓴다. 기다리지 않는다."""
+        """Writes plan_reset(). Does not wait."""
         _sync_guard()
         return [_result(t) for t in self._core.reset_to_defaults(include_mono)]

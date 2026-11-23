@@ -1,11 +1,14 @@
-"""톱니 버튼 뒤의 Settings 창 — 카메라가 광고하는 제어 전부.
+"""The Settings window behind the gear button: every control the camera advertises.
 
-행은 controls.describe() 에서 만든다: 범위를 준 정수 → 슬라이더, 불리언 → 체크박스, 메뉴 → 드롭다운,
-범위를 안 준 정수 → 값만(슬라이더를 지어내지 않는다). 흑백 센서에서 효과가 없는 제어는 맨 아래 접힌 묶음.
-슬라이더는 끄는 동안 값만 보여 주고 **놓을 때(마우스·방향키) 한 번** 쓴다 — 쓰기 간격이 12 ms 라(2026-09-28)
-끌 때마다 쓰면 드래그 한 번이 쓰기 수십 번이 된다.
-쓰기는 기다리지 않는다 — 가드가 늦추면 값 아래에 'applying in N s' 가 뜨고, 드라이버가 거부하면 빨간 글씨,
-드라이버는 받았는데 카메라가 값을 지키지 않으면 주황 'camera kept N' 과 함께 위젯이 카메라의 실제 값으로 돌아간다. 창 아래 'Writes this session' 은 프로세스 전체의 쓰기 합계다.
+Rows are built from controls.describe(): integer with a range -> slider, boolean -> checkbox, menu -> dropdown,
+integer without a range -> value only (no made-up slider). Controls with no effect on a monochrome sensor go
+in a collapsed group at the bottom.
+While dragging, a slider only shows the value and writes **once on release (mouse or arrow keys)**. The write
+gap is 12 ms (2026-09-28), so writing on every drag step would turn one drag into dozens of writes.
+Writes do not wait: if the guard delays one, 'applying in N s' appears under the value; if the driver refuses it,
+red text; if the driver accepted it but the camera did not keep the value, orange 'camera kept N' and the widget
+goes back to the camera's actual value. 'Writes this session' at the bottom of the window is the write total for
+the whole process.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ POLL_MS = 200
 
 
 class SettingsWindow:
-    """이미 열려 있으면 앞으로 가져오고, 새로 만들지 않는다. 카메라가 다시 열리면 행을 다시 만든다."""
+    """If already open, brings it to the front instead of making a new one. Rebuilds the rows when the camera is reopened."""
 
     def __init__(self, parent: tk.Misc, get_controls: Callable[[], Controls | None]) -> None:
         self.get_controls = get_controls
@@ -40,12 +43,12 @@ class SettingsWindow:
         self.top = tk.Toplevel(parent)
         self.top.title("Settings")
         self.top.configure(bg=BG)
-        self.top.minsize(640, 200)           # 높이는 내용대로 — 흑백 묶음을 펼치면 창이 늘어난다
+        self.top.minsize(640, 200)           # height follows content; expanding the monochrome group makes the window taller
 
         tabs = tk.Frame(self.top, bg=PANEL)
         tabs.pack(fill="x")
         tk.Label(tabs, text="CAMERA", bg=LIME, fg="#111111", font=MONO, padx=24, pady=8).pack(side="left")
-        # 아래 줄을 먼저 붙인다 — 나중에 붙이면 창이 모자랄 때 먼저 잘려 Reset 버튼이 사라진다
+        # pack the footer first; packed later, it is cut first when the window is too small and the Reset button disappears
         footer = tk.Frame(self.top, bg=PANEL, padx=18, pady=8)
         footer.pack(side="bottom", fill="x")
         self.banner = tk.Label(self.top, text="", bg="#3a3a1a", fg=TEXT, font=MONO_SMALL, anchor="w",
@@ -63,7 +66,7 @@ class SettingsWindow:
         self._rebuild()
         self.top.after(POLL_MS, self._poll)
 
-    # ---- 행 만들기 ------------------------------------------------------------------------------
+    # ---- building rows ---------------------------------------------------------------------------
     def _rebuild(self) -> None:
         for frame in (self.body, self.mono_body):
             for w in frame.winfo_children():
@@ -128,7 +131,7 @@ class SettingsWindow:
         value = tk.Label(f, text="" if row.widget == "menu" else value_text(row.name, cur), bg=BG, fg=LIME,
                          font=MONO, width=6, anchor="e")
         value.pack(side="left")
-        # 상태 줄은 행 아래에, 글이 있을 때만 — 옆에 두면 창 밖으로 밀려 안 보인다
+        # status line goes under the row, only when there is text; beside it, it is pushed out of the window and not visible
         status = tk.Label(parent, text="", bg=BG, fg=TEXT_DIM, font=MONO_SMALL, anchor="w")
         status.row_frame = f  # type: ignore[attr-defined]
         self.vars[row.name] = var
@@ -139,7 +142,7 @@ class SettingsWindow:
             self._status(row.name, MONO_NOTE, TEXT_DIM)
 
     def _show_value(self, name: str, value: Any) -> None:
-        """값 칸 — 드롭다운은 자기 글자가 값이라 비워 둔다."""
+        """Value cell; left empty for dropdowns, since their own text is the value."""
         label = self.value_labels.get(name)
         if label is not None:
             label.configure(text="" if isinstance(self.widgets.get(name), tk.OptionMenu) else value_text(name, value))
@@ -152,14 +155,14 @@ class SettingsWindow:
             self.mono_body.pack(fill="x", after=self.mono_toggle)
             self.mono_toggle.configure(text="No effect expected on this mono sensor ▾")
 
-    # ---- 쓰기 ------------------------------------------------------------------------------------
+    # ---- writing ---------------------------------------------------------------------------------
     def _preview(self, name: str) -> None:
-        """끄는 동안 — 값 칸만 따라가고 쓰지 않는다."""
+        """While dragging: only the value cell follows; nothing is written."""
         if name in self.vars:
             self._show_value(name, self.vars[name].get())
 
     def _release(self, name: str) -> None:
-        """놓을 때 한 번 쓴다. 잠긴 슬라이더(자동 노출 중의 노출 등)는 쓰지 않는다."""
+        """Writes once on release. A locked slider (e.g. exposure during auto exposure) is not written."""
         w = self.widgets.get(name)
         if w is None or str(w.cget("state")) == "disabled":
             return
@@ -194,7 +197,7 @@ class SettingsWindow:
             if w is None or not isinstance(w, tk.Scale):
                 continue
             w.configure(state="disabled" if target in off else "normal",
-                        troughcolor=BG if target in off else TRACK)          # 잠긴 슬라이더는 트랙을 지운다
+                        troughcolor=BG if target in off else TRACK)          # a locked slider hides its track
             if target == "exposure":
                 self._status(target, "switch AUTO EXPOSURE to manual to set exposure" if target in off else "",
                              TEXT_DIM)
@@ -220,7 +223,7 @@ class SettingsWindow:
             self.vars[name].set(v)
             self._show_value(name, v)
 
-    # ---- 주기적으로: 대기 표시, 결과, 쓰기 횟수, 카메라가 바뀌었는지 --------------------------------------
+    # ---- periodically: pending display, results, write count, whether the camera changed ----------
     def _poll(self) -> None:
         if not self.alive:
             return
@@ -242,7 +245,7 @@ class SettingsWindow:
                 if r.status == "failed":
                     self._status(name, "rejected by driver", RED)
                     self._reload(name)
-                elif r.kept is False:                   # 드라이버는 받았는데 카메라가 값을 지키지 않았다
+                elif r.kept is False:                   # the driver accepted it but the camera did not keep the value
                     self._status(name, f"camera kept {value_text(name, r.readback)}", ORANGE)
                     self._reload(name)
                 elif name not in pend:
@@ -252,7 +255,7 @@ class SettingsWindow:
                                     fg=ORANGE if total >= controls_mod.WARN_AFTER_TOTAL else TEXT_DIM)
         self.top.after(POLL_MS, self._poll)
 
-    # ---- 기본값 복원 -------------------------------------------------------------------------------
+    # ---- restoring defaults ----------------------------------------------------------------------
     def _open_reset(self) -> None:
         c = self.controls
         if c is None:
@@ -284,7 +287,7 @@ class SettingsWindow:
         if self.reset_dialog is not None:
             self.reset_dialog.destroy()
 
-    # ---- 창 --------------------------------------------------------------------------------------
+    # ---- window ----------------------------------------------------------------------------------
     def focus(self) -> None:
         self.top.lift()
         self.top.focus_force()

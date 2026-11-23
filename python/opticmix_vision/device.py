@@ -1,23 +1,24 @@
-"""카메라 열기 · 프레임 획득 · 스테레오 분리.
+"""Opening the camera, reading frames, splitting the two eyes.
 
-카메라는 UVC 표준 장치라 OS 기본 드라이버로 잡히고, 여기서는 OpenCV `VideoCapture` 로 연다.
-해상도 / fps / fourcc / 백엔드는 전부 **설정값** 이다 — 이 파일은 카메라가 어떤 모드를 내는지
-알지 못하고, 알아야 하는 값은 `DeviceConfig` 로 받는다.
+The camera is a standard UVC device, picked up by the OS's own driver; this module opens it with OpenCV
+`VideoCapture`. Resolution, fps, fourcc and backend are all **settings** — this module does not know which
+modes the camera delivers; whatever it needs comes in through `DeviceConfig`.
 
-스테레오 포장 방식(`layout`)과 좌우 순서(`lr_order`)는 카메라마다 다르다. Weevia S1 은
-`DeviceConfig.weevia_s1()` 이 실측값을 넣는다. 그 밖의 카메라는 호출자가 명시한다 — 기본값이 없다.
+How the two eyes are packed into one frame (`layout`) and which one comes first (`lr_order`) differ from
+camera to camera. For the Weevia S1, `DeviceConfig.weevia_s1()` fills in the measured values. For any other
+camera the caller states them — there are no defaults.
 
-  layout    "sbs"         한 프레임 가로로 [첫째 | 둘째]           (W = 2·w)
-            "tb"          한 프레임 세로로 [첫째 / 둘째]           (H = 2·h)
-            "plane_pack"  채널 2개짜리 프레임 (H, W, 2). 채널 0 = 첫째, 채널 1 = 둘째.
-                          (YUY2 로 태그된 raw 버퍼에서 Y 바이트 = 첫째, U/V 바이트 = 둘째 인 방식.
-                           OpenCV 에서는 CAP_PROP_CONVERT_RGB=0 이어야 (H, W, 2) 로 들어온다)
-  lr_order  "first_is_left"   첫째 반쪽이 왼쪽 카메라
-            "first_is_right"  첫째 반쪽이 오른쪽 카메라
+  layout    "sbs"         one frame, side by side [first | second]   (W = 2·w)
+            "tb"          one frame, stacked [first / second]        (H = 2·h)
+            "plane_pack"  a two-channel frame (H, W, 2). Channel 0 = first, channel 1 = second.
+                          (A raw buffer tagged YUY2 whose Y bytes are the first eye and U/V bytes the second.
+                           OpenCV delivers it as (H, W, 2) only with CAP_PROP_CONVERT_RGB=0)
+  lr_order  "first_is_left"   the first half is the left camera
+            "first_is_right"  the first half is the right camera
 
-타임스탬프: `StereoFrame.host_ns` 는 `cap.read()` 가 돌아온 직후의 호스트 단조시계
-(`time.perf_counter_ns`) 다. 장치 PTS 가 아니다 — 장치 PTS 노출 여부는 ❓ 미검증이며,
-OpenCV `CAP_PROP_POS_MSEC` 는 라이브 장치에서 드라이버/호스트 시계인 경우가 많아 여기서는 쓰지 않는다.
+Timestamps: `StereoFrame.host_ns` is the host monotonic clock (`time.perf_counter_ns`) right after
+`cap.read()` returns. It is not a device timestamp — whether the device exposes one is not verified, and on
+a live device OpenCV `CAP_PROP_POS_MSEC` is often the driver's or the host's clock, so it is not used here.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from .controls import Controls, ControlsUnavailable, reset_write_counts, write_c
 __all__ = [
     "prop_write_counts", "reset_prop_write_counts",
     "LAYOUTS", "LR_ORDERS", "BACKENDS",
-    "DeviceConfig", "NegotiatedMode", "StereoFrame", "DeviceError",
+    "DeviceConfig", "NegotiatedMode", "StereoFrame", "DeviceError", "EndOfRecording",
     "split_stereo", "Device",
 ]
 
@@ -61,42 +62,48 @@ BACKENDS = ("any", "dshow", "msmf", "v4l2", "avfoundation")
 # when the MJPG request was dropped the stream ran at 9.3 fps (measured 2026-09-13, one unit).
 # DeviceConfig.weevia_s1() uses these.
 WEEVIA_S1_NAME = "WN Dual Camera"
-from opticmix_vision import _native  # noqa: E402 — 이름 값이 코어와 같은지 import 때 확인한다(확장이 있을 때)
-if _native.available() and WEEVIA_S1_NAME != _native.core().WEEVIA_S1_NAME:   # 🔴 펌웨어 USB 이름
+from opticmix_vision import _native  # noqa: E402 — check at import that the name equals the core's (when the extension is there)
+if _native.available() and WEEVIA_S1_NAME != _native.core().WEEVIA_S1_NAME:   # the firmware's USB name — never change it
     raise ImportError(f"WEEVIA_S1_NAME {WEEVIA_S1_NAME!r} != core {_native.core().WEEVIA_S1_NAME!r}")
 WEEVIA_S1 = {"layout": "sbs", "lr_order": "first_is_right", "backend": "dshow",
             "width": 1600, "height": 800, "fps": 90.0, "fourcc": "MJPG"}
 
 
 class DeviceError(RuntimeError):
-    """카메라 열기/읽기 실패. 조용히 빈 프레임을 돌려주지 않는다."""
+    """Opening or reading the camera failed. An empty frame is never returned silently."""
 
 
-# --- UVC 제어 쓰기 --------------------------------------------------------------------------
-# 쓰기 보호(같은 값 건너뛰기·최신 값 합치기·간격)는 controls.py 가 한다. 여기 남은 것은 옛 이름 별칭이다.
+class EndOfRecording(DeviceError):
+    """`read()` reached the end of a recording file (see `DeviceConfig.recording`)."""
+
+
+# --- UVC control writes ----------------------------------------------------------------------
+# The write guard (skip equal values, collapse to the latest, spacing) lives in controls.py. What is left here are old-name aliases.
 
 def prop_write_counts() -> dict[str, int]:
-    """(호환) controls.write_counts() — 그룹별 + '_total'."""
+    """(Compatibility) controls.write_counts() — per group, plus '_total'."""
     return write_counts()
 
 
 def reset_prop_write_counts() -> None:
-    """(호환) controls.reset_write_counts() — USB 재삽입 뒤에만."""
+    """(Compatibility) controls.reset_write_counts() — only after re-inserting the USB cable."""
     reset_write_counts()
 
 
 @dataclass(frozen=True)
 class DeviceConfig:
-    """카메라 설정. width/height/fps/fourcc 는 **요청값** — 실제 협상 결과는 `Device.mode` 로 확인한다.
+    """Camera settings. width/height/fps/fourcc are **requests** — check what was negotiated with `Device.mode`.
 
-    device     OpenCV 장치 인덱스(int) 또는 경로 문자열("/dev/video0").
+    device     OpenCV device index (int) or a path string ("/dev/video0").
     backend    "any" | "dshow" | "msmf" (Windows) | "v4l2" (Linux) | "avfoundation" (macOS).
-    width/height/fps/fourcc  None 이면 드라이버 기본 모드를 그대로 쓴다 (설정 호출 생략).
-    layout / lr_order        필수. 기본값 없음 (Weevia S1 은 weevia_s1() 이 실측값을 넣는다).
-    to_gray    True 면 3채널로 디코드된 프레임을 8bit gray 로 바꿔 분리한다 (mono 센서라 정보 손실 없음).
-    stall_frames  한 눈이 이만큼 연속으로 바이트까지 같은 영상을 내면 read() 가 DeviceError — 시험한 유닛에서
-               드물게 한 눈이 멈췄고 USB 재삽입으로 돌아왔다. 살아 있는 눈에서 바이트까지 같은 프레임이
-               이어진 기록은 없다(유닛 1대, 밝은 방). 0 이면 끈다, 그 외에는 2 이상.
+    width/height/fps/fourcc  None keeps the driver's default mode (the setting is not sent).
+    layout / lr_order        Required, no default (for the Weevia S1, weevia_s1() fills in the measured values).
+    to_gray    True converts a frame decoded to 3 channels to 8-bit gray before splitting (a mono sensor, so
+               nothing is lost).
+    stall_frames  When one eye sends the byte-identical image this many frames in a row, read() raises
+               DeviceError — on the units we have tested one eye has occasionally stopped and came back after
+               re-inserting the USB cable. A live eye has never been recorded sending byte-identical frames in a
+               row (one unit, a lit room). 0 turns the check off; otherwise 2 or more.
     """
 
     layout: str
@@ -108,61 +115,81 @@ class DeviceConfig:
     fps: float | None = None
     fourcc: str | None = None
     to_gray: bool = True
-    buffer_size: int | None = 1          # 큐잉 지연 최소화. None 이면 설정 안 함.
-    extra_props: Mapping[str, float] = field(default_factory=dict)   # {"CAP_PROP_EXPOSURE": -5, ...} — controls 가드를 거친다
-    stall_frames: int = 90               # 90 fps 에서 1초
+    buffer_size: int | None = 1          # keeps queueing latency low. None: not set.
+    extra_props: Mapping[str, float] = field(default_factory=dict)   # {"CAP_PROP_EXPOSURE": -5, ...} — goes through the controls guard
+    stall_frames: int = 90               # 1 s at 90 fps
 
     def __post_init__(self) -> None:
         if self.layout not in LAYOUTS:
-            raise ValueError(f"layout 은 {LAYOUTS} 중 하나: {self.layout!r}")
+            raise ValueError(f"layout must be one of {LAYOUTS}: {self.layout!r}")
         if self.lr_order not in LR_ORDERS:
-            raise ValueError(f"lr_order 는 {LR_ORDERS} 중 하나: {self.lr_order!r}")
+            raise ValueError(f"lr_order must be one of {LR_ORDERS}: {self.lr_order!r}")
         if self.backend not in BACKENDS:
-            raise ValueError(f"backend 는 {BACKENDS} 중 하나: {self.backend!r}")
+            raise ValueError(f"backend must be one of {BACKENDS}: {self.backend!r}")
         for name in ("width", "height"):
             v = getattr(self, name)
             if v is not None and int(v) <= 0:
-                raise ValueError(f"{name} 는 양수: {v!r}")
+                raise ValueError(f"{name} must be positive: {v!r}")
         if self.fps is not None and float(self.fps) <= 0:
-            raise ValueError(f"fps 는 양수: {self.fps!r}")
+            raise ValueError(f"fps must be positive: {self.fps!r}")
         if self.fourcc is not None and len(self.fourcc) != 4:
-            raise ValueError(f"fourcc 는 4글자: {self.fourcc!r}")
+            raise ValueError(f"fourcc must be 4 characters: {self.fourcc!r}")
         if int(self.stall_frames) < 0 or int(self.stall_frames) == 1:
-            raise ValueError(f"stall_frames 는 0(끔) 또는 2 이상: {self.stall_frames!r}")
+            raise ValueError(f"stall_frames must be 0 (off) or 2 or more: {self.stall_frames!r}")
         object.__setattr__(self, "extra_props", dict(self.extra_props))
 
     @classmethod
     def weevia_s1(cls, **overrides: Any) -> "DeviceConfig":
-        """The measured settings for a Weevia S1, with the camera found by name (Windows).
+        """The measured settings for a Weevia S1, with the camera found by name.
 
         Picking a camera by index is how the wrong one gets opened: plugging in any
         other camera shifts the order. Pass ``device=`` to skip the lookup.
+
+        Windows: DirectShow lists the cameras. Linux: the `/dev/videoN` capture node whose name contains
+        'WN Dual Camera' in `/sys/class/video4linux`, and `backend` defaults to "v4l2".
+        Linux name lookup: implemented, not yet run on the camera.
         """
         from . import devices
+        linux = sys.platform.startswith("linux")
+        if linux:
+            overrides.setdefault("backend", "v4l2")
         if "device" not in overrides:
             try:
-                overrides["device"] = devices.resolve_by_name(WEEVIA_S1_NAME).index
+                overrides["device"] = (devices.find_v4l2_node(WEEVIA_S1_NAME) if linux
+                                       else devices.resolve_by_name(WEEVIA_S1_NAME).index)
             except LookupError as exc:
                 raise DeviceError(f"Weevia S1 ({WEEVIA_S1_NAME!r}) not found. {exc}") from exc
         return cls(**{**WEEVIA_S1, **overrides})
 
     @classmethod
-    def from_bringup_constants(cls, path: str | Path, **overrides: Any) -> "DeviceConfig":
-        """브링업 도구 산출물 `oem_uvc_constants.py` 를 읽는다.
+    def recording(cls, path: str | Path, **overrides: Any) -> "DeviceConfig":
+        """Plays a video file made by `examples/record_video.py` (both eyes side by side, left eye in the left
+        half) as if it were the camera. `read()` raises `EndOfRecording` after the last frame. `host_ns` is the
+        time the frame was read back, not when it was captured — the recording's CSV has the capture times.
+        A compressed recording does not have the camera's pixel values."""
+        p = Path(path)
+        if not p.is_file():
+            raise DeviceError(f"no such recording: {p}")
+        return cls(**{"layout": "sbs", "lr_order": "first_is_left", "device": str(p), "backend": "any",
+                      "buffer_size": None, "stall_frames": 0, **overrides})
 
-        파일은 대문자 상수 대입만 있는 파이썬이다 (BACKEND / DEVICE / RESOLUTION / FPS / FOURCC /
-        LAYOUT / LR_ORDER ...). BACKEND 가 'opencv' 가 아니면 이 SDK 로는 열 수 없으므로 에러다
-        (ffmpeg / pyuvc 백엔드는 v0 범위 밖). LAYOUT 이 'single' 이거나 LR_ORDER 가 미확정이면
-        스테레오 분리를 정의할 수 없으므로 역시 에러다 — 추측으로 채우지 않는다.
+    @classmethod
+    def from_bringup_constants(cls, path: str | Path, **overrides: Any) -> "DeviceConfig":
+        """Reads `oem_uvc_constants.py`, the output of a bring-up tool.
+
+        The file is Python with upper-case constant assignments only (BACKEND / DEVICE / RESOLUTION / FPS /
+        FOURCC / LAYOUT / LR_ORDER ...). A BACKEND other than 'opencv' cannot be opened with this SDK, so it is
+        an error (ffmpeg / pyuvc backends are out of scope). LAYOUT 'single' or an undecided LR_ORDER leave the
+        stereo split undefined, so they are errors too — nothing is filled in by guessing.
         """
         ns: dict[str, Any] = {}
         src = Path(path).read_text(encoding="utf-8")
-        exec(compile(src, str(path), "exec"), ns)  # noqa: S102 — 상수 대입만 있는 신뢰 파일
+        exec(compile(src, str(path), "exec"), ns)  # noqa: S102 — a trusted file of constant assignments
         kw: dict[str, Any] = {}
 
         backend = str(ns.get("BACKEND", "opencv"))
         if backend != "opencv":
-            raise ValueError(f"BACKEND={backend!r}: 이 SDK 는 OpenCV 백엔드만 지원한다")
+            raise ValueError(f"BACKEND={backend!r}: this SDK supports the OpenCV backend only")
 
         if "DEVICE" in ns:
             dev = str(ns["DEVICE"])
@@ -183,10 +210,10 @@ class DeviceConfig:
 
         layout = str(ns.get("LAYOUT", ""))
         if layout not in LAYOUTS:
-            raise ValueError(f"LAYOUT={layout!r}: 스테레오 분리를 정의할 수 없다 (브링업 재실행 필요)")
+            raise ValueError(f"LAYOUT={layout!r}: cannot define the stereo split (re-run the bring-up tool)")
         lr = str(ns.get("LR_ORDER", ""))
         if lr not in LR_ORDERS:
-            raise ValueError(f"LR_ORDER={lr!r}: 좌우 순서가 정해지지 않았다 — first_is_left 또는 first_is_right")
+            raise ValueError(f"LR_ORDER={lr!r}: left/right order is not set — it must be first_is_left or first_is_right")
         kw["layout"], kw["lr_order"] = layout, lr
         kw.update(overrides)
         return cls(**kw)
@@ -197,7 +224,7 @@ class DeviceConfig:
 
 @dataclass(frozen=True)
 class NegotiatedMode:
-    """장치가 실제로 준 모드 (`cap.get` 읽기값). 요청값과 다를 수 있다."""
+    """The mode the device actually gave (`cap.get` readback). It can differ from what was requested."""
 
     width: int
     height: int
@@ -214,22 +241,22 @@ class NegotiatedMode:
 class StereoFrame:
     left: np.ndarray            # (h, w) uint8
     right: np.ndarray           # (h, w) uint8
-    host_ns: int                # 호스트 단조시계, cap.read() 직후
-    index: int                  # 이 Device 가 낸 프레임 순번 (장치 번호 아님)
+    host_ns: int                # host monotonic clock, right after cap.read()
+    index: int                  # frame number from this Device (not a device counter)
 
     @property
     def size(self) -> tuple[int, int]:
-        """(width, height) — 한 눈 영상."""
+        """(width, height) of one eye's image."""
         h, w = self.left.shape[:2]
         return int(w), int(h)
 
 
 # ---------------------------------------------------------------------------
-# 순수 함수: 스테레오 분리
+# Pure function: stereo split
 # ---------------------------------------------------------------------------
 
 def _to_gray(frame: np.ndarray) -> np.ndarray:
-    """(H, W) / (H, W, 1) / (H, W, 3) → (H, W) uint8. 2채널은 여기서 다루지 않는다."""
+    """(H, W) / (H, W, 1) / (H, W, 3) → (H, W) uint8. Two channels are not handled here."""
     a = np.asarray(frame)
     if a.ndim == 2:
         return a
@@ -238,20 +265,20 @@ def _to_gray(frame: np.ndarray) -> np.ndarray:
     if a.ndim == 3 and a.shape[2] == 3:
         import cv2
         return cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
-    raise ValueError(f"gray 로 바꿀 수 없는 프레임 모양: {a.shape}")
+    raise ValueError(f"cannot convert a frame of shape {a.shape} to gray")
 
 
 def split_stereo(frame: np.ndarray, layout: str, lr_order: str, *, to_gray: bool = True
                  ) -> tuple[np.ndarray, np.ndarray]:
-    """한 프레임을 (left, right) 로 나눈다. 가능하면 뷰(view)를 돌려준다 — 복사가 필요하면 호출자가 한다.
+    """Splits one frame into (left, right). Returns views where possible — copy them yourself if needed.
 
-    sbs / tb 프레임이 3채널(BGR 디코드)로 들어오면 to_gray=True 일 때 gray 로 바꾼 뒤 나눈다.
-    plane_pack 은 (H, W, 2) 를 기대하고, (H, 2W) 2D 버퍼가 오면 (H, W, 2) 로 해석한다.
+    An sbs / tb frame that arrives with 3 channels (BGR decode) is converted to gray first when to_gray=True.
+    plane_pack expects (H, W, 2); a 2-D (H, 2W) buffer is read as (H, W, 2).
     """
     if layout not in LAYOUTS:
-        raise ValueError(f"layout 은 {LAYOUTS} 중 하나: {layout!r}")
+        raise ValueError(f"layout must be one of {LAYOUTS}: {layout!r}")
     if lr_order not in LR_ORDERS:
-        raise ValueError(f"lr_order 는 {LR_ORDERS} 중 하나: {lr_order!r}")
+        raise ValueError(f"lr_order must be one of {LR_ORDERS}: {lr_order!r}")
     a = np.asarray(frame)
 
     if layout == "plane_pack":
@@ -261,23 +288,23 @@ def split_stereo(frame: np.ndarray, layout: str, lr_order: str, *, to_gray: bool
             packed = a.reshape(a.shape[0], a.shape[1] // 2, 2)
             first, second = packed[:, :, 0], packed[:, :, 1]
         else:
-            raise ValueError(f"plane_pack 은 (H, W, 2) 또는 (H, 2W) 여야 한다: {a.shape}")
+            raise ValueError(f"plane_pack needs an (H, W, 2) or (H, 2W) frame: {a.shape}")
     else:
         g = _to_gray(a) if to_gray else a
         if g.ndim != 2:
-            raise ValueError(f"sbs/tb 분리는 2D gray 프레임이 필요하다 (to_gray=False 면 직접 변환): {g.shape}")
+            raise ValueError(f"sbs/tb split needs a 2D gray frame (with to_gray=False, convert it yourself): {g.shape}")
         h, w = g.shape
         if layout == "sbs":
             if w % 2:
-                raise ValueError(f"sbs: 폭이 홀수다 ({w})")
+                raise ValueError(f"sbs: frame width is odd ({w})")
             first, second = g[:, : w // 2], g[:, w // 2:]
         else:
             if h % 2:
-                raise ValueError(f"tb: 높이가 홀수다 ({h})")
+                raise ValueError(f"tb: frame height is odd ({h})")
             first, second = g[: h // 2], g[h // 2:]
 
     if first.shape != second.shape:
-        raise ValueError(f"두 반쪽 크기가 다르다: {first.shape} vs {second.shape}")
+        raise ValueError(f"the two halves differ in size: {first.shape} vs {second.shape}")
     return (first, second) if lr_order == "first_is_left" else (second, first)
 
 
@@ -286,9 +313,9 @@ def split_stereo(frame: np.ndarray, layout: str, lr_order: str, *, to_gray: bool
 # ---------------------------------------------------------------------------
 
 class Device:
-    """OpenCV VideoCapture 위의 얇은 래퍼. `with Device(cfg) as cam: frame = cam.read()`.
+    """A thin wrapper over OpenCV VideoCapture. `with Device(cfg) as cam: frame = cam.read()`.
 
-    capture 인자로 VideoCapture 호환 객체(get/set/read/isOpened/release)를 주입할 수 있다 — 테스트용.
+    The capture argument takes a VideoCapture-like object (get/set/read/isOpened/release) — for tests.
     """
 
     def __init__(self, config: DeviceConfig, *, capture: Any = None) -> None:
@@ -298,9 +325,26 @@ class Device:
         self._mode: NegotiatedMode | None = None
         self._index = 0
         self._prev: tuple[np.ndarray, np.ndarray] | None = None
-        self._same = [0, 0]              # 눈별 연속 동일 프레임 수
+        self._same = [0, 0]              # identical frames in a row, per eye
         self._controls: Controls | None = None
         self._controls_lock = threading.Lock()
+
+    @property
+    def calibration(self):
+        """This camera's calibration (StereoCalibration): the file installed with
+        `python -m opticmix_vision.calib add <file.json>`, when exactly one is installed. The SDK cannot check
+        that the file belongs to this camera (no USB serial). The video does not need it.
+        Raises calib.CalibLookupError saying what to do when none fits."""
+        if getattr(self, "_calib", None) is None:
+            from . import calib
+            c = calib.resolve()
+            w, h = c.left.size
+            got = ((self._mode.width, self._mode.height) if self._mode is not None   # negotiated, once open
+                   else (self.config.width, self.config.height))
+            if got[0] is not None and (got[0] // 2, got[1]) != (w, h):
+                raise calib.CalibLookupError(f"This calibration is for {w}x{h} eyes. Open the {2 * w}x{h} mode.")
+            self._calib = c
+        return self._calib
 
     # ---- lifecycle -------------------------------------------------------
     def open(self) -> "Device":
@@ -312,11 +356,12 @@ class Device:
             api_name = {"any": "CAP_ANY", "dshow": "CAP_DSHOW", "msmf": "CAP_MSMF",
                         "v4l2": "CAP_V4L2", "avfoundation": "CAP_AVFOUNDATION"}[self.config.backend]
             if not hasattr(cv2, api_name):
-                raise DeviceError(f"이 OpenCV 빌드에는 {api_name} 이 없다 (backend={self.config.backend})")
+                raise DeviceError(f"this OpenCV build has no {api_name} (backend={self.config.backend})")
             self._cap = cv2.VideoCapture(self.config.device, getattr(cv2, api_name))
         cap = self._cap
         if not cap.isOpened():
-            raise DeviceError(f"카메라 열기 실패: device={self.config.device!r} backend={self.config.backend}")
+            raise DeviceError(f"failed to open the camera: device={self.config.device!r} backend={self.config.backend} "
+                              "(unplugged, wrong index, or in use by another app?)")
 
         c = self.config
         # Order matters, and getting it wrong is silent. Size and frame rate
@@ -348,14 +393,14 @@ class Device:
         if c.buffer_size is not None:
             cap.set(cv2.CAP_PROP_BUFFERSIZE, int(c.buffer_size))
         if c.layout == "plane_pack":
-            cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)       # raw 2채널 버퍼 그대로
+            cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)       # the raw two-channel buffer as is
         fcc = int(cap.get(cv2.CAP_PROP_FOURCC))
         fcc_s = "".join(chr((fcc >> (8 * i)) & 0xFF) for i in range(4)) if fcc > 0 else ""
         backend_name = ""
         if hasattr(cap, "getBackendName"):
             try:
                 backend_name = str(cap.getBackendName())
-            except Exception:                           # 일부 빌드는 미지원
+            except Exception:                           # not supported by some builds
                 backend_name = ""
         self._mode = NegotiatedMode(
             width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -377,12 +422,12 @@ class Device:
             if name in _FORMAT_PROPS:
                 self.close()
                 raise DeviceError(
-                    f"{name} 은 extra_props 로 설정하면 안 된다 — 포맷이 재협상돼 fourcc 가 무시된다. "
-                    f"DeviceConfig 의 width/height/fps 를 써라."
+                    f"{name} must not be set through extra_props — the format is renegotiated and fourcc is ignored. "
+                    f"Use width/height/fps in DeviceConfig."
                 )
             mapped = to_controls(name, float(value), self._flavor())
             if mapped is None:
-                self._cap.set(getattr(cv2, name), float(value))      # 제어가 아닌 캡처 설정은 그대로
+                self._cap.set(getattr(cv2, name), float(value))      # capture settings that are not controls go straight through
             else:
                 values.update(mapped)
         if not values:
@@ -393,7 +438,7 @@ class Device:
         bad = [r for r in done if r.status not in ("written", "skipped_same", "superseded")]
         if bad:
             self.close()
-            raise DeviceError("extra_props 쓰기 실패: " + ", ".join(f"{r.name}={r.requested!r} {r.status} {r.error or ''}" for r in bad))
+            raise DeviceError("extra_props write failed: " + ", ".join(f"{r.name}={r.requested!r} {r.status} {r.error or ''}" for r in bad))
 
     def close(self) -> None:
         if self._controls is not None:
@@ -417,18 +462,20 @@ class Device:
     @property
     def mode(self) -> NegotiatedMode:
         if self._mode is None:
-            raise DeviceError("open() 전에는 협상 모드가 없다")
+            raise DeviceError("no negotiated mode before open()")
         return self._mode
 
     # ---- frames ------------------------------------------------------------
     def read_raw(self) -> tuple[np.ndarray, int]:
-        """분리 전 원본 프레임과 호스트 시각(ns). 실패는 예외."""
+        """The raw frame before the split, and the host time (ns). A failure raises."""
         if self._mode is None:
-            raise DeviceError("open() 먼저")
+            raise DeviceError("call open() first")
         ok, img = self._cap.read()
         t = time.perf_counter_ns()
         if not ok or img is None:
-            raise DeviceError("프레임 읽기 실패 (타임아웃 또는 장치 분리)")
+            if isinstance(self.config.device, str) and Path(self.config.device).is_file():
+                raise EndOfRecording(f"end of the recording: {self.config.device}")
+            raise DeviceError("frame read failed (timeout or camera unplugged)")
         return img, t
 
     def read(self) -> StereoFrame:
@@ -453,9 +500,9 @@ class Device:
                     "Re-insert the USB cable: unplug it and plug it back in (it sometimes takes two tries). "
                     "stall_frames=0 in DeviceConfig turns this check off.")
 
-    # ---- 카메라 제어 -----------------------------------------------------------------------------
+    # ---- camera controls--------------------------------------------------------------------------
     def _flavor(self) -> str:
-        """AE 숫자 규칙을 고를 백엔드 이름: dshow | v4l2 | msmf. 모르면 dshow 관례."""
+        """The backend whose auto-exposure numbering applies: dshow | v4l2 | msmf. Unknown: the dshow convention."""
         if self.config.backend in ("dshow", "v4l2", "msmf"):
             return self.config.backend
         name = (self._mode.backend_name if self._mode else "").upper()
@@ -463,9 +510,9 @@ class Device:
 
     @property
     def controls(self) -> Controls:
-        """이 카메라의 UVC 제어 전부(controls.py). 처음 부를 때 만든다."""
+        """Every UVC control of this camera (controls.py). Created on first use."""
         if self._cap is None or self._mode is None:
-            raise DeviceError("open() 먼저")
+            raise DeviceError("call open() first")
         with self._controls_lock:
             if self._controls is None:
                 self._controls = self._make_controls()
@@ -485,10 +532,10 @@ class Device:
         return Controls(OpenCVBackend(self._cap, self._flavor(), reason=reason))
 
     def get_prop(self, prop: str | int) -> float:
-        """(호환) OpenCV 이름으로 읽는다. 카메라 제어는 controls 를 거친다(AUTO_EXPOSURE 도 이제 읽힌다)."""
+        """(Compatibility) Reads by OpenCV name. Camera controls go through controls (AUTO_EXPOSURE now reads too)."""
         import cv2
         if self._cap is None:
-            raise DeviceError("open() 먼저")
+            raise DeviceError("call open() first")
         name = prop_name(prop)
         if name in CONTROL_PROPS and self._mode is not None:
             try:
@@ -501,18 +548,18 @@ class Device:
         return float(self._cap.get(pid))
 
     def set_prop(self, prop: str | int, value: float, *, wait: bool = True) -> bool:
-        """(호환) OpenCV 이름으로 카메라 제어를 쓴다 — 실제 쓰기는 controls 가 가드를 지키며 한다.
+        """(Compatibility) Writes a camera control by OpenCV name — the write itself goes through the controls guard.
 
-        CAP_PROP_EXPOSURE 는 예전처럼 알아서 수동으로 바꾼다(controls.set("exposure") 는 자동 중이면 거부한다).
-        wait=True 면 쓰기가 끝날 때까지 기다린다(가드 간격만큼 늦어질 수 있다).
-        반환: 썼거나 이미 그 값이면 True, 드라이버가 거부했으면 False.
+        CAP_PROP_EXPOSURE switches to manual by itself, as before (controls.set("exposure") refuses while auto).
+        wait=True waits until the write is done (it can be delayed by the guard's spacing).
+        Returns True when written or already at that value, False when the driver refused it.
         """
         if self._cap is None or self._mode is None:
-            raise DeviceError("open() 먼저")
+            raise DeviceError("call open() first")
         name = prop_name(prop)
         mapped = to_controls(name, float(value), self._flavor())
         if mapped is None:
-            raise DeviceError(f"{name} 은 카메라 제어가 아니다 — 해상도·fps·포맷은 DeviceConfig 로 정한다")
+            raise DeviceError(f"{name} is not a camera control — set resolution, fps and format in DeviceConfig")
         try:
             results = self.controls.set_many(mapped)
         except KeyError as exc:

@@ -1,19 +1,19 @@
-//! Windows 네이티브 백엔드 — DirectShow IAMVideoProcAmp / IAMCameraControl(Python `_ctrl_dshow.py`).
+//! Windows native backend — DirectShow IAMVideoProcAmp / IAMCameraControl (Python `_ctrl_dshow.py`).
 //!
-//! 전원 주파수(ProcAmp 13)·낮은 빛 보상(CameraControl 19)·범위·기본값·자동 노출 읽기가 OpenCV 로는 안 돼서 직접 부른다.
-//! 모든 COM 호출은 Controls 워커 스레드 한 곳에서만 한다(start/close 포함). 장치는 OpenCV 와 같은 순서로 센 index 번째
-//! 모니커이고, 이름이 Weevia S1 이 아니면 거부한다 — 다른 카메라에 쓰지 않는다.
+//! Called directly because OpenCV cannot do power-line frequency (ProcAmp 13), low-light compensation (CameraControl 19), ranges, defaults or reading auto exposure.
+//! Every COM call happens on the Controls worker thread only (start/close included). The device is the index-th moniker counted in
+//! the same order as OpenCV, and it is refused unless its name is Weevia S1 — nothing is written to another camera.
 //!
-//! 🔴 표준 Get/GetRange/Set 만 쓴다. 제조사 DLL·확장 유닛·KS 속성 직접 호출 경로는 만들지 않는다.
+//! **Only the standard Get/GetRange/Set.** There is no path that calls a vendor DLL, a UVC XU control or a KS property directly.
 
 use crate::error::{Result, SdkError};
 pub use crate::spec::EXPECTED_NAMES;
 
-/// Python `_ctrl_dshow.py` 와 같은 값. 0.62.2 에서 이 두 CLSID 는 MediaFoundation 모듈에 있어 직접 둔다.
+/// Same values as Python `_ctrl_dshow.py`. In `windows` 0.62.2 these two CLSIDs live in the MediaFoundation module, so they are defined here.
 pub const CLSID_SYSTEM_DEVICE_ENUM: u128 = 0x62be5d10_60eb_11d0_bd3b_00a0c911ce86;
 pub const CLSID_VIDEO_INPUT_DEVICE_CATEGORY: u128 = 0x860bb310_5d01_11d0_bd3b_00a0c911ce86;
 
-/// 장치 이름이 기대 이름 중 하나를 (대소문자 무시) 포함하는가.
+/// Whether the device name contains one of the expected names (case-insensitive).
 pub fn name_matches(name: &str, expected: &[&str]) -> bool {
     let low = name.to_lowercase();
     expected.iter().any(|e| low.contains(&e.to_lowercase()))
@@ -26,7 +26,7 @@ fn repr_name(name: &Option<String>) -> String {
     }
 }
 
-/// index 번째 장치가 Weevia S1 인지 확인한다. 아니면 Unavailable — 다른 카메라에 쓰지 않는다.
+/// Checks that the index-th device is a Weevia S1. Otherwise Unavailable — nothing is written to another camera.
 pub fn choose(names: &[Option<String>], index: usize, expected: &[&str]) -> Result<()> {
     if index >= names.len() {
         return Err(SdkError::Unavailable(format!(
@@ -45,8 +45,8 @@ pub fn choose(names: &[Option<String>], index: usize, expected: &[&str]) -> Resu
     Ok(())
 }
 
-/// DirectShow 영상 입력 장치 이름을 OpenCV 와 같은 순서로(바인드 실패도 센다). 아무 장치에도 바인드하지 않는다(읽기만).
-/// Windows 가 아니면 빈 목록.
+/// DirectShow video input device names, in the same order as OpenCV (devices that fail to bind are counted too). Binds to no device (read-only).
+/// Empty list on non-Windows.
 pub fn enumerate_video_devices() -> Result<Vec<Option<String>>> {
     #[cfg(windows)]
     {
@@ -63,7 +63,25 @@ pub fn enumerate_video_devices() -> Result<Vec<Option<String>>> {
     }
 }
 
-/// 시험·진단용: 이 모듈이 쓰는 GUID 의 메모리 16바이트(Python ctypes GUID 와 같은 배치).
+/// (name, DevicePath) for each DirectShow video input device, same order as `enumerate_video_devices`.
+/// Binds to no device (read-only). Empty list on non-Windows.
+pub fn enumerate_video_device_paths() -> Result<Vec<(Option<String>, Option<String>)>> {
+    #[cfg(windows)]
+    {
+        let _com = com::ComInit::mta()?;
+        let out = com::monikers()?
+            .iter()
+            .map(|m| (com::friendly_name(m), com::device_path(m)))
+            .collect();
+        Ok(out)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+/// For tests and diagnostics: the 16 in-memory bytes of a GUID this module uses (same layout as a Python ctypes GUID).
 #[cfg(windows)]
 pub fn guid_bytes(name: &str) -> Option<[u8; 16]> {
     use windows::core::{Interface, GUID};
@@ -109,7 +127,7 @@ pub(crate) mod com {
         }
     }
 
-    /// 바인드된 장치. 필드 순서 = 놓는 순서: 제어 인터페이스 → 필터 → CoUninitialize.
+    /// The bound device. Field order = drop order: control interfaces → filter → CoUninitialize.
     pub(crate) struct Bound {
         pub(crate) procamp: Option<windows::Win32::Media::DirectShow::IAMVideoProcAmp>,
         pub(crate) camera: Option<windows::Win32::Media::DirectShow::IAMCameraControl>,
@@ -117,7 +135,7 @@ pub(crate) mod com {
         pub(crate) _init: ComInit,
     }
 
-    /// 이 스레드의 COM(MTA). 이미 다른 모드면(RPC_E_CHANGED_MODE) 그대로 쓰고 해제하지 않는다 — Python 과 같다.
+    /// COM on this thread (MTA). If it is already in another mode (RPC_E_CHANGED_MODE), it is used as is and not released — same as Python.
     pub(crate) struct ComInit {
         owned: bool,
     }
@@ -146,7 +164,7 @@ pub(crate) mod com {
         }
     }
 
-    /// 영상 입력 장치 모니커 전부, OpenCV 와 같은 순서. 영상 장치가 하나도 없으면 빈 목록.
+    /// All video input device monikers, in the same order as OpenCV. Empty if there is no video device.
     pub(crate) fn monikers() -> Result<Vec<IMoniker>> {
         let devenum: ICreateDevEnum = unsafe {
             CoCreateInstance(
@@ -182,11 +200,20 @@ pub(crate) mod com {
         Ok(out)
     }
 
-    /// 모니커의 FriendlyName(속성 가방만 연다 — 장치에는 바인드하지 않는다).
+    /// The moniker's FriendlyName (opens the property bag only — does not bind to the device).
     pub(crate) fn friendly_name(mon: &IMoniker) -> Option<String> {
+        bag_string(mon, w!("FriendlyName"))
+    }
+
+    /// 모니커의 DevicePath(USB 포트를 찾는 데 쓴다). 가상 카메라는 없을 수 있다.
+    pub(crate) fn device_path(mon: &IMoniker) -> Option<String> {
+        bag_string(mon, w!("DevicePath"))
+    }
+
+    fn bag_string(mon: &IMoniker, key: windows::core::PCWSTR) -> Option<String> {
         let bag: IPropertyBag = unsafe { mon.BindToStorage(None, None) }.ok()?;
         let mut var = VARIANT::default();
-        unsafe { bag.Read(w!("FriendlyName"), &mut var, None) }.ok()?;
+        unsafe { bag.Read(key, &mut var, None) }.ok()?;
         let name = unsafe {
             let inner = &var.Anonymous.Anonymous;
             if inner.vt == VT_BSTR {
@@ -207,7 +234,7 @@ use crate::backend::{Backend, RawRange};
 pub use crate::spec::Iface;
 use crate::spec::{is_auto_capable, ks_id, FLAG_AUTO, FLAG_MANUAL};
 
-/// Set 의 flags(Python `DShowBackend.write`): 자동 가능 키는 auto→1, 그 외(수동·None)→2. 나머지 키는 0(OpenCV 가 쓰던 값).
+/// Set flags (Python `DShowBackend.write`): for auto-capable keys auto → 1, otherwise (manual or None) → 2. Other keys get 0 (what OpenCV used).
 pub fn set_flags(key: &str, auto: Option<bool>) -> i32 {
     if !is_auto_capable(key) {
         return 0;
@@ -219,7 +246,7 @@ pub fn set_flags(key: &str, auto: Option<bool>) -> i32 {
     }
 }
 
-/// 진단(읽기 전용) Get 결과 — 이름 표 밖 id 를 볼 때.
+/// Diagnostic (read-only) Get result — for looking at ids outside the name table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawGet {
     pub hr: i32,
@@ -227,7 +254,7 @@ pub struct RawGet {
     pub flags: i32,
 }
 
-/// 진단(읽기 전용) GetRange 결과.
+/// Diagnostic (read-only) GetRange result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawRangeOut {
     pub hr: i32,
@@ -238,9 +265,10 @@ pub struct RawRangeOut {
     pub caps: i32,
 }
 
-/// DirectShow 백엔드. 만들 때는 아무것도 열지 않는다 — `start()` 가 (워커 스레드에서) 열거·이름 확인·바인드를 한다.
+/// DirectShow backend. Creating it opens nothing — `start()` (on the worker thread) enumerates, checks the name and binds.
 pub struct DShowBackend {
     index: usize,
+    #[cfg_attr(not(windows), allow(dead_code))] // start() 의 Windows 블록에서만 읽는다
     expected: Vec<String>,
     device_name: String,
     #[cfg(windows)]
@@ -253,7 +281,7 @@ pub struct DShowBackend {
 unsafe impl Send for DShowBackend {}
 
 impl DShowBackend {
-    /// Windows 가 아니면 Unavailable.
+    /// Unavailable on non-Windows.
     pub fn new(index: usize, expected: &[&str]) -> Result<DShowBackend> {
         if cfg!(not(windows)) {
             return Err(SdkError::Unavailable(
@@ -290,7 +318,7 @@ impl DShowBackend {
         })
     }
 
-    /// 진단: 아무 id 나 Get(읽기만). 인터페이스가 없거나 시작 전이면 None.
+    /// Diagnostic: Get on any id (read-only). None if the interface is missing or before start.
     pub fn raw_get(&self, iface: Iface, pid: i32) -> Option<RawGet> {
         #[cfg(windows)]
         {
@@ -303,7 +331,7 @@ impl DShowBackend {
         }
     }
 
-    /// 진단: 아무 id 나 GetRange(읽기만). 인터페이스가 없거나 시작 전이면 None.
+    /// Diagnostic: GetRange on any id (read-only). None if the interface is missing or before start.
     pub fn raw_range(&self, iface: Iface, pid: i32) -> Option<RawRangeOut> {
         #[cfg(windows)]
         {
@@ -429,7 +457,7 @@ impl Backend for DShowBackend {
 
 #[cfg(windows)]
 impl com::Bound {
-    /// index 번째 모니커가 기대 이름이면 IBaseFilter 로 바인드하고 두 제어 인터페이스를 얻는다.
+    /// If the index-th moniker has an expected name, binds it as IBaseFilter and gets the two control interfaces.
     fn open(index: usize, expected: &[&str]) -> Result<(com::Bound, String)> {
         use windows::core::Interface;
         use windows::Win32::Media::DirectShow::IBaseFilter;
@@ -521,7 +549,7 @@ impl com::Bound {
         }
     }
 
-    /// 실패하면 HRESULT. 인터페이스가 있는지는 부르는 쪽이 먼저 본다(`has`).
+    /// HRESULT on failure. The caller checks first whether the interface exists (`has`).
     fn set(&self, iface: Iface, pid: i32, value: i32, flags: i32) -> std::result::Result<(), i32> {
         let r = unsafe {
             match (iface, &self.procamp, &self.camera) {
@@ -538,7 +566,8 @@ impl com::Bound {
 mod tests {
     use super::*;
 
-    /// Python `_ctrl_dshow.py` 의 GUID 문자열(그 파일에 그대로 있어야 한다 — 아래 시험이 확인).
+    /// GUID strings from Python `_ctrl_dshow.py` (they must be in that file as is — the test below checks).
+    #[cfg(windows)]
     const PY_GUIDS: [(&str, &str); 7] = [
         (
             "CLSID_SystemDeviceEnum",
@@ -561,7 +590,8 @@ mod tests {
         ),
     ];
 
-    /// uuid.UUID(text).bytes_le — Python ctypes GUID 구조체에 들어가는 16바이트.
+    /// uuid.UUID(text).bytes_le — the 16 bytes that go into a Python ctypes GUID structure.
+    #[cfg(windows)]
     fn bytes_le(text: &str) -> [u8; 16] {
         let hex: String = text.chars().filter(|c| *c != '-').collect();
         let b: Vec<u8> = (0..16)
@@ -582,7 +612,7 @@ mod tests {
         for (name, text) in PY_GUIDS {
             assert!(
                 src.contains(&format!("{name} = GUID.parse(\"{text}\")")),
-                "{name} 가 Python 파일과 다르다"
+                "{name} differs from the Python file"
             );
             assert_eq!(guid_bytes(name).unwrap(), bytes_le(text), "{name}");
         }
@@ -618,7 +648,7 @@ mod tests {
         ); // 대소문자 무시 부분일치
     }
 
-    /// 🔴 COM 으로 실제 장치를 열거한다(바인드 없음, 이름만). 기본 실행에서 빠진다 — 명시적으로만:
+    /// Enumerates real devices through COM (no binding, names only). Left out of the default run — only explicitly:
     /// `cargo test -- --ignored enumeration_runs_through_com_without_binding_anything`
     #[test]
     #[ignore]
@@ -638,6 +668,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn directshow_is_refused_off_windows() {
+        assert_eq!(
+            DShowBackend::new(0, &EXPECTED_NAMES).err(),
+            Some(SdkError::Unavailable("DirectShow controls are Windows-only".into()))
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn a_backend_that_was_not_started_touches_nothing() {
         let mut b = DShowBackend::new(0, &EXPECTED_NAMES).unwrap();
         assert_eq!(

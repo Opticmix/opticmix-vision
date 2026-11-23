@@ -35,6 +35,7 @@ def test_ffmpeg_still_wins_when_present(monkeypatch):
 
 # ---------------------------------------------------------------- one place for the measured Weevia S1 settings
 def test_weevia_s1_config_uses_the_measured_values_and_finds_the_camera_by_name(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(devices, "list_devices",
                         lambda **_: [devices.DeviceInfo(0, "Example Front Webcam"), devices.DeviceInfo(1, "WN Dual Camera")])
     cfg = DeviceConfig.weevia_s1()
@@ -45,8 +46,36 @@ def test_weevia_s1_config_uses_the_measured_values_and_finds_the_camera_by_name(
 
 
 def test_weevia_s1_config_says_what_it_saw_when_the_camera_is_missing(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(devices, "list_devices", lambda **_: [devices.DeviceInfo(0, "Example Front Webcam")])
     with pytest.raises(DeviceError, match="Example Front Webcam"):
+        DeviceConfig.weevia_s1()
+
+
+def _sysfs(tmp_path, nodes):
+    for n, (name, index) in nodes.items():
+        d = tmp_path / n
+        d.mkdir()
+        (d / "name").write_text(name + "\n")
+        (d / "index").write_text(f"{index}\n")
+    return str(tmp_path)
+
+
+def test_weevia_s1_on_linux_finds_the_capture_node_by_name_and_uses_v4l2(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(devices, "SYSFS_V4L", _sysfs(tmp_path, {
+        "video0": ("Integrated Webcam", 0), "video1": ("Integrated Webcam", 1),
+        "video2": ("WN Dual Camera: WN Dual Camera", 0), "video3": ("WN Dual Camera: WN Dual Camera", 1)}))
+    cfg = DeviceConfig.weevia_s1()
+    assert (cfg.device, cfg.backend, cfg.lr_order) == ("/dev/video2", "v4l2", "first_is_right")
+    assert DeviceConfig.weevia_s1(device="/dev/video5").backend == "v4l2"
+
+
+def test_weevia_s1_on_linux_refuses_two_cameras(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(devices, "SYSFS_V4L", _sysfs(tmp_path, {
+        "video0": ("WN Dual Camera", 0), "video1": ("WN Dual Camera", 1), "video2": ("WN Dual Camera", 0)}))
+    with pytest.raises(DeviceError, match=r"not found\. 2 video capture nodes .*\['/dev/video0', '/dev/video2'\]"):
         DeviceConfig.weevia_s1()
 
 
@@ -92,6 +121,7 @@ def test_quickstart_help_runs():
 
 
 def test_explorer_prefers_the_weevia_s1_over_the_first_camera_listed():
+    pytest.importorskip("tkinter")  # explorer.app imports tkinter; Python builds without it (Linux slim images) skip
     from opticmix_vision.explorer.app import preferred_device
     listed = [devices.DeviceInfo(0, "Example Front Webcam"), devices.DeviceInfo(1, "WN Dual Camera")]
     assert preferred_device(listed).name == "WN Dual Camera"
@@ -130,8 +160,10 @@ def test_native_enumeration_is_importable():
 
 
 def test_explorer_opens_the_weevia_s1_with_the_measured_eye_order(monkeypatch):
-    tk = pytest.importorskip("tkinter")
-    from opticmix_vision.explorer import app as explorer
+    try:   # not importorskip: a Python with _tkinter but no Tk library raises ImportError, which it does not skip
+        from opticmix_vision.explorer import app as explorer
+    except ImportError as exc:
+        pytest.skip(f"no Tk: {exc}")
     seen = {}
 
     class _Dev:

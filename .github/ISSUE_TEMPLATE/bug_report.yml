@@ -1,0 +1,50 @@
+name: Bug report
+description: Something in the SDK does not work as the README says
+labels: ["bug"]
+body:
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest code or command that shows the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: The full error message or output.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: SDK version
+      description: "python -c \"import opticmix_vision; print(opticmix_vision.__version__)\" — or the crate version"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and Python version
+      placeholder: "Windows 11, Python 3.12"
+    validations:
+      required: true
+  - type: textarea
+    id: mode
+    attributes:
+      label: Output of cam.mode (if a camera was open)
+      render: shell
+  - type: input
+    id: usb
+    attributes:
+      label: How the camera is connected
+      placeholder: "USB 3 port on the computer / through a hub"

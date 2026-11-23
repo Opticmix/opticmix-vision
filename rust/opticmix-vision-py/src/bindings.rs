@@ -1,9 +1,9 @@
-//! `opticmix_vision._core` — Rust 코어를 Python 에서 부르는 얇은 층. 제어 로직은 코어 한 벌뿐이고, 여기서는
-//! 값·예외·결과를 Python 모양으로 바꾸기만 한다(Python 래퍼 `opticmix_vision.controls` 등이 기존 공개 API 를 지킨다).
+//! `opticmix_vision._core` — the thin layer that calls the Rust core from Python. There is one copy of the control logic, in the core; here
+//! values, exceptions and results are only converted to Python shapes (the Python wrapper `opticmix_vision.controls` and others keep the public API).
 //!
-//! 🔴 GIL: 워커 결과를 기다리는 모든 호출은 GIL 을 놓고 기다린다(`py.detach`). 놓지 않으면 Python 백엔드
-//! (`PyBackend`, 예: SimBackend·OpenCVBackend)를 부르려는 워커와 교착한다.
-//! 예외는 Python 모듈에 정의된 클래스(ControlsUnavailable·ControlStateError·NoMatch·MultipleMatches)를 import 해 던진다.
+//! GIL: every call that waits for a worker result releases the GIL while waiting (`py.detach`). Otherwise it deadlocks with a worker that
+//! wants to call a Python backend (`PyBackend`, e.g. SimBackend, OpenCVBackend).
+//! Exceptions are classes defined in the Python module (ControlsUnavailable, ControlStateError, NoMatch, MultipleMatches), imported and raised.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -31,7 +31,7 @@ fn raise_as(py: Python<'_>, module: &str, name: &str, msg: String) -> PyErr {
     }
 }
 
-/// 코어 오류 → Python 예외.
+/// Core error → Python exception.
 fn to_py(py: Python<'_>, e: SdkError) -> PyErr {
     let msg = e.to_string();
     match e {
@@ -47,6 +47,7 @@ fn to_py(py: Python<'_>, e: SdkError) -> PyErr {
         SdkError::MultipleMatches(_) => {
             raise_as(py, "opticmix_vision.devices", "MultipleMatches", msg)
         }
+        SdkError::Device(_) => raise_as(py, "opticmix_vision.device", "DeviceError", msg),
         SdkError::Foreign { type_name, message } => {
             // 바깥 백엔드가 던진 내장 예외는 같은 타입으로 되살린다
             let builtin = py
@@ -67,7 +68,7 @@ fn to_py(py: Python<'_>, e: SdkError) -> PyErr {
     }
 }
 
-/// Python 예외 → 코어 오류. ControlsUnavailable 는 그대로 Unavailable(Controls 가 올린다).
+/// Python exception → core error. ControlsUnavailable stays Unavailable (Controls raises it).
 fn from_py(py: Python<'_>, e: PyErr) -> SdkError {
     let message = e.value(py).str().map(|s| s.to_string()).unwrap_or_default();
     if let Some(cu) = py_class(py, "opticmix_vision.controls", "ControlsUnavailable") {
@@ -85,7 +86,7 @@ fn from_py(py: Python<'_>, e: PyErr) -> SdkError {
 
 // ---- 값 --------------------------------------------------------------------------------------
 
-/// Python 값 → UserValue. bool 먼저(bool 은 int 의 하위형), 정수(numpy 정수는 __index__), 실수, 문자열.
+/// Python value → UserValue. bool first (bool is a subtype of int), then integer (numpy integers via __index__), float, string.
 fn user_value(v: &Bound<'_, PyAny>) -> PyResult<UserValue> {
     if v.is_instance_of::<PyBool>() {
         return Ok(UserValue::Bool(v.extract::<bool>()?));
@@ -182,7 +183,7 @@ fn control_info<'py>(py: Python<'py>, i: &ControlInfo) -> PyResult<Bound<'py, Py
 
 // ---- 표·변환·가드 -------------------------------------------------------------------------------
 
-/// Python `controls.CONTROLS` 를 만들 행들(ControlSpec 필드 이름 그대로).
+/// Rows for building Python `controls.CONTROLS` (field names as in ControlSpec).
 #[pyfunction]
 fn controls_table(py: Python<'_>) -> PyResult<Bound<'_, PyList>> {
     let rows: PyResult<Vec<_>> = CONTROLS
@@ -242,7 +243,7 @@ fn same(
     convert::same(value, auto, cur_value, cur_auto)
 }
 
-/// Python 모듈 전역(GROUP_MIN_INTERVAL_S·GLOBAL_MIN_GAP_S·WARN_AFTER_TOTAL)을 넘긴다. 원장 경로는 그대로 둔다.
+/// Passes the Python module globals (GROUP_MIN_INTERVAL_S·GLOBAL_MIN_GAP_S·WARN_AFTER_TOTAL). The write log path is left as is.
 #[pyfunction]
 fn set_guard_config(
     group_intervals: HashMap<String, f64>,
@@ -348,12 +349,12 @@ fn resolve_by_name(
     Ok((d.index, d.name))
 }
 
-/// query() 반환: (minimum, maximum, step, default, can_auto).
+/// query() return: (minimum, maximum, step, default, can_auto).
 type RangeTuple = (i64, i64, i64, Option<i64>, bool);
-/// plan_reset() 한 줄: (이름, 지금, 기본값).
+/// One plan_reset() line: (name, current, default).
 type PlanRow<'py> = (String, Bound<'py, PyAny>, Bound<'py, PyAny>);
 
-/// 이미 가진 (순번, 이름) 목록에서 이름으로 하나 고른다 → (순번, 이름).
+/// Picks one by name from an existing (index, name) list → (index, name).
 #[pyfunction]
 fn pick_by_name(
     py: Python<'_>,
@@ -370,13 +371,13 @@ fn pick_by_name(
 
 // ---- DirectShow 백엔드 -------------------------------------------------------------------------
 
-/// Rust DShowBackend. Controls 에 넘기면 안의 백엔드를 꺼내 워커 스레드로 옮긴다(그 뒤 이 객체는 빈 껍데기).
-/// 단독 사용(진단 스크립트: start → query/read/raw_get → close)도 된다 — 한 스레드에서 부를 것.
+/// Rust DShowBackend. Handed to Controls, its inner backend is taken out and moved to the worker thread (this object is then an empty shell).
+/// Standalone use (diagnostic scripts: start → query/read/raw_get → close) works too — call it from one thread.
 #[pyclass(name = "DShowBackend", module = "opticmix_vision._core")]
 struct PyDShow {
     inner: Mutex<Option<dshow::DShowBackend>>,
     started: Mutex<bool>,
-    /// 되읽기 동치 도구용: 쓰기를 백엔드에 닿기 전에 거부한다(Controls 에 넘기면 ReadOnly 로 감싼다).
+    /// For the read-back equivalence tool: rejects writes before they reach the backend (wrapped as ReadOnly when passed to Controls).
     read_only: bool,
 }
 
@@ -441,7 +442,7 @@ impl PyDShow {
         self.with(py, |b| Ok(b.supports(key)))
     }
 
-    /// (minimum, maximum, step, default, can_auto) 또는 None.
+    /// (minimum, maximum, step, default, can_auto) or None.
     fn query(&self, py: Python<'_>, key: &str) -> PyResult<Option<RangeTuple>> {
         Ok(self
             .with(py, |b| b.query(key))?
@@ -472,7 +473,7 @@ impl PyDShow {
         self.with(py, |b| b.write(key, value, auto))
     }
 
-    /// 진단(읽기 전용). Python 과 같은 dict: {"hr","value","flags"} 또는 {"error"}.
+    /// Diagnostic (read-only). Same dict as Python: {"hr","value","flags"} or {"error"}.
     fn raw_get<'py>(&self, py: Python<'py>, iface: &str, pid: i32) -> PyResult<Bound<'py, PyDict>> {
         let i = iface_of(iface)?;
         let d = PyDict::new(py);
@@ -487,7 +488,7 @@ impl PyDShow {
         Ok(d)
     }
 
-    /// 진단(읽기 전용). {"hr","min","max","step","default","caps"} 또는 {"error"}.
+    /// Diagnostic (read-only). {"hr","min","max","step","default","caps"} or {"error"}.
     fn raw_range<'py>(
         &self,
         py: Python<'py>,
@@ -521,7 +522,7 @@ impl PyDShow {
 
 // ---- Python 백엔드 어댑터 ----------------------------------------------------------------------
 
-/// Python 객체(SimBackend·OpenCVBackend·사용자 백엔드)를 코어 Backend 로. 워커 스레드에서 GIL 을 잡고 부른다.
+/// A Python object (SimBackend, OpenCVBackend, a user backend) as a core Backend. Called on the worker thread with the GIL held.
 struct PyBackend {
     obj: Py<PyAny>,
     name: String,
@@ -632,7 +633,7 @@ fn event_kind(e: &Event) -> &'static str {
     }
 }
 
-/// 코어 Controls. Python 래퍼 `controls.Controls` 가 감싼다.
+/// Core Controls. Wrapped by the Python `controls.Controls`.
 #[pyclass(name = "CoreControls", module = "opticmix_vision._core")]
 struct CoreControls {
     inner: Controls,
@@ -650,8 +651,8 @@ fn values_arg(items: &Bound<'_, PyAny>) -> PyResult<Vec<(String, UserValue)>> {
 
 #[pymethods]
 impl CoreControls {
-    /// backend: `_core.DShowBackend`(안의 Rust 백엔드를 꺼내 쓴다) 또는 Backend 프로토콜을 따르는 Python 객체.
-    /// on_event(kind, message, is_warning): 워커 스레드에서 불린다.
+    /// backend: `_core.DShowBackend` (its inner Rust backend is taken out) or a Python object following the Backend protocol.
+    /// on_event(kind, message, is_warning): called on the worker thread.
     #[new]
     #[pyo3(signature = (backend, guard=true, note="", on_event=None))]
     fn new(
@@ -825,7 +826,7 @@ impl Drop for CoreControls {
 
 // ---- 모듈 --------------------------------------------------------------------------------------
 
-/// 모듈에 바인딩 전부를 단다. `#[pymodule]` 은 lib.rs 에 있다.
+/// Attaches every binding to the module. `#[pymodule]` is in lib.rs.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("WEEVIA_S1_NAME", spec::WEEVIA_S1_NAME)?;
     m.add(
