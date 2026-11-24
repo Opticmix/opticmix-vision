@@ -54,3 +54,16 @@ def test_using_controls_or_devices_without_the_extension_says_what_to_install():
         print("RAISE_OK")
     """)
     assert r.returncode == 0 and "RAISE_OK" in r.stdout, r.stderr
+
+
+def test_the_doctor_reports_a_missing_extension_instead_of_failing():
+    r = _run("""
+        import tempfile
+        from pathlib import Path
+        from opticmix_vision import calib, doctor
+        calib.store_dir = lambda: Path(tempfile.mkdtemp()) / "calib"     # not the user's folder
+        assert doctor.main(["--synthetic", "--open", "--seconds", "0.1"]) == 0
+    """)
+    assert r.returncode == 0, r.stderr
+    assert "_core:           MISSING" in r.stdout and "The compiled extension (opticmix_vision._core) is missing" in r.stdout
+    assert "controls: ControlsUnavailable" in r.stdout and "control writes by this run: -" in r.stdout

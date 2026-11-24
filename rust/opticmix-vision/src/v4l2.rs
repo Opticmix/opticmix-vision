@@ -11,7 +11,7 @@ use v4l::video::Capture as _;
 use v4l::{Device as VDev, FourCC, Fraction};
 
 use crate::backend::Backend;
-use crate::capture::Capture;
+use crate::capture::{Capture, SampleInfo};
 use crate::config::{DeviceConfig, DeviceSelector, NegotiatedMode};
 use crate::dshow::name_matches;
 use crate::error::{Result, SdkError};
@@ -143,10 +143,19 @@ impl Capture for V4l2Capture {
     }
 
     fn read_jpeg(&mut self) -> Result<Vec<u8>> {
+        self.read_sample().map(|(b, _)| b)
+    }
+
+    /// The buffer's time stamp (kept only when flagged `CLOCK_MONOTONIC`) and sequence number go into `SampleInfo`.
+    fn read_sample(&mut self) -> Result<(Vec<u8>, SampleInfo)> {
         // 시간 초과 뒤 v4l 의 Stream 은 다시 쓸 수 없다(같은 버퍼를 또 QBUF) — 오류 문구가 다시 열라고 한다.
         let (buf, meta) = CaptureStream::next(&mut self.stream).map_err(read_err)?;
         let n = (meta.bytesused as usize).min(buf.len());
-        Ok(buf[..n].to_vec())
+        // time_t is i64 on 64-bit Linux and i32 on some 32-bit targets; both widen to i64 without loss.
+        #[allow(clippy::unnecessary_cast)]
+        let (sec, usec) = (meta.timestamp.sec as i64, meta.timestamp.usec as i64);
+        let info = SampleInfo::from_v4l2(sec, usec, meta.flags.bits(), meta.sequence);
+        Ok((buf[..n].to_vec(), info))
     }
 
     fn controls_backend(&self) -> Result<Box<dyn Backend>> {

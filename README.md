@@ -15,7 +15,7 @@ pip install opticmix-vision
 
 This installs a wheel that carries a compiled extension, so nothing has to be
 built. The same file is attached to the GitHub release
-[v0.0.4](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.4).
+[v0.0.5](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.5).
 On Windows, verified on Windows 11 only. There is no wheel for macOS, and macOS
 has not been run.
 

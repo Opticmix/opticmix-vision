@@ -17,8 +17,27 @@ camera the caller states them — there are no defaults.
             "first_is_right"  the first half is the right camera
 
 Timestamps: `StereoFrame.host_ns` is the host monotonic clock (`time.perf_counter_ns`) right after
-`cap.read()` returns. It is not a device timestamp — whether the device exposes one is not verified, and on
-a live device OpenCV `CAP_PROP_POS_MSEC` is often the driver's or the host's clock, so it is not used here.
+`cap.read()` returns. It is not a device timestamp: the camera sends no clock this package reads.
+`StereoFrame.driver_ns` is the operating system capture driver's time stamp for the frame, as OpenCV passes it
+on in `CAP_PROP_POS_MSEC`, with `driver_clock` naming the clock:
+  "media_foundation"  OpenCV CAP_MSMF: the sample time (100 ns units) Media Foundation's source reader gives with
+                      the sample it hands OpenCV — OpenCV 4.13 asks the reader to convert the camera's MJPG to
+                      RGB (cap_msmf.cpp), so it is the converted sample's time. On one PC (Windows 11) with one
+                      camera (2026-11-24, once) the first time was about 364,400 s — not the start of
+                      streaming; what the clock's zero is has not been established. Use differences between
+                      frames, not the absolute value. Run with the camera once (one PC, one camera, 2026-11-24):
+                      276 of 900 frames per eye repeated the previous image while the intervals were
+                      11.11 ms (mean, min and max) — driver_ns does not show whether a new image
+                      arrived; cause not established. See API.md
+  "v4l2"              OpenCV CAP_V4L2: the V4L2 buffer time stamp (microseconds). OpenCV does not pass on the
+                      buffer's clock flag, so whether it is CLOCK_MONOTONIC is not checked here
+Both are None with DirectShow (OpenCV returns -1 there; it is the Weevia S1 default on Windows) and for a
+recording, unless `Playback.recorded_time` is set: then they are the values recorded in its CSV (with the
+recorded host_ns). `driver_sequence` is always None: OpenCV does not pass on the V4L2 sequence number. Whether a driver
+time marks the exposure or the arrival of the frame is not known.
+
+Frame statistics (`Device.late_frames`, `estimated_missed_frames`, `actual_fps`) are estimated from the
+intervals between those host times, not read from a device frame counter.
 """
 
 from __future__ import annotations
@@ -28,6 +47,7 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -56,6 +76,19 @@ _FORMAT_PROPS = frozenset({
     "CAP_PROP_FRAME_WIDTH", "CAP_PROP_FRAME_HEIGHT", "CAP_PROP_FPS", "CAP_PROP_FOURCC",
 })
 BACKENDS = ("any", "dshow", "msmf", "v4l2", "avfoundation")
+
+# OpenCV backends whose CAP_PROP_POS_MSEC is the driver's time stamp of the last frame read (OpenCV 4.13
+# cap_msmf.cpp: the source reader's sample time / 1e4; cap_v4l.cpp: the V4L2 buffer time stamp), with the clock
+# name and the driver's units per millisecond (100 ns, microseconds). DirectShow returns -1 for it.
+_DRIVER_CLOCKS = {"MSMF": ("media_foundation", 10_000), "V4L2": ("v4l2", 1_000)}
+
+
+def _driver_ns(ms: float, per_ms: int) -> int | None:
+    """OpenCV's millisecond float back to whole driver units, then ns. None for a negative or NaN value."""
+    if not ms >= 0:
+        return None
+    return round(ms * per_ms) * (1_000_000 // per_ms)
+
 
 # The Weevia S1, as measured — not assumed. The first half of the side-by-side
 # frame is the RIGHT eye (2026-09-16), and MJPG has to be requested: without it
@@ -148,25 +181,45 @@ class DeviceConfig:
         Windows: DirectShow lists the cameras. Linux: the `/dev/videoN` capture node whose name contains
         'WN Dual Camera' in `/sys/class/video4linux`, and `backend` defaults to "v4l2".
         Linux name lookup: implemented, not yet run on the camera.
+
+        Windows with backend="msmf": the index comes from Media Foundation's list (`devices.list_devices(backend=
+        "msmf")`), the list OpenCV's CAP_MSMF counts in. With backend="any", OpenCV tries its backends in priority
+        order (Media Foundation before DirectShow in OpenCV 4.13) and falls back to the next one with the same index,
+        so the index is used only when the camera has the same index in both lists; otherwise pass backend="msmf"
+        or "dshow". Media Foundation lookup: run without a camera only; not run with the camera.
         """
         from . import devices
         linux = sys.platform.startswith("linux")
         if linux:
             overrides.setdefault("backend", "v4l2")
         if "device" not in overrides:
+            backend = overrides.get("backend")
             try:
-                overrides["device"] = (devices.find_v4l2_node(WEEVIA_S1_NAME) if linux
-                                       else devices.resolve_by_name(WEEVIA_S1_NAME).index)
+                if linux:
+                    overrides["device"] = devices.find_v4l2_node(WEEVIA_S1_NAME)
+                elif backend in ("msmf", "any"):
+                    mf = devices.resolve_by_name(WEEVIA_S1_NAME, backend="msmf").index
+                    if backend == "any" and mf != (ds := devices.resolve_by_name(WEEVIA_S1_NAME).index):
+                        raise DeviceError(
+                            f"backend='any': the Weevia S1 is index {mf} in the Media Foundation list but {ds} in the "
+                            "DirectShow list, and OpenCV may open either backend with the index it is given. Pass "
+                            "backend='msmf' or backend='dshow'.")
+                    overrides["device"] = mf
+                else:
+                    overrides["device"] = devices.resolve_by_name(WEEVIA_S1_NAME).index
             except LookupError as exc:
                 raise DeviceError(f"Weevia S1 ({WEEVIA_S1_NAME!r}) not found. {exc}") from exc
         return cls(**{**WEEVIA_S1, **overrides})
 
     @classmethod
     def recording(cls, path: str | Path, **overrides: Any) -> "DeviceConfig":
-        """Plays a video file made by `examples/record_video.py` (both eyes side by side, left eye in the left
-        half) as if it were the camera. `read()` raises `EndOfRecording` after the last frame. `host_ns` is the
-        time the frame was read back, not when it was captured — the recording's CSV has the capture times.
-        A compressed recording does not have the camera's pixel values."""
+        """Plays a recording (`recording.Recorder`, the viewer's v key, `examples/record_video.py`: both eyes side
+        by side, left eye in the left half) as if it were the camera. `read()` raises `EndOfRecording` after the
+        last frame. `Device.playback` seeks, sets the speed, loops and pauses; `Device.mode` and
+        `Device.recording_info` come from the recording's JSON. `host_ns` is the time the frame was read back and
+        `driver_ns` / `driver_clock` are None, unless `playback.recorded_time` is set: then all three are the
+        recorded values from the recording's CSV. A compressed (MJPG) recording does not have the camera's pixel
+        values."""
         p = Path(path)
         if not p.is_file():
             raise DeviceError(f"no such recording: {p}")
@@ -243,6 +296,9 @@ class StereoFrame:
     right: np.ndarray           # (h, w) uint8
     host_ns: int                # host monotonic clock, right after cap.read()
     index: int                  # frame number from this Device (not a device counter)
+    driver_ns: int | None = None        # capture driver's time stamp (ns) on driver_clock; not a camera clock
+    driver_clock: str | None = None     # "media_foundation" | "v4l2" | None
+    driver_sequence: int | None = None  # driver frame sequence number; None here (OpenCV does not give it)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -312,6 +368,40 @@ def split_stereo(frame: np.ndarray, layout: str, lr_order: str, *, to_gray: bool
 # Device
 # ---------------------------------------------------------------------------
 
+class _FrameStats:
+    """Late and missed frames estimated from the intervals between capture times, and the recent frame rate.
+
+    An interval longer than 1.5 frame periods (at the negotiated fps) is one late frame, and round(interval /
+    period) - 1 frames are counted as missed. Only consecutive frames count: the same frame again (a paused
+    playback), a jump (seek, loop) or `restart` (the first frame after a pause in recording) starts over.
+    """
+
+    WINDOW = 30
+
+    def __init__(self) -> None:
+        self.late = 0
+        self.missed = 0
+        self._last: tuple[int, int] | None = None
+        self._recent: deque[int] = deque(maxlen=self.WINDOW + 1)
+
+    def add(self, index: int, ns: int, fps: float, *, restart: bool = False) -> None:
+        last, self._last = self._last, (index, ns)
+        if restart or last is None or index != last[0] + 1:   # first frame, the same frame again, a jump, a break
+            self._recent.clear()
+        elif fps > 0:
+            period = 1e9 / fps
+            dt = ns - last[1]
+            if dt > 1.5 * period:
+                self.late += 1
+                self.missed += round(dt / period) - 1
+        self._recent.append(ns)
+
+    @property
+    def fps(self) -> float:
+        r = self._recent
+        return (len(r) - 1) * 1e9 / (r[-1] - r[0]) if len(r) > 1 and r[-1] > r[0] else 0.0
+
+
 class Device:
     """A thin wrapper over OpenCV VideoCapture. `with Device(cfg) as cam: frame = cam.read()`.
 
@@ -326,8 +416,11 @@ class Device:
         self._index = 0
         self._prev: tuple[np.ndarray, np.ndarray] | None = None
         self._same = [0, 0]              # identical frames in a row, per eye
+        self._driver: tuple[str, int] | None = None   # (clock name, units per ms) when the backend gives one
         self._controls: Controls | None = None
         self._controls_lock = threading.Lock()
+        self._playback: Any = None
+        self._stats = _FrameStats()
 
     @property
     def calibration(self):
@@ -352,6 +445,12 @@ class Device:
             return self
         import cv2
 
+        if self._cap is None and isinstance(self.config.device, str) and Path(self.config.device).is_file():
+            from .recording import Playback
+            try:
+                self._cap = Playback(self.config.device)
+            except (OSError, ValueError) as exc:
+                raise DeviceError(f"could not read the recording {self.config.device}: {exc}") from exc
         if self._cap is None:
             api_name = {"any": "CAP_ANY", "dshow": "CAP_DSHOW", "msmf": "CAP_MSMF",
                         "v4l2": "CAP_V4L2", "avfoundation": "CAP_AVFOUNDATION"}[self.config.backend]
@@ -379,6 +478,15 @@ class Device:
             opened_with = str(cap.getBackendName()) if hasattr(cap, "getBackendName") else ""
         except Exception:
             opened_with = ""
+        # CAP_ANY falls through every camera backend with the same index (OpenCV 4.13 cap.cpp; the installed
+        # registry also has GSTREAMER, FFMPEG, UEYE, OBSENSOR). An index meant for Media Foundation or DirectShow
+        # names some other device elsewhere, so do not keep a capture another backend opened.
+        if (not self._injected and sys.platform == "win32" and c.backend == "any" and isinstance(c.device, int)
+                and opened_with.upper() not in ("MSMF", "DSHOW")):
+            self.close()
+            raise DeviceError(f"backend='any' opened device {c.device} through {opened_with or 'an unknown backend'}, "
+                              "not Media Foundation or DirectShow, so the index may name another device. Pass "
+                              "backend='msmf' or backend='dshow'.")
         fourcc_first = c.backend == "v4l2" or opened_with.upper() == "V4L2"
         if c.width is not None:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(c.width))
@@ -408,6 +516,12 @@ class Device:
             fps=float(cap.get(cv2.CAP_PROP_FPS)),
             fourcc=fcc_s, backend_name=backend_name,
         )
+        from .recording import Playback
+        self._playback = self._cap if isinstance(self._cap, Playback) else None
+        self._stats = _FrameStats()
+        # a recording (Playback reports the backend it was recorded with) has no driver time
+        recording = isinstance(c.device, str) and Path(c.device).is_file()
+        self._driver = None if recording else _DRIVER_CLOCKS.get(backend_name.upper())
         self._apply_extra_props()
         return self
 
@@ -447,6 +561,7 @@ class Device:
         if self._cap is not None and not self._injected:
             self._cap.release()
             self._cap = None
+        self._playback = None
         self._mode = None
 
     def __enter__(self) -> "Device":
@@ -461,9 +576,38 @@ class Device:
 
     @property
     def mode(self) -> NegotiatedMode:
+        """The negotiated mode. For a recording, the mode it was recorded in (from its JSON; without one, the file's)."""
         if self._mode is None:
             raise DeviceError("no negotiated mode before open()")
         return self._mode
+
+    @property
+    def playback(self) -> Any:
+        """The `recording.Playback` when this device plays a recording (seek, speed, loop, pause); None for a camera."""
+        return self._playback
+
+    @property
+    def recording_info(self) -> dict[str, Any] | None:
+        """The capture info saved with the recording (its .json); None for a camera or a recording without one."""
+        return self._playback.info if self._playback is not None else None
+
+    # ---- frame statistics (host intervals, not device counters) ------------------------------
+    @property
+    def late_frames(self) -> int:
+        """Frames that arrived more than 1.5 frame periods after the one before, since open().
+        Estimated from host times; a late frame can be delivery jitter rather than a lost frame."""
+        return self._stats.late
+
+    @property
+    def estimated_missed_frames(self) -> int:
+        """Frames estimated missing since open(): for each late interval, round(interval / period) - 1.
+        Estimated from host times, not a device frame counter."""
+        return self._stats.missed
+
+    @property
+    def actual_fps(self) -> float:
+        """Frames per second over the last 30 frames, from host times (0.0 until two frames are read)."""
+        return self._stats.fps
 
     # ---- frames ------------------------------------------------------------
     def read_raw(self) -> tuple[np.ndarray, int]:
@@ -472,19 +616,39 @@ class Device:
             raise DeviceError("call open() first")
         ok, img = self._cap.read()
         t = time.perf_counter_ns()
+        pb = self._playback
         if not ok or img is None:
-            if isinstance(self.config.device, str) and Path(self.config.device).is_file():
+            if pb is not None:
                 raise EndOfRecording(f"end of the recording: {self.config.device}")
             raise DeviceError("frame read failed (timeout or camera unplugged)")
+        if pb is not None and pb.recorded_time:
+            t = pb.recorded_ns(pb.position)
         return img, t
 
     def read(self) -> StereoFrame:
+        """The next frame. From a recording, `index` is the frame's number in the file."""
         img, t = self.read_raw()
         left, right = split_stereo(img, self.config.layout, self.config.lr_order,
                                    to_gray=self.config.to_gray)
         self._check_stall(left, right)
-        frame = StereoFrame(left=left, right=right, host_ns=t, index=self._index)
+        pb = self._playback
+        index = pb.position if pb is not None else self._index
+        driver_ns = clock = None
+        if self._driver is not None:
+            import cv2
+            clock, per_ms = self._driver
+            driver_ns = _driver_ns(float(self._cap.get(cv2.CAP_PROP_POS_MSEC)), per_ms)
+            clock = clock if driver_ns is not None else None
+        elif pb is not None and pb.recorded_time:      # the recorded driver time, beside the recorded host_ns
+            driver_ns, clock = pb.recorded_driver(index)
+        frame = StereoFrame(left=left, right=right, host_ns=t, index=index,
+                            driver_ns=driver_ns, driver_clock=clock)
         self._index += 1
+        # a recording's statistics describe the recording: its recorded times, at its recorded rate
+        if pb is None:
+            self._stats.add(index, t, self._mode.fps)
+        else:
+            self._stats.add(index, pb.recorded_ns(index), self._mode.fps, restart=index in pb.breaks)
         return frame
 
     def _check_stall(self, left: np.ndarray, right: np.ndarray) -> None:
@@ -513,6 +677,9 @@ class Device:
         """Every UVC control of this camera (controls.py). Created on first use."""
         if self._cap is None or self._mode is None:
             raise DeviceError("call open() first")
+        if self._playback is not None:
+            raise DeviceError("a recording has no camera controls; the values when it was recorded are in "
+                              "recording_info['controls']")
         with self._controls_lock:
             if self._controls is None:
                 self._controls = self._make_controls()
@@ -529,7 +696,15 @@ class Device:
             except ControlsUnavailable as exc:
                 reason = f"native DirectShow controls unavailable: {exc}"
                 log.warning("%s — falling back to OpenCV", reason)
-        return Controls(OpenCVBackend(self._cap, self._flavor(), reason=reason))
+        return Controls(OpenCVBackend(self._cap, self._flavor(), reason=reason, model=self._usb_model()))
+
+    def _usb_model(self) -> str | None:
+        """WEEVIA_S1_NAME when the opened device has that USB name (Linux: sysfs; Windows: the DirectShow list, or
+        the Media Foundation list with backend="msmf", read only). The OpenCV fallback cannot ask the device, so this
+        is how presets know the model there."""
+        from . import devices
+        name = devices._os_name(self.config.device, self.config.backend) or ""
+        return WEEVIA_S1_NAME if WEEVIA_S1_NAME.lower() in name.lower() else None
 
     def get_prop(self, prop: str | int) -> float:
         """(Compatibility) Reads by OpenCV name. Camera controls go through controls (AUTO_EXPOSURE now reads too)."""

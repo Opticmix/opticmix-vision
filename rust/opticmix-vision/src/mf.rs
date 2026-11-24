@@ -3,25 +3,20 @@
 //!
 //! Initializes COM on the opening thread as multithreaded (MTA) and leaves it so — open from a non-UI thread.
 
-use std::sync::OnceLock;
-
-use windows::core::{GUID, PWSTR};
+use windows::core::GUID;
 use windows::Win32::Media::MediaFoundation::*;
-use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 use crate::backend::Backend;
-use crate::capture::Capture;
+use crate::capture::{Capture, SampleInfo};
 use crate::config::{DeviceConfig, DeviceSelector, NegotiatedMode};
+use crate::devices::mf_enum::{dev_err, sources};
 use crate::devices::{pick_by_name, DeviceInfo};
 use crate::dshow::{name_matches, DShowBackend};
 use crate::error::{Result, SdkError};
 use crate::spec::EXPECTED_NAMES;
 
 const STREAM: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
-
-fn dev_err(what: &str, e: windows::core::Error) -> SdkError {
-    SdkError::Device(format!("{what} failed: HRESULT 0x{:08X}", e.code().0 as u32))
-}
 
 pub struct MfCapture {
     reader: IMFSourceReader,
@@ -34,16 +29,6 @@ pub struct MfCapture {
 // 연 스레드가 이미 STA 였으면(RPC_E_CHANGED_MODE) 이 전제가 깨진다.
 unsafe impl Send for MfCapture {}
 
-/// The MFStartup result, once per process. A failure is remembered too, so every open gives the same error.
-static MF_STARTED: OnceLock<Result<()>> = OnceLock::new();
-
-// MFShutdown 은 부르지 않는다 — 프로세스 끝까지 MF 를 유지한다.
-fn mf_startup() -> Result<()> {
-    MF_STARTED
-        .get_or_init(|| unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.map_err(|e| dev_err("MFStartup", e)))
-        .clone()
-}
-
 impl MfCapture {
     /// Windows: initializes COM on the calling thread as multithreaded (MTA) and leaves it so — open from a
     /// non-UI thread.
@@ -53,8 +38,7 @@ impl MfCapture {
             // 짝이 되는 CoUninitialize 는 일부러 부르지 않는다: 소스 리더가 이 스레드의 MTA 에 살아 있어야 하고,
             // 언제 놓일지(다른 스레드로 옮겨 간 Device 의 drop) 여기서 알 수 없다. MFStartup 처럼 끝까지 둔다.
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            mf_startup()?;
-            let (act, name) = pick(cfg)?;
+            let (act, name) = pick(cfg)?; // also runs MFStartup (once per process)
             let source: IMFMediaSource = act.ActivateObject().map_err(|e| dev_err("ActivateObject", e))?;
             let reader = match MFCreateSourceReaderFromMediaSource(&source, None) {
                 Ok(r) => r,
@@ -70,34 +54,10 @@ impl MfCapture {
     }
 }
 
-/// Picks one from the video device list. Name match is a case-insensitive substring; more than one is an error.
+/// Picks one from the video device list (`devices::enumerate_mf_video_devices` order). Name match is a
+/// case-insensitive substring; more than one is an error.
 unsafe fn pick(cfg: &DeviceConfig) -> Result<(IMFActivate, String)> {
-    let mut attrs: Option<IMFAttributes> = None;
-    MFCreateAttributes(&mut attrs, 1).map_err(|e| dev_err("MFCreateAttributes", e))?;
-    let attrs = attrs.ok_or_else(|| SdkError::Device("MFCreateAttributes gave nothing".into()))?;
-    attrs
-        .SetGUID(&MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID)
-        .map_err(|e| dev_err("SetGUID", e))?;
-    let mut pp: *mut Option<IMFActivate> = std::ptr::null_mut();
-    let mut count = 0u32;
-    MFEnumDeviceSources(&attrs, &mut pp, &mut count).map_err(|e| dev_err("MFEnumDeviceSources", e))?;
-    // 배열 원소가 쥔 참조를 take 로 넘겨받는다(clone 이면 원소 쪽 참조가 해제되지 않는다). 그 뒤 배열만 해제.
-    let list: Vec<IMFActivate> = if pp.is_null() || count == 0 {
-        Vec::new()
-    } else {
-        std::slice::from_raw_parts_mut(pp, count as usize)
-            .iter_mut()
-            .filter_map(Option::take)
-            .collect()
-    };
-    CoTaskMemFree(Some(pp as _));
-    let named: Vec<(IMFActivate, String)> = list
-        .into_iter()
-        .map(|a| {
-            let n = friendly_name(&a).unwrap_or_default();
-            (a, n)
-        })
-        .collect();
+    let named = sources()?;
     let have = || named.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", ");
     match &cfg.device {
         DeviceSelector::Index(i) => named
@@ -119,16 +79,6 @@ unsafe fn pick(cfg: &DeviceConfig) -> Result<(IMFActivate, String)> {
             "DeviceSelector::Path({p:?}) is for Linux; use Name or Index on Windows"
         ))),
     }
-}
-
-unsafe fn friendly_name(a: &IMFActivate) -> Result<String> {
-    let mut s = PWSTR::null();
-    let mut len = 0u32;
-    a.GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &mut s, &mut len)
-        .map_err(|e| dev_err("GetAllocatedString", e))?;
-    let out = s.to_string().unwrap_or_default();
-    CoTaskMemFree(Some(s.0 as _));
-    Ok(out)
 }
 
 /// An MF video subtype is a FOURCC GUID (Data1 = four characters) — the characters if printable, otherwise Data1 in hex.
@@ -182,13 +132,19 @@ impl Capture for MfCapture {
     }
 
     fn read_jpeg(&mut self) -> Result<Vec<u8>> {
+        self.read_sample().map(|(b, _)| b)
+    }
+
+    /// The sample time ReadSample gives (100 ns units) goes into `SampleInfo::driver_ns` as ns.
+    fn read_sample(&mut self) -> Result<(Vec<u8>, SampleInfo)> {
         // 동기 ReadSample 은 시간 제한이 없다 — 장치가 샘플을 보내지 않으면 여기서 막힌다.
         unsafe {
             loop {
                 let mut flags = 0u32;
+                let mut time_100ns = 0i64;
                 let mut sample: Option<IMFSample> = None;
                 self.reader
-                    .ReadSample(STREAM, 0, None, Some(&mut flags), None, Some(&mut sample))
+                    .ReadSample(STREAM, 0, None, Some(&mut flags), Some(&mut time_100ns), Some(&mut sample))
                     .map_err(|e| dev_err("ReadSample", e))?;
                 if flags & (MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 | MF_SOURCE_READERF_ERROR.0 as u32) != 0 {
                     return Err(SdkError::Device(format!(
@@ -203,7 +159,7 @@ impl Capture for MfCapture {
                 // Lock 과 Unlock 사이에 ? 를 두지 않는다 — 복사 뒤 바로 Unlock.
                 let out = if p.is_null() { Vec::new() } else { std::slice::from_raw_parts(p, len as usize).to_vec() };
                 buf.Unlock().map_err(|e| dev_err("Unlock", e))?;
-                return Ok(out);
+                return Ok((out, SampleInfo::from_media_foundation(time_100ns)));
             }
         }
     }
@@ -224,14 +180,6 @@ impl Capture for MfCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// MFStartup does not open a camera (it only initializes the MF platform). A second call returns the remembered result.
-    #[test]
-    fn mf_starts_once_per_process() {
-        assert_eq!(mf_startup(), Ok(()));
-        assert!(MF_STARTED.get().is_some());
-        assert_eq!(mf_startup(), Ok(()));
-    }
 
     #[test]
     fn subtypes_read_as_their_fourcc_or_a_short_guid() {

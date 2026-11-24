@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -207,6 +208,173 @@ def test_device_reads_stereo_frames_and_reports_negotiated_mode():
 class _V4L2Capture(FakeCapture):
     def getBackendName(self) -> str:
         return "V4L2"
+
+
+class _TimedCapture(FakeCapture):
+    """CAP_PROP_POS_MSEC = the given value of the frame last read, as OpenCV's MSMF/V4L2 backends give it."""
+
+    def __init__(self, backend: str, msec: list[float], n: int | None = None) -> None:
+        L, R = _pair()
+        super().__init__([np.hstack([L + i, R]) for i in range(n or len(msec))])
+        self._backend, self._msec, self.pos_reads = backend, list(msec), 0
+
+    def read(self):
+        ok, img = super().read()
+        if ok:
+            import cv2
+            self.props[cv2.CAP_PROP_POS_MSEC] = self._msec.pop(0)
+        return ok, img
+
+    def get(self, pid: int) -> float:
+        import cv2
+        self.pos_reads += pid == cv2.CAP_PROP_POS_MSEC
+        return super().get(pid)
+
+    def getBackendName(self) -> str:
+        return self._backend
+
+
+def _timed_frames(backend: str, msec: list[float], device: Any = 0) -> tuple[list[StereoFrame], _TimedCapture]:
+    cap = _TimedCapture(backend, msec)
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left", device=device)
+    with Device(cfg, capture=cap) as cam:
+        return [cam.read() for _ in msec], cap
+
+
+def test_msmf_driver_time_is_the_sample_time_in_whole_100_ns_units():
+    # OpenCV MSMF gives sample time / 1e4 as ms: 12345678 and 12456789 units of 100 ns
+    frames, _ = _timed_frames("MSMF", [1234.5678, 1245.6789])
+    assert [f.driver_ns for f in frames] == [1_234_567_800, 1_245_678_900]
+    assert frames[1].driver_ns - frames[0].driver_ns == 11_111_100            # one 90 fps interval, exact
+    assert {f.driver_clock for f in frames} == {"media_foundation"}
+    assert {f.driver_sequence for f in frames} == {None}                      # OpenCV gives no sequence number
+    assert [f.index for f in frames] == [0, 1]
+
+
+def test_v4l2_driver_time_is_the_buffer_time_in_whole_microseconds():
+    # OpenCV V4L2: 1000 * tv_sec + tv_usec / 1000 — 86400.000123 s and 86400.011234 s of CLOCK_MONOTONIC (if it is)
+    frames, _ = _timed_frames("V4L2", [86_400_000.123, 86_400_011.234])
+    assert [f.driver_ns for f in frames] == [86_400_000_123_000, 86_400_011_234_000]
+    assert {f.driver_clock for f in frames} == {"v4l2"}
+
+
+def test_directshow_and_other_backends_give_no_driver_time_and_are_not_asked():
+    for backend in ("DSHOW", "FAKE", ""):
+        frames, cap = _timed_frames(backend, [5.0, 6.0])
+        assert [(f.driver_ns, f.driver_clock, f.driver_sequence) for f in frames] == [(None, None, None)] * 2
+        assert cap.pos_reads == 0, backend
+
+
+def test_a_negative_driver_time_is_none_not_a_number():
+    frames, _ = _timed_frames("MSMF", [-1.0, 3.0])
+    assert [(f.driver_ns, f.driver_clock) for f in frames] == [(None, None), (3_000_000, "media_foundation")]
+
+
+def test_a_recording_has_no_driver_time(tmp_path):
+    # a file opened through the MSMF backend: its POS_MSEC is the position in the file, not a driver time
+    video = tmp_path / "rec.avi"
+    video.write_bytes(b"not read here")
+    frames, cap = _timed_frames("MSMF", [0.0, 11.1], device=str(video))
+    assert [f.driver_ns for f in frames] == [None, None] and cap.pos_reads == 0
+
+
+def test_playing_a_recording_made_through_msmf_gives_no_driver_time(tmp_path):
+    # Playback reports the backend the recording was made with; its POS_MSEC is a file position, not a driver time
+    import json
+
+    from opticmix_vision.recording import Recorder
+    from opticmix_vision.synthetic import SyntheticStereoSource
+    src = SyntheticStereoSource(eye_size=(64, 32), fps=90.0)
+    path = tmp_path / "rec.avi"
+    with Recorder(path, src) as rec:
+        for _ in range(3):
+            rec.write(src.read())
+    info_path = path.with_suffix(".json")
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info["mode"]["backend_name"] = "MSMF"
+    info_path.write_text(json.dumps(info), encoding="utf-8")
+    with Device(DeviceConfig.recording(path)) as cam:
+        assert cam.mode.backend_name == "MSMF"
+        frames = [cam.read() for _ in range(3)]
+    assert [(f.driver_ns, f.driver_clock) for f in frames] == [(None, None)] * 3
+
+
+def _windows_lists(monkeypatch, mf: list[str], dshow: list[str]) -> None:
+    """Fake Media Foundation and DirectShow lists on 'Windows' — nothing is enumerated."""
+    import sys
+
+    from opticmix_vision import devices
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(devices, "_mf_devices", lambda: list(mf))
+    monkeypatch.setattr(devices, "_ffmpeg_devices", lambda: "".join(f'[dshow] "{n}" (video)\n' for n in dshow))
+
+
+def test_weevia_s1_with_msmf_takes_its_index_from_the_media_foundation_list(monkeypatch):
+    # the two lists in different orders: the MSMF index must come from Media Foundation's list, not DirectShow's
+    _windows_lists(monkeypatch, mf=["Example Webcam", "Example IR Camera", "WN Dual Camera"],
+                   dshow=["WN Dual Camera", "Example Webcam"])
+    cfg = DeviceConfig.weevia_s1(backend="msmf")
+    assert (cfg.backend, cfg.device, cfg.lr_order) == ("msmf", 2, "first_is_right")
+    assert DeviceConfig.weevia_s1().device == 0                       # dshow (the default) still uses its own list
+    assert DeviceConfig.weevia_s1(backend="msmf", device=1).device == 1   # device= skips the lookup
+
+
+def test_weevia_s1_with_msmf_not_in_the_list_says_what_was_found(monkeypatch):
+    _windows_lists(monkeypatch, mf=["Example Webcam"], dshow=["WN Dual Camera"])
+    with pytest.raises(DeviceError, match=r"Weevia S1 \('WN Dual Camera'\) not found\. .*\['Example Webcam'\]"):
+        DeviceConfig.weevia_s1(backend="msmf")
+
+
+def test_weevia_s1_with_msmf_refuses_two_cameras(monkeypatch):
+    _windows_lists(monkeypatch, mf=["WN Dual Camera", "Example Webcam", "WN Dual Camera"], dshow=["WN Dual Camera"])
+    with pytest.raises(DeviceError, match=r"2 cameras match 'WN Dual Camera' .*Unplug all but one"):
+        DeviceConfig.weevia_s1(backend="msmf")
+
+
+def test_msmf_controls_know_the_model_from_the_media_foundation_list(monkeypatch):
+    # the OpenCV controls fallback cannot ask the device; presets refuse a preset whose model differs
+    _windows_lists(monkeypatch, mf=["Example Webcam", "WN Dual Camera"], dshow=["Example Webcam"])
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_right", device=1, backend="msmf")
+    assert Device(cfg, capture=FakeCapture([np.zeros((4, 8), np.uint8)]))._usb_model() == "WN Dual Camera"
+    assert Device(cfg.replace(device=0), capture=FakeCapture([]))._usb_model() is None
+
+
+def test_any_refuses_a_capture_another_backend_opened_on_windows(monkeypatch):
+    # CAP_ANY falls through to e.g. OBSENSOR with the same index when MSMF and DSHOW fail: not the camera meant
+    import sys
+
+    import cv2
+    opened: list[_TimedCapture] = []
+
+    def fake_videocapture(_device, _api):
+        cap = _TimedCapture(backend, [0.0])
+        opened.append(cap)
+        return cap
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(cv2, "VideoCapture", fake_videocapture)
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_right", device=1)          # backend="any"
+    backend = "OBSENSOR"
+    with pytest.raises(DeviceError, match=r"backend='any' opened device 1 through OBSENSOR.*backend='msmf'"):
+        Device(cfg).open()
+    assert opened[-1].released and opened[-1].set_calls == []    # let go at once, nothing negotiated on it
+    for backend in ("MSMF", "DSHOW"):
+        with Device(cfg) as cam:
+            assert cam.mode.backend_name == backend
+
+
+def test_weevia_s1_with_any_needs_the_same_index_in_both_lists(monkeypatch):
+    # OpenCV's CAP_ANY tries MSMF, then DSHOW with the same index: only an index valid for both is safe
+    _windows_lists(monkeypatch, mf=["Example Webcam", "WN Dual Camera"], dshow=["Example Webcam", "WN Dual Camera"])
+    assert DeviceConfig.weevia_s1(backend="any").device == 1
+    _windows_lists(monkeypatch, mf=["Example Webcam", "WN Dual Camera"], dshow=["WN Dual Camera", "Example Webcam"])
+    with pytest.raises(DeviceError, match=r"index 1 in the Media Foundation list but 0 in the DirectShow list"):
+        DeviceConfig.weevia_s1(backend="any")
+
+
+def test_stereo_frame_still_takes_the_four_original_fields():
+    L, R = _pair()
+    f = StereoFrame(L, R, 5, 0)
+    assert (f.driver_ns, f.driver_clock, f.driver_sequence) == (None, None, None)
 
 
 def _format_order(backend, cap_cls=FakeCapture):

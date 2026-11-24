@@ -52,6 +52,8 @@ pub mod v4l2;
 #[cfg(all(feature = "capture", target_os = "linux"))]
 pub mod v4l2_ctrl;
 
+#[cfg(feature = "capture")]
+pub use capture::{DriverClock, DriverTimeSource, SampleInfo};
 pub use config::{CaptureApi, DeviceConfig, DeviceSelector, NegotiatedMode};
 pub use convert::UserValue;
 #[cfg(feature = "capture")]

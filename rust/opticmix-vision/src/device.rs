@@ -1,9 +1,10 @@
 //! One camera: capture → decode → left/right split → stall check (same order as Python `Device`).
 
+use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use crate::capture::{open_platform, Capture};
+use crate::capture::{open_platform, Capture, DriverClock, DriverTimeSource, SampleInfo};
 use crate::config::{DeviceConfig, NegotiatedMode};
 use crate::controls::Controls;
 use crate::decode::decode_mjpg_gray;
@@ -16,12 +17,29 @@ use crate::stereo::{split_stereo, GrayImage};
 pub struct StereoFrame {
     pub left: GrayImage,
     pub right: GrayImage,
-    /// Monotonic time in this process (ns). Not comparable across processes.
+    /// Monotonic time in this process (ns), taken right after the capture backend handed over the sample.
+    /// Not comparable across processes.
     pub host_ns: u64,
     /// Frame number from this Device, starting at 0 (not a device number). Counts delivered frames only:
     /// a skipped sample (see `Device::read`) takes no number, so a gap does not show here — see
-    /// `Device::dropped_frames`.
+    /// `Device::undecodable_frames` and `Device::driver_missed_frames`.
     pub index: u64,
+    /// The capture driver's time stamp for this frame in ns, on the clock `driver_clock` names: Windows = Media
+    /// Foundation sample time (not counted from the start of streaming — about 364,400 s at the first frame on
+    /// one PC with one camera, once; zero not established; use differences), Linux = V4L2 buffer time on
+    /// `CLOCK_MONOTONIC`.
+    /// `None` when the capture backend gives none (a Linux buffer not flagged monotonic, your own `Capture`).
+    /// An operating-system driver time, not a camera clock — the camera sends none this crate reads. Whether it
+    /// marks the exposure or the arrival of the frame is not known (not measured).
+    pub driver_ns: Option<i64>,
+    /// Which clock `driver_ns` is on; `Some` exactly when `driver_ns` is.
+    pub driver_clock: Option<DriverClock>,
+    /// The driver's frame sequence number (Linux: V4L2 `v4l2_buffer.sequence`). `None` on Windows — Media
+    /// Foundation gives none. A gap between frames is what `Device::driver_missed_frames` counts.
+    pub driver_sequence: Option<u32>,
+    /// Linux: where the V4L2 driver says it took `driver_ns` (start of exposure or end of frame), from the buffer
+    /// flags. The value the driver reports, not checked on the camera. `None` on Windows and without `driver_ns`.
+    pub driver_time_source: Option<DriverTimeSource>,
 }
 
 impl StereoFrame {
@@ -36,8 +54,55 @@ impl StereoFrame {
 pub const MAX_UNDECODABLE_IN_A_ROW: u32 = 5;
 
 fn host_ns() -> u64 {
+    #[cfg(test)]
+    if let Some(t) = tests::FAKE_HOST_NS.with(|q| q.borrow_mut().pop_front()) {
+        return t;
+    }
     static T0: OnceLock<Instant> = OnceLock::new();
     T0.get_or_init(Instant::now).elapsed().as_nanos() as u64
+}
+
+/// Late and missed frames estimated from the intervals between `host_ns` times, and the recent frame rate —
+/// the rule of the Python package's `Device.late_frames`, `estimated_missed_frames` and `actual_fps`: an
+/// interval longer than 1.5 frame periods (at the negotiated fps) is one late frame, and
+/// round(interval / period) - 1 frames (rounded half to even, as Python's `round`) are counted as missed.
+struct FrameStats {
+    fps: f64,
+    late: u64,
+    missed: u64,
+    /// The last `FPS_WINDOW + 1` host times.
+    recent: VecDeque<u64>,
+}
+
+/// `actual_fps` is over this many intervals (Python `_FrameStats.WINDOW`).
+const FPS_WINDOW: usize = 30;
+
+impl FrameStats {
+    fn new(fps: f64) -> FrameStats {
+        FrameStats { fps, late: 0, missed: 0, recent: VecDeque::with_capacity(FPS_WINDOW + 1) }
+    }
+
+    fn add(&mut self, ns: u64) {
+        if let Some(&last) = self.recent.back().filter(|_| self.fps > 0.0) {
+            let period = 1e9 / self.fps;
+            let dt = ns.saturating_sub(last) as f64;
+            if dt > 1.5 * period {
+                self.late += 1;
+                self.missed += (dt / period).round_ties_even() as u64 - 1;
+            }
+        }
+        if self.recent.len() > FPS_WINDOW {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(ns);
+    }
+
+    fn fps(&self) -> f64 {
+        match (self.recent.front(), self.recent.back()) {
+            (Some(&a), Some(&b)) if b > a => (self.recent.len() - 1) as f64 * 1e9 / (b - a) as f64,
+            _ => 0.0,
+        }
+    }
 }
 
 /// One open camera — `read()` gives a pair that went through capture → MJPG decode → left/right split → stall check. Dropping it also closes the controls.
@@ -47,6 +112,10 @@ pub struct Device {
     stall: StallCheck,
     index: u64,
     dropped: u64,
+    /// Last driver sequence number seen, and the frames missing between the numbers seen so far.
+    last_sequence: Option<u32>,
+    driver_missed: u64,
+    stats: FrameStats,
     controls: Option<Arc<Controls>>,
 }
 
@@ -69,7 +138,8 @@ impl Device {
 
     fn wrap(cfg: DeviceConfig, cap: Box<dyn Capture>) -> Device {
         let stall = StallCheck::new(cfg.stall_frames);
-        Device { cfg, cap, stall, index: 0, dropped: 0, controls: None }
+        let stats = FrameStats::new(cap.mode().fps);
+        Device { cfg, cap, stall, index: 0, dropped: 0, last_sequence: None, driver_missed: 0, stats, controls: None }
     }
 
     pub fn config(&self) -> &DeviceConfig {
@@ -86,19 +156,37 @@ impl Device {
     }
 
     /// MJPG bytes before the split, and the capture time. The bytes are as the capture backend gave them —
-    /// nothing is checked or skipped here, and they do not count in `dropped_frames`.
+    /// nothing is checked or skipped here, and they do not count in `undecodable_frames`. The driver sequence
+    /// number, where there is one, is still followed, so `driver_missed_frames` stays right when `read_raw` and
+    /// `read` are mixed.
     pub fn read_raw(&mut self) -> Result<(Vec<u8>, u64)> {
-        let b = self.cap.read_jpeg()?;
-        Ok((b, host_ns()))
+        self.sample().map(|(b, t, _)| (b, t))
+    }
+
+    /// Every read goes through here, so a sample `read_raw` took or `read` skipped still counts in the sequence
+    /// and in the frame statistics.
+    fn sample(&mut self) -> Result<(Vec<u8>, u64, SampleInfo)> {
+        let (b, info) = self.cap.read_sample()?;
+        let t = host_ns();
+        self.stats.add(t);
+        if let Some(s) = info.driver_sequence {
+            // A number that goes back or repeats (and a u32 wrap, years at 90 fps) restarts the count
+            // from there instead of being read as a gap.
+            if let Some(p) = self.last_sequence.filter(|&p| s > p) {
+                self.driver_missed += u64::from(s - p - 1);
+            }
+            self.last_sequence = Some(s);
+        }
+        Ok((b, t, info))
     }
 
     /// Next frame as left/right 8-bit gray. Never an empty frame.
     ///
     /// On one camera on Windows, MJPG samples without a JPEG start marker have been seen (through Media
     /// Foundation and through DirectShow); where the start is lost is not established. A sample that does not decode is skipped: the
-    /// next one is read and `dropped_frames` goes up by one. `MAX_UNDECODABLE_IN_A_ROW` such samples in a
+    /// next one is read and `undecodable_frames` goes up by one. `MAX_UNDECODABLE_IN_A_ROW` such samples in a
     /// row give `SdkError::Device`. A skipped sample takes no `index` and is not seen by the stall check,
-    /// which compares delivered frames only. `host_ns` is the time of the sample delivered.
+    /// which compares delivered frames only. `host_ns` and the driver fields are those of the sample delivered.
     ///
     /// On Windows a read has no timeout: if the camera stops sending samples, `read()` does not return.
     ///
@@ -106,10 +194,10 @@ impl Device {
     /// `SdkError::Device` at once; a decoded frame the layout cannot split gives `SdkError::InvalidValue`.
     pub fn read(&mut self) -> Result<StereoFrame> {
         let mut bad = 0;
-        let (g, t) = loop {
-            let (b, t) = self.read_raw()?;
+        let (g, t, info) = loop {
+            let (b, t, info) = self.sample()?;
             match decode_mjpg_gray(&b) {
-                Ok(g) => break (g, t),
+                Ok(g) => break (g, t, info),
                 Err(e) => {
                     self.dropped += 1;
                     bad += 1;
@@ -125,13 +213,76 @@ impl Device {
         self.stall.check(&left, &right)?;
         let index = self.index;
         self.index += 1;
-        Ok(StereoFrame { left, right, host_ns: t, index })
+        Ok(StereoFrame {
+            left,
+            right,
+            host_ns: t,
+            index,
+            driver_ns: info.driver_ns,
+            driver_clock: info.driver_clock,
+            driver_sequence: info.driver_sequence,
+            driver_time_source: info.driver_time_source,
+        })
     }
 
     /// MJPG samples `read()` could not decode and skipped since this Device was opened, including those that
-    /// ended a call with `SdkError::Device`.
+    /// ended a call with `SdkError::Device`. These samples did arrive; frames that never arrived are
+    /// `driver_missed_frames` (Linux, from the driver's numbers) or `estimated_missed_frames` (from host times).
+    /// The Python package has no such count (OpenCV decodes there).
+    pub fn undecodable_frames(&self) -> u64 {
+        self.dropped
+    }
+
+    /// The same count as `undecodable_frames` (this is its earlier name, kept so existing code builds): MJPG
+    /// samples that arrived but did not decode — not frames lost on the way. For frames that never arrived use
+    /// `estimated_missed_frames()` (Windows and Linux) or `driver_missed_frames()` (Linux).
     pub fn dropped_frames(&self) -> u64 {
         self.dropped
+    }
+
+    /// Frames the capture driver numbered but this Device never received, since the first sample it read: the
+    /// sum of the gaps in `driver_sequence` (numbers 0, 1, 2, 5, 6 give 2). Counted from the driver's numbers, not
+    /// estimated from times; samples `read()` skipped as undecodable are not in it. `None` until a sample with a
+    /// sequence number arrives, and always on Windows (Media Foundation gives no sequence number); there, and
+    /// on Linux beside it, `estimated_missed_frames` estimates the missing frames from host times.
+    ///
+    /// The V4L2 documentation calls these dropped frames: received by the driver but not stored for lack of a
+    /// free buffer. It also says the count may leave out frames the hardware on the other side of the USB
+    /// link dropped — so this is not a count of every frame the camera failed to send.
+    pub fn driver_missed_frames(&self) -> Option<u64> {
+        self.last_sequence.map(|_| self.driver_missed)
+    }
+
+    /// Samples since this Device was opened that were received by `read()` (or `read_raw()`) more than 1.5
+    /// frame periods (at `mode().fps`) after the sample before. Estimated from host times (`host_ns`, taken when
+    /// the read got the sample), not read from a device frame counter: a late frame can be delivery jitter
+    /// rather than a lost frame. Same name and rule as the Python package's `Device.late_frames`, on Windows
+    /// and Linux alike. Every sample counts — those `read_raw` returns and those `read()` skips as undecodable
+    /// too (Python counts the frames `read()` returns).
+    ///
+    /// A read loop slower than the frame period makes its own long intervals, which count here as late and
+    /// missed frames just as a frame lost on the camera side would; the two cannot be told apart from host
+    /// times. If this is not 0: build with `--release`, connect the camera directly to a USB 3 port, and move
+    /// your processing to another thread (see the `threaded_capture` example).
+    pub fn late_frames(&self) -> u64 {
+        self.stats.late
+    }
+
+    /// Frames estimated missing since this Device was opened: for each late interval,
+    /// `round(interval / period) - 1`, rounded half to even like Python's `round` (Python
+    /// `Device.estimated_missed_frames`). Estimated from host times, not a device counter. Not the same count
+    /// as `driver_missed_frames` — on Linux that one is counted from the driver's sequence numbers, so the two
+    /// can differ — nor `undecodable_frames`: an undecodable sample did arrive and is not missing here. A read
+    /// loop slower than the frame period is counted here too (see `late_frames`).
+    pub fn estimated_missed_frames(&self) -> u64 {
+        self.stats.missed
+    }
+
+    /// Samples per second over the last 30 intervals, from host times (`host_ns`); 0.0 until two samples have
+    /// been read (Python `Device.actual_fps`). Undecodable samples `read()` skipped are counted: this is the
+    /// rate the capture backend hands samples over, not the rate `read()` returns frames when samples are skipped.
+    pub fn actual_fps(&self) -> f64 {
+        self.stats.fps()
     }
 
     /// This camera's controls (opened on first call). For writes, one `set_many` at startup is recommended.
@@ -168,6 +319,193 @@ mod tests {
     use crate::decode::encode_gray;
     use crate::error::SdkError;
     use crate::stall::stall_message;
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// Host times `host_ns()` hands out on this test thread, in turn, before it falls back to the clock.
+        pub(super) static FAKE_HOST_NS: RefCell<VecDeque<u64>> = RefCell::default();
+    }
+
+    /// The next reads on this thread happen at these host times (ms).
+    fn host_times_ms(ms: &[u64]) {
+        FAKE_HOST_NS.with(|q| *q.borrow_mut() = ms.iter().map(|m| m * 1_000_000).collect());
+    }
+
+    fn stats_of(fps: f64, ns: &[u64]) -> FrameStats {
+        let mut s = FrameStats::new(fps);
+        ns.iter().for_each(|&t| s.add(t));
+        s
+    }
+
+    fn ms(v: &[u64]) -> Vec<u64> {
+        v.iter().map(|m| m * 1_000_000).collect()
+    }
+
+    #[test]
+    fn late_and_missed_frames_follow_the_python_rule() {
+        // Python test_late_and_missed_frames_come_from_host_intervals: 100 fps = 10 ms. Gaps 10, 14 (under 1.5
+        // periods), 30 (late, 2 missed), 10, 16 (late, 1 missed), 10.
+        let s = stats_of(100.0, &ms(&[0, 10, 24, 54, 64, 80, 90]));
+        assert_eq!((s.late, s.missed), (2, 3));
+        assert!((s.fps() - 6.0 / 0.090).abs() < 1e-9, "{}", s.fps());
+        assert_eq!(stats_of(100.0, &ms(&[0])).fps(), 0.0, "0.0 until two samples");
+    }
+
+    #[test]
+    fn one_and_a_half_periods_is_not_late_and_a_nanosecond_more_is() {
+        assert_eq!(stats_of(100.0, &[0, 15_000_000]).late, 0);
+        let s = stats_of(100.0, &[0, 15_000_001]);
+        assert_eq!((s.late, s.missed), (1, 1));
+    }
+
+    #[test]
+    fn missed_frames_round_half_to_even_as_python_does() {
+        // 25 ms = 2.5 periods: Python round(2.5) = 2, 1 missed (round half away from zero would give 2).
+        // 35 ms = 3.5 periods: round(3.5) = 4, 3 missed.
+        let s = stats_of(100.0, &ms(&[0, 25, 60]));
+        assert_eq!((s.late, s.missed), (2, 4));
+    }
+
+    #[test]
+    fn actual_fps_is_over_the_last_30_intervals() {
+        // 11 intervals of 20 ms, then 29 of 10 ms: the last 30 are one of 20 ms and 29 of 10 ms, 310 ms in all
+        // (a window of 29 or 31 would give another rate).
+        let mut t = 0;
+        let steps = (0..40).map(|i| {
+            t += if i < 11 { 20_000_000 } else { 10_000_000 };
+            t
+        });
+        let ns: Vec<u64> = std::iter::once(0).chain(steps).collect();
+        assert!((stats_of(100.0, &ns).fps() - 30.0 / 0.310).abs() < 1e-9, "{}", stats_of(100.0, &ns).fps());
+        assert!((stats_of(100.0, &ns[..12]).fps() - 50.0).abs() < 1e-9, "fewer than 30 intervals: all of them");
+    }
+
+    #[test]
+    fn without_a_negotiated_rate_nothing_is_late_but_the_rate_is_measured() {
+        let s = stats_of(0.0, &ms(&[0, 10, 50]));
+        assert_eq!((s.late, s.missed), (0, 0));
+        assert!((s.fps() - 40.0).abs() < 1e-9);
+        assert_eq!(stats_of(90.0, &[7, 7]).fps(), 0.0, "no time between them");
+    }
+
+    fn at_100_fps(frames: Vec<Vec<u8>>) -> Device {
+        let mut cap = FakeCapture::new(frames, 16, 8);
+        cap.mode.fps = 100.0;
+        Device::open_with(cfg(), Box::new(cap)).unwrap()
+    }
+
+    #[test]
+    fn the_device_counts_late_and_missed_frames_from_host_times() {
+        let mut d = at_100_fps(frames(7));
+        assert_eq!((d.late_frames(), d.estimated_missed_frames(), d.actual_fps()), (0, 0, 0.0));
+        host_times_ms(&[0, 10, 24, 54, 64, 80, 90]);
+        let got: Vec<u64> = (0..7).map(|_| d.read().unwrap().host_ns).collect();
+        assert_eq!(got, ms(&[0, 10, 24, 54, 64, 80, 90]), "the frames carry the same host times");
+        assert_eq!((d.late_frames(), d.estimated_missed_frames()), (2, 3));
+        assert!((d.actual_fps() - 6.0 / 0.090).abs() < 1e-9, "{}", d.actual_fps());
+    }
+
+    #[test]
+    fn an_undecodable_sample_arrived_so_it_is_not_missed() {
+        // every 10 ms at 100 fps, the second sample does not decode: no gap, one undecodable sample
+        let mut d = at_100_fps(vec![sbs(10, 20), no_soi(), sbs(30, 40), sbs(50, 60)]);
+        host_times_ms(&[0, 10, 20, 30]);
+        d.read().unwrap();
+        d.read().unwrap();
+        d.read().unwrap();
+        assert_eq!((d.late_frames(), d.estimated_missed_frames(), d.undecodable_frames()), (0, 0, 1));
+        assert!((d.actual_fps() - 100.0).abs() < 1e-9, "{}", d.actual_fps());
+    }
+
+    #[test]
+    fn a_sample_read_raw_took_is_not_a_gap() {
+        let mut d = at_100_fps(frames(3));
+        host_times_ms(&[0, 10, 20]);
+        d.read().unwrap();
+        d.read_raw().unwrap();
+        d.read().unwrap();
+        assert_eq!((d.late_frames(), d.estimated_missed_frames()), (0, 0), "0 -> 20 ms would be 1 late");
+    }
+
+    /// Runs the Python package's own `_FrameStats` class (cut out of device.py, so numpy is not needed) on the
+    /// same host times and compares every number, the frame rate bit for bit. Skipped outside the repository
+    /// (no ../../python); there, a Python that does not run is a failure, not a pass.
+    #[test]
+    fn the_statistics_are_those_of_the_python_class() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python");
+        if !dir.is_dir() {
+            return;
+        }
+        let p = dir.join("opticmix_vision/device.py");
+        let src = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        let class: Vec<&str> = src
+            .lines()
+            .skip_while(|l| !l.starts_with("class _FrameStats"))
+            .enumerate()
+            .take_while(|(i, l)| *i == 0 || l.is_empty() || l.starts_with(' '))
+            .map(|(_, l)| l)
+            .collect();
+        assert!(class.len() > 10 && class.iter().any(|l| l.contains("def fps")), "_FrameStats not found in {}", p.display());
+
+        // a jittery 90 fps stream with gaps of 2..5 periods (a fixed pseudo-random sequence)
+        let (mut x, mut t) = (12345u64, 0u64);
+        let jitter: Vec<u64> = (0..400)
+            .map(|i| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let r = x >> 33;
+                let periods = if i % 37 == 5 { 2 + r % 4 } else { 1 };
+                t += periods * 11_111_111 + r % 6_000_000 - 3_000_000;
+                t
+            })
+            .collect();
+        let mut window = (0..40u64).map(|i| if i < 10 { 20 * i } else { 200 + 10 * (i - 10) }).collect::<Vec<_>>();
+        window.iter_mut().for_each(|v| *v *= 1_000_000);
+        let cases: Vec<(f64, Vec<u64>)> = vec![
+            (100.0, ms(&[0, 10, 24, 54, 64, 80, 90])),
+            (100.0, ms(&[0, 25, 60, 75])),
+            (100.0, vec![0, 15_000_000, 30_000_001]),
+            (100.0, window),
+            (90.0, jitter),
+            (0.0, ms(&[0, 10, 50])),
+            (90.0, vec![5]),
+            (60.0, vec![7, 7]),
+        ];
+        assert!(stats_of(90.0, &cases[4].1).late >= 8, "the jittery stream has gaps to compare");
+        let lists: Vec<String> = cases.iter().map(|(f, ns)| format!("({f:?}, {ns:?})")).collect();
+        let script = format!(
+            "from __future__ import annotations\nfrom collections import deque\n{}\n\
+             for fps, times in [{}]:\n    s = _FrameStats()\n    for i, t in enumerate(times):\n        s.add(i, t, fps)\n    \
+             print(s.late, s.missed, repr(s.fps))\n",
+            class.join("\n"),
+            lists.join(", ")
+        );
+        let out = ["python3", "python"]
+            .iter()
+            .find_map(|py| {
+                use std::io::Write;
+                use std::process::{Command, Stdio};
+                let mut c = Command::new(py)
+                    .args(["-I", "-"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .ok()?;
+                c.stdin.take().unwrap().write_all(script.as_bytes()).ok()?;
+                let o = c.wait_with_output().ok()?;
+                o.status.success().then(|| String::from_utf8(o.stdout).unwrap())
+            })
+            .unwrap_or_else(|| panic!("neither python3 nor python ran the Python class:\n{script}"));
+        let py: Vec<&str> = out.lines().collect();
+        assert_eq!(py.len(), cases.len(), "{out}");
+        for ((fps, ns), line) in cases.iter().zip(py) {
+            let s = stats_of(*fps, ns);
+            let want: Vec<&str> = line.split(' ').collect();
+            let rust = (s.late.to_string(), s.missed.to_string(), s.fps().to_bits());
+            let python = (want[0].to_string(), want[1].to_string(), want[2].parse::<f64>().unwrap().to_bits());
+            assert_eq!(rust, python, "fps {fps}, {} times: Rust {} {} {}, Python {line}", ns.len(), s.late, s.missed, s.fps());
+        }
+    }
 
     /// 16×8 SBS MJPG with left half = a, right half = b.
     fn sbs(a: u8, b: u8) -> Vec<u8> {
@@ -288,6 +626,97 @@ mod tests {
         assert_eq!(d.dropped_frames(), 1);
     }
 
+    fn seq(s: u32) -> SampleInfo {
+        SampleInfo::from_v4l2(100, s as i64 * 11_111, 0x2000, s)
+    }
+
+    fn fake_with(frames: Vec<Vec<u8>>, infos: Vec<SampleInfo>) -> Device {
+        Device::open_with(cfg(), Box::new(FakeCapture::new(frames, 16, 8).with_infos(infos))).unwrap()
+    }
+
+    /// Distinct frames, so the stall check stays quiet.
+    fn frames(n: u8) -> Vec<Vec<u8>> {
+        (0..n).map(|i| sbs(10 * i, 10 * i + 5)).collect()
+    }
+
+    #[test]
+    fn gaps_in_the_driver_sequence_count_as_missed_frames() {
+        let mut d = fake_with(frames(5), [0, 1, 2, 5, 6].map(seq).to_vec());
+        assert_eq!(d.driver_missed_frames(), None, "nothing read yet");
+        let got: Vec<_> = (0..5).map(|_| d.read().unwrap()).collect();
+        assert_eq!(got.iter().map(|f| f.driver_sequence).collect::<Vec<_>>(), [0, 1, 2, 5, 6].map(Some));
+        assert_eq!(got.iter().map(|f| f.index).collect::<Vec<_>>(), [0, 1, 2, 3, 4], "index has no gap");
+        assert_eq!(d.driver_missed_frames(), Some(2));
+        assert_eq!(d.undecodable_frames(), 0);
+        assert_eq!(got[4].driver_ns, Some(100_000_000_000 + 6 * 11_111_000));
+        assert_eq!(got[4].driver_clock, Some(DriverClock::V4l2Monotonic));
+        assert_eq!(got[4].driver_time_source, Some(DriverTimeSource::EndOfFrame), "flags 0x2000: no source bits");
+    }
+
+    #[test]
+    fn the_count_starts_at_the_first_sample_read() {
+        let mut d = fake_with(frames(3), [40, 41, 43].map(seq).to_vec());
+        d.read().unwrap();
+        assert_eq!(d.driver_missed_frames(), Some(0), "numbers before 40 are not counted");
+        d.read().unwrap();
+        d.read().unwrap();
+        assert_eq!(d.driver_missed_frames(), Some(1));
+    }
+
+    #[test]
+    fn a_sequence_that_goes_back_or_repeats_is_not_a_gap() {
+        let mut d = fake_with(frames(5), [7, 8, 8, 0, 2].map(seq).to_vec());
+        for _ in 0..5 {
+            d.read().unwrap();
+        }
+        assert_eq!(d.driver_missed_frames(), Some(1), "only 0 -> 2 is a gap");
+    }
+
+    #[test]
+    fn an_undecodable_sample_keeps_its_place_in_the_sequence() {
+        // 0, 1 (does not decode), 2: no frame is missing, one is undecodable — the two counts stay apart
+        let mut d = fake_with(vec![sbs(10, 20), no_soi(), sbs(30, 40)], [0, 1, 2].map(seq).to_vec());
+        assert_eq!(d.read().unwrap().driver_sequence, Some(0));
+        assert_eq!(d.read().unwrap().driver_sequence, Some(2));
+        assert_eq!(d.driver_missed_frames(), Some(0));
+        assert_eq!((d.undecodable_frames(), d.dropped_frames()), (1, 1));
+    }
+
+    #[test]
+    fn read_raw_follows_the_sequence_too() {
+        let mut d = fake_with(frames(3), [0, 1, 3].map(seq).to_vec());
+        d.read().unwrap();
+        d.read_raw().unwrap();
+        assert_eq!(d.read().unwrap().driver_sequence, Some(3));
+        assert_eq!(d.driver_missed_frames(), Some(1), "1 -> 3, not 0 -> 3");
+    }
+
+    #[test]
+    fn media_foundation_sample_times_reach_the_frame_in_ns() {
+        let infos = [1_000_000, 1_111_111].map(SampleInfo::from_media_foundation).to_vec();
+        let mut d = fake_with(frames(2), infos);
+        let (a, b) = (d.read().unwrap(), d.read().unwrap());
+        assert_eq!((a.driver_ns, b.driver_ns), (Some(100_000_000), Some(111_111_100)));
+        assert_eq!(b.driver_ns.unwrap() - a.driver_ns.unwrap(), 11_111_100, "one interval at 90 fps, in ns");
+        assert_eq!(a.driver_clock, Some(DriverClock::MediaFoundation));
+        assert_eq!((a.driver_sequence, d.driver_missed_frames()), (None, None), "no sequence on Windows");
+        assert_eq!(a.driver_time_source, None);
+    }
+
+    #[test]
+    fn a_backend_that_reports_nothing_leaves_the_driver_fields_empty() {
+        let mut d = Device::open_with(cfg(), Box::new(FakeCapture::new(frames(2), 16, 8))).unwrap();
+        let f = d.read().unwrap();
+        assert_eq!((f.driver_ns, f.driver_clock, f.driver_sequence), (None, None, None));
+        assert_eq!(d.driver_missed_frames(), None);
+        // a V4L2 buffer not flagged monotonic: no time, but the sequence number still counts
+        let mut d = fake_with(frames(2), vec![SampleInfo::from_v4l2(1, 2, 0x4000, 3), seq(5)]);
+        let f = d.read().unwrap();
+        assert_eq!((f.driver_ns, f.driver_clock, f.driver_sequence), (None, None, Some(3)));
+        d.read().unwrap();
+        assert_eq!(d.driver_missed_frames(), Some(1));
+    }
+
     #[test]
     fn a_device_can_move_to_another_thread() {
         fn assert_send<T: Send>() {}
@@ -308,12 +737,17 @@ mod tests {
         crate::guard::reset_write_counts();
         let mut d = Device::open_with(cfg(), Box::new(FakeCapture::new(vec![], 16, 8))).unwrap();
         let c = d.controls().unwrap();
-        c.set("gain", Int(40)).unwrap();
+        let a = c.set("gain", Int(40)).unwrap();
+        // Wait for the first write to go out. While it is still pending, 41 replaces it and, with no write before
+        // it, is due at once — the worker can send it before the drop (without this wait: 61 of 2500 runs).
+        assert_eq!(c.wait(&[a.ticket], Some(5.0))[0].status, Status::Written);
         let r = c.set("gain", Int(41)).unwrap();
         assert_eq!(r.status, Status::Pending);
+        assert!(r.due_in_s.unwrap() > 1.0, "held back by the 10 s gap: {:?}", r.due_in_s);
         drop(d);
         assert!(c.closed());
         assert_eq!(c.result(r.ticket).unwrap().status, Status::Cancelled);
+        assert_eq!(crate::guard::write_counts()["gain"], 1, "the cancelled write never went out");
     }
 
     #[test]

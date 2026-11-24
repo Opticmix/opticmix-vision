@@ -10,6 +10,9 @@ Public modules:
                Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has
                not yet been verified against the camera.
   calib        install and read a per-unit calibration file (preview)
+  recording    record frames (MJPG or lossless FFV1) with a CSV of frame times and a JSON of the mode and
+               control values; play a recording back (seek, speed, loop, pause) through Device
+  doctor       `python -m opticmix_vision.doctor`: versions, devices, USB details, calibration — for bug reports
 
 Making a calibration, rectification, depth and hand tracking are not in this package.
 """
@@ -38,7 +41,7 @@ from .controls import (
 )
 from .led import DEFAULT_LED_PROP, LedControl, LedControlUnavailable
 
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 
 __all__ = [
     "__version__",

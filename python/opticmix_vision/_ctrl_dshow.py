@@ -83,6 +83,7 @@ class DShowBackend:
             raise ControlsUnavailable("DirectShow controls are Windows-only")
         self._index = int(index)
         self._expected = expected
+        self.model = expected[0] if len(expected) == 1 else None   # the core refuses a device not named so
         self._core_backend = _native.core().DShowBackend(self._index, list(expected))
 
     def start(self) -> None:

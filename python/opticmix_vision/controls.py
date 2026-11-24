@@ -29,9 +29,13 @@ import logging
 import warnings
 import weakref
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal, Mapping, NamedTuple, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Mapping, NamedTuple, Protocol
 
 from opticmix_vision import _native  # absolute import: tests re-load this file under a name outside the package
+
+if TYPE_CHECKING:
+    from opticmix_vision.presets import PresetLoad
 
 __all__ = [
     "Controls", "ControlInfo", "WriteResult", "ControlSpec", "CONTROLS", "RawRange", "Backend",
@@ -241,6 +245,9 @@ class Controls:
         self._core = _native.core().CoreControls(inner if inner is not None else backend, guard, note, _on_event)
         self.backend_name: str = self._core.backend_name
         self.backend_note: str = self._core.backend_note
+        # The camera's USB name when the backend has confirmed it (DirectShow: 'WN Dual Camera'), "synthetic" for the
+        # simulated controls, None when the backend cannot tell (OpenCV). Presets record it and check it on load.
+        self.model: str | None = getattr(backend, "model", None)
         _live.add(self)
 
     def names(self) -> tuple[str, ...]:
@@ -323,3 +330,26 @@ class Controls:
         """Writes plan_reset(). Does not wait."""
         _sync_guard()
         return [_result(t) for t in self._core.reset_to_defaults(include_mono)]
+
+    # ---- Presets (opticmix_vision.presets) ---------------------------------------------------
+    def save_preset(self, path: str | Path, name: str | None = None, note: str | None = None) -> Path:
+        """Writes every readable control (value and units), the model and the SDK version to a JSON file. Reads only."""
+        from opticmix_vision import presets
+        return presets._save(self, path, name, note)
+
+    def plan_preset(self, path: str | Path, *, force: bool = False,
+                    include_mono: bool = False) -> dict[str, tuple[Any, Any]]:
+        """What load_preset() would change, as {name: (current, preset)}. Checks the whole preset; writes nothing."""
+        from opticmix_vision import presets
+        return presets._plan(self, path, force, include_mono)[0]
+
+    def load_preset(self, path: str | Path, *, force: bool = False, include_mono: bool = False,
+                    timeout: float | None = 10.0) -> "PresetLoad":
+        """Writes the preset's values that differ, in one set_many(), and waits up to timeout for the results.
+
+        Raises presets.PresetError, with nothing written, if the file is not a preset, was saved from another model
+        (PresetModelError, unless force), names a control this camera lacks, or has other units or a value out of
+        range. Controls with no effect on the mono sensor are written only with include_mono=True (as plan_reset).
+        """
+        from opticmix_vision import presets
+        return presets._load(self, path, force, include_mono, timeout)

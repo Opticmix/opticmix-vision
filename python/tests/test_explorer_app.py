@@ -181,3 +181,109 @@ def test_a_zero_sized_box_does_not_divide_by_zero():
     from opticmix_vision.explorer.app import _fit_step
 
     assert _fit_step(1600, 800, 0, 0) == 1
+
+
+def test_preset_buttons_save_then_load_through_the_confirm_dialog(app, tmp_path):
+    """Save reads only; Load lists the change, writes nothing until 'Load', then one write."""
+    s = _open(app)
+    c = app.source.controls
+    be = app.source._sim
+    assert str(s.save_preset_button.cget("state")) == "normal"
+    assert str(s.load_preset_button.cget("state")) == "normal"
+    path = str(tmp_path / "p.json")
+    n0 = len(be.writes)
+    s._save_preset(path)
+    assert len(be.writes) == n0 and s.preset_label.cget("text") == "Saved p.json"
+    s._open_load_preset(path)
+    assert str(s.preset_confirm.cget("state")) == "disabled", "nothing differs: nothing to load"
+    s.preset_dialog.destroy()
+    before = c.get("gain")
+    c.set("gain", before + 30)
+    c.flush(timeout=5)
+    n0 = len(be.writes)
+    s._open_load_preset(path)
+    assert str(s.preset_confirm.cget("state")) == "normal"
+    assert len(be.writes) == n0, "the dialog alone writes nothing"
+    s.preset_confirm.invoke()
+    c.flush(timeout=5)
+    s._poll()
+    assert be.writes[n0:] == [("gain", before, None)]
+    assert s.vars["gain"].get() == before
+    assert s.preset_label.cget("text").startswith("Loaded: 1 queued")
+
+
+def test_a_bad_preset_is_reported_and_nothing_is_written(app, tmp_path):
+    s = _open(app)
+    be = app.source._sim
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}", encoding="utf-8")
+    n0 = len(be.writes)
+    s._open_load_preset(str(bad))
+    assert s.preset_label.cget("text").startswith("Not loaded:")
+    assert len(be.writes) == n0
+
+
+def _preset(c, path, **device):
+    import json
+    c.save_preset(path)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["device"].update(device)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_load_preset_lists_this_models_presets_then_other_file(app, tmp_path, monkeypatch):
+    from opticmix_vision import presets
+    monkeypatch.setattr(presets, "store_dir", lambda: tmp_path)
+    s = _open(app)
+    c = app.source.controls
+    _preset(c, tmp_path / "mine.json")
+    _preset(c, tmp_path / "other.json", model="WN Dual Camera")
+    s._open_load_preset()
+    texts = [w.cget("text") for w in s.preset_picker.winfo_children()]
+    assert any(t.startswith("mine") for t in texts) and not any(t.startswith("other") for t in texts)
+    assert texts[-1] == "Other file…"
+    s.preset_picker.winfo_children()[0].invoke()
+    assert s.preset_dialog.winfo_exists() and not s.preset_picker.winfo_exists()
+    s.preset_dialog.destroy()
+
+
+def test_a_preset_from_another_model_offers_load_anyway(app, tmp_path):
+    s = _open(app)
+    c = app.source.controls
+    be = app.source._sim
+    path = tmp_path / "cam.json"
+    _preset(c, path, model="WN Dual Camera")
+    before = c.get("gain")
+    c.set("gain", before + 30)
+    c.flush(timeout=5)
+    n0 = len(be.writes)
+    s._open_load_preset(str(path))
+    assert s.preset_confirm.cget("text") == "Load anyway"
+    assert len(be.writes) == n0
+    s.preset_confirm.invoke()                     # re-plans with force: the usual list and 'Load'
+    assert s.preset_confirm.cget("text") == "Load" and len(be.writes) == n0
+    s.preset_confirm.invoke()
+    c.flush(timeout=5)
+    assert be.writes[n0:] == [("gain", before, None)]
+
+
+def test_the_settings_poll_and_the_redraw_read_no_control_while_streaming(app, monkeypatch):
+    """The settings window's poll (every POLL_MS) and the redraw look at the write queue only, never the camera:
+    the event loop runs both several times and no control is read."""
+    import time
+    s = _open(app)
+    c = app.source.controls
+    n = {"reads": 0, "polls": 0, "ticks": 0}
+    for meth in ("get", "snapshot", "describe"):
+        real = getattr(c, meth)
+        monkeypatch.setattr(c, meth, lambda *a, _real=real, **k: (n.__setitem__("reads", n["reads"] + 1), _real(*a, **k))[1])
+    for name, key in (("_poll", "polls"), ("_tick", "ticks")):
+        obj = s if name == "_poll" else app
+        real = getattr(obj, name)
+        monkeypatch.setattr(obj, name, lambda _real=real, _key=key: (n.__setitem__(_key, n[_key] + 1), _real())[1])
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 1.2:
+        app.root.update()
+        time.sleep(0.01)
+    assert n["polls"] >= 3 and n["ticks"] >= 10, n
+    assert n["reads"] == 0, n

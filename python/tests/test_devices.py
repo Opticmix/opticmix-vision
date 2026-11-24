@@ -109,3 +109,54 @@ def test_v4l2_two_cameras_are_refused(tmp_path):
 def test_v4l2_no_sysfs_is_no_match(tmp_path):
     with pytest.raises(NoMatch, match=r"Video nodes found: \[\]"):
         find_v4l2_node("WN Dual Camera", _sysfs=str(tmp_path / "absent"))
+
+
+# ---------------------------------------------------------------- Windows Media Foundation: a fake list, nothing enumerated
+MF_LIST = ["Example Webcam", "WN Dual Camera", "Example IR Camera"]
+
+
+def test_msmf_list_keeps_media_foundation_order_and_ignores_ffmpeg(monkeypatch):
+    from opticmix_vision import devices
+    monkeypatch.setattr(devices, "_mf_devices", lambda: list(MF_LIST))
+    got = list_devices(backend="msmf", _raw=FFMPEG_DEVICES)          # the DirectShow text must not be used
+    assert got == [DeviceInfo(0, "Example Webcam"), DeviceInfo(1, "WN Dual Camera"), DeviceInfo(2, "Example IR Camera")]
+    assert resolve_by_name("wn dual", backend="msmf") == DeviceInfo(1, "WN Dual Camera")
+
+
+def test_msmf_lookup_has_the_directshow_rules_for_none_and_two(monkeypatch):
+    from opticmix_vision import devices
+    monkeypatch.setattr(devices, "_mf_devices", lambda: list(MF_LIST))
+    with pytest.raises(NoMatch, match=r"Video devices found: \['Example Webcam', 'WN Dual Camera', 'Example IR Camera'\]"):
+        resolve_by_name("nonexistent", backend="msmf")
+    monkeypatch.setattr(devices, "_mf_devices", lambda: ["WN Dual Camera", "WN Dual Camera"])
+    with pytest.raises(MultipleMatches, match=r"^2 cameras match"):
+        resolve_by_name("WN Dual Camera", backend="msmf")
+
+
+def test_an_unknown_listing_backend_is_refused():
+    with pytest.raises(ValueError, match="'dshow' or 'msmf'"):
+        list_devices(backend="v4l2")
+
+
+def test_os_name_reads_the_media_foundation_list_for_msmf(monkeypatch):
+    # presets learn the model from this name; with msmf it has to be the Media Foundation entry at that index
+    import sys
+
+    from opticmix_vision import devices
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(devices, "_mf_devices", lambda: list(MF_LIST))
+    monkeypatch.setattr(devices, "_native_devices", lambda: ["Example Webcam", "Example Rear Webcam"])
+    assert devices._os_name(1, "msmf") == "WN Dual Camera"
+    assert devices._os_name(1, "dshow") == "Example Rear Webcam"
+    assert devices._os_name(3, "msmf") is None
+
+    def broken():
+        raise OSError("enumeration failed")
+    monkeypatch.setattr(devices, "_mf_devices", broken)
+    assert devices._os_name(1, "msmf") is None                      # a name we cannot read is left out
+
+
+@pytest.mark.skipif(__import__("sys").platform == "win32", reason="on Windows this would enumerate the cameras")
+def test_media_foundation_list_is_empty_off_windows():
+    pytest.importorskip("opticmix_vision._core")
+    assert list_devices(backend="msmf") == []

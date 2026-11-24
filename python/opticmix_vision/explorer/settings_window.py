@@ -9,13 +9,18 @@ Writes do not wait: if the guard delays one, 'applying in N s' appears under the
 red text; if the driver accepted it but the camera did not keep the value, orange 'camera kept N' and the widget
 goes back to the camera's actual value. 'Writes this session' at the bottom of the window is the write total for
 the whole process.
+'Save preset…' writes every readable control to a JSON file (reads only); 'Load preset…' lists the presets saved
+from this camera's model (or another file), shows what would change and how many writes that is, and writes only
+after 'Load' (one set_many, like 'Reset to defaults…'). A preset from another model offers 'Load anyway'.
 """
 from __future__ import annotations
 
 import tkinter as tk
+from tkinter import filedialog
 from typing import Any, Callable
 
 from .. import controls as controls_mod
+from .. import presets
 from ..controls import Controls, ControlsUnavailable, ControlStateError, write_counts
 from .state import MONO_NOTE, RANGE_NOTE, LOCKS, Row, banner_text, build_rows, locked, reset_lines, value_text
 from .theme import BG, LIME, MONO, MONO_SMALL, ORANGE, PANEL, RED, TEXT, TEXT_DIM, TRACK
@@ -39,6 +44,9 @@ class SettingsWindow:
         self._tickets: dict[int, str] = {}
         self.reset_dialog: tk.Toplevel | None = None
         self.reset_confirm: tk.Button | None = None
+        self.preset_dialog: tk.Toplevel | None = None
+        self.preset_confirm: tk.Button | None = None
+        self.preset_picker: tk.Toplevel | None = None
 
         self.top = tk.Toplevel(parent)
         self.top.title("Settings")
@@ -61,6 +69,13 @@ class SettingsWindow:
         self.mono_body = tk.Frame(self.top, bg=BG, padx=18, pady=4)
         self.reset_button = tk.Button(footer, text="Reset to defaults…", font=MONO, command=self._open_reset)
         self.reset_button.pack(side="left")
+        self.save_preset_button = tk.Button(footer, text="Save preset…", font=MONO, command=self._save_preset)
+        self.save_preset_button.pack(side="left", padx=(8, 0))
+        self.load_preset_button = tk.Button(footer, text="Load preset…", font=MONO, command=self._open_load_preset)
+        self.load_preset_button.pack(side="left", padx=(8, 0))
+        self.preset_label = tk.Label(footer, text="", bg=PANEL, fg=TEXT_DIM, font=MONO_SMALL, wraplength=320,
+                                     justify="left")   # an error message must not widen the window
+        self.preset_label.pack(side="left", padx=(8, 0))
         self.writes_label = tk.Label(footer, text="", bg=PANEL, fg=TEXT_DIM, font=MONO_SMALL)
         self.writes_label.pack(side="right")
         self._rebuild()
@@ -84,7 +99,8 @@ class SettingsWindow:
         if self.controls is None:
             tk.Label(self.body, text="No camera open", bg=BG, fg=TEXT_DIM, font=MONO).pack(anchor="w")
             self.banner.pack_forget()
-            self.reset_button.configure(state="disabled")
+            for b in (self.reset_button, self.save_preset_button, self.load_preset_button):
+                b.configure(state="disabled")
             return
         text = banner_text(self.controls.backend_name, self.controls.backend_note)
         if text:
@@ -92,7 +108,8 @@ class SettingsWindow:
             self.banner.pack(fill="x", after=self.top.winfo_children()[0])
         else:
             self.banner.pack_forget()
-        self.reset_button.configure(state="normal")
+        for b in (self.reset_button, self.save_preset_button, self.load_preset_button):
+            b.configure(state="normal")
         main, mono = build_rows(infos)
         self.mono_names = {r.name for r in mono}
         for row in main:
@@ -263,29 +280,124 @@ class SettingsWindow:
         if self.reset_dialog is not None and self.reset_dialog.winfo_exists():
             self.reset_dialog.destroy()
         plan = c.plan_reset()
-        dlg = self.reset_dialog = tk.Toplevel(self.top)
-        dlg.title("Reset to defaults")
+        self.reset_dialog, self.reset_confirm = self._confirm("Reset to defaults", reset_lines(plan), "Reset",
+                                                              self._do_reset, bool(plan))
+
+    def _confirm(self, title: str, lines: list[str], ok: str, command: Callable[[], None],
+                 enabled: bool) -> tuple[tk.Toplevel, tk.Button]:
+        """A dialog that lists what will be written; nothing is written until the OK button."""
+        dlg = tk.Toplevel(self.top)
+        dlg.title(title)
         dlg.configure(bg=BG, padx=16, pady=12)
-        for line in reset_lines(plan):
+        for line in lines:
             tk.Label(dlg, text=line, bg=BG, fg=TEXT, font=MONO, anchor="w").pack(fill="x")
         buttons = tk.Frame(dlg, bg=BG)
         buttons.pack(fill="x", pady=(10, 0))
-        self.reset_confirm = tk.Button(buttons, text="Reset", font=MONO, command=self._do_reset,
-                                       state="normal" if plan else "disabled")
-        self.reset_confirm.pack(side="left")
+        confirm = tk.Button(buttons, text=ok, font=MONO, command=command, state="normal" if enabled else "disabled")
+        confirm.pack(side="left")
         tk.Button(buttons, text="Cancel", font=MONO, command=dlg.destroy).pack(side="left", padx=8)
+        return dlg, confirm
+
+    def _show_queued(self, results: Any) -> None:
+        """Widgets take the requested values; the poll reports each result (refused, or 'camera kept N')."""
+        for r in results:
+            if r.name in self.vars:
+                self.vars[r.name].set(r.requested)
+                self._show_value(r.name, r.requested)
+            if r.status == "pending":
+                self._tickets[r.ticket] = r.name
+        self._sync_locks()
 
     def _do_reset(self) -> None:
         c = self.controls
         if c is not None:
-            for r in c.reset_to_defaults():
-                if r.name in self.vars:
-                    self.vars[r.name].set(r.requested)
-                    self._show_value(r.name, r.requested)
-                if r.status == "pending":
-                    self._tickets[r.ticket] = r.name
+            self._show_queued(c.reset_to_defaults())
         if self.reset_dialog is not None:
             self.reset_dialog.destroy()
+
+    # ---- presets ---------------------------------------------------------------------------------
+    def _save_preset(self, path: str | None = None) -> None:
+        """Reads every control into a JSON file. path=None asks for one, starting in the preset folder."""
+        c = self.controls
+        if c is None:
+            return
+        if path is None:
+            folder = presets.store_dir()
+            folder.mkdir(parents=True, exist_ok=True)
+            path = filedialog.asksaveasfilename(parent=self.top, initialdir=str(folder), defaultextension=".json",
+                                                filetypes=[("Preset", "*.json")], title="Save preset")
+            if not path:
+                return
+        try:
+            saved = c.save_preset(path)
+        except (OSError, ControlsUnavailable) as exc:
+            self.preset_label.configure(text=f"Not saved: {exc}", fg=RED)
+            return
+        self.preset_label.configure(text=f"Saved {saved.name}", fg=TEXT_DIM)
+
+    def _open_load_preset(self, path: str | None = None, force: bool = False) -> None:
+        """Without a path: the presets saved from this camera's model, and 'Other file…'. With one: what loading it
+        would change. Writes nothing until 'Load'. A preset from another model offers 'Load anyway' (force)."""
+        c = self.controls
+        if c is None:
+            return
+        if path is None:
+            self._open_picker()
+            return
+        for d in (self.preset_picker, self.preset_dialog):
+            if d is not None and d.winfo_exists():
+                d.destroy()
+        try:
+            plan = c.plan_preset(path, force=force)
+        except presets.PresetModelError as exc:
+            self.preset_dialog, self.preset_confirm = self._confirm(
+                "Load preset", [str(exc)], "Load anyway", lambda: self._open_load_preset(path, force=True), True)
+            return
+        except (presets.PresetError, OSError, ControlsUnavailable) as exc:
+            self.preset_label.configure(text=f"Not loaded: {exc}", fg=RED)
+            return
+        lines = reset_lines(plan, nothing="Everything is already at the preset's values.")
+        self.preset_dialog, self.preset_confirm = self._confirm(
+            "Load preset", lines, "Load", lambda: self._do_load_preset(path, force), bool(plan))
+
+    def _open_picker(self) -> None:
+        """The presets for this camera's model (name, time saved, note), then 'Other file…'."""
+        c = self.controls
+        if self.preset_picker is not None and self.preset_picker.winfo_exists():
+            self.preset_picker.destroy()
+        dlg = self.preset_picker = tk.Toplevel(self.top)
+        dlg.title("Load preset")
+        dlg.configure(bg=BG, padx=16, pady=12)
+        found = presets.list_presets(c.model if c is not None else None)
+        if not found:
+            tk.Label(dlg, text=f"No presets for this camera in {presets.store_dir()}", bg=BG, fg=TEXT_DIM,
+                     font=MONO_SMALL, anchor="w").pack(fill="x")
+        for i in found:
+            tk.Button(dlg, text=f"{i.name}   {i.saved_at}   {i.note}", font=MONO, anchor="w",
+                      command=lambda p=str(i.path): self._open_load_preset(p)).pack(fill="x", pady=1)
+        tk.Button(dlg, text="Other file…", font=MONO, command=self._pick_file).pack(anchor="w", pady=(8, 0))
+
+    def _pick_file(self) -> None:
+        path = filedialog.askopenfilename(parent=self.top, initialdir=str(presets.store_dir()),
+                                          filetypes=[("Preset", "*.json")], title="Load preset")
+        if path:
+            self._open_load_preset(path)
+
+    def _do_load_preset(self, path: str, force: bool = False) -> None:
+        c = self.controls
+        if self.preset_dialog is not None:
+            self.preset_dialog.destroy()
+        if c is None:
+            return
+        try:
+            r = c.load_preset(path, force=force, timeout=0)   # does not wait: the poll shows each result under its row
+        except (presets.PresetError, ControlStateError, OSError, ControlsUnavailable) as exc:
+            self.preset_label.configure(text=f"Not loaded: {exc}", fg=RED)
+            return
+        self._show_queued(r.results)
+        mono = f", {len(r.skipped_mono)} mono-only skipped" if r.skipped_mono else ""
+        self.preset_label.configure(text=f"Loaded: {len(r.results)} queued, {len(r.unchanged)} already set{mono}",
+                                    fg=TEXT_DIM)
 
     # ---- window ----------------------------------------------------------------------------------
     def focus(self) -> None:

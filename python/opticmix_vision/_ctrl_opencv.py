@@ -23,9 +23,10 @@ _AUTO_PROPS = {"exposure": "CAP_PROP_AUTO_EXPOSURE", "white_balance": "CAP_PROP_
 
 
 class OpenCVBackend:
-    def __init__(self, cap: Any, flavor: str = "dshow", *, reason: str = "") -> None:
+    def __init__(self, cap: Any, flavor: str = "dshow", *, reason: str = "", model: str | None = None) -> None:
         import cv2
         self._cap = cap
+        self.model = model          # Controls.model — OpenCV cannot tell; Device passes the USB name it looked up
         self._cv2 = cv2
         self.flavor = flavor
         self.name = f"opencv-{flavor}"

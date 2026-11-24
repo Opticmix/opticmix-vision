@@ -12,20 +12,22 @@ python examples/live_preview.py --help       # every option, and what the exampl
 |---|---|---|---|
 | `quickstart.py` | Opens the camera, prints the negotiated mode, shows both eyes; `s` saves a pair | none | no |
 | `live_preview.py` | Both eyes side by side in a window, with the frame rate the loop receives | none | `--synthetic` |
-| `save_stereo_pairs.py` | Left/right PNG pairs on the space key or every Nth frame, plus `pairs.csv` (index, host_ns) | none | `--synthetic` |
-| `record_video.py` | Both eyes side by side into one video file (MJPG `.avi` by default) and a CSV of frame times | none | `--synthetic` |
-| `play_recording.py` | Reads that video file back through `Device` as if it were the camera, and shows or counts the frames; run on generated recordings only | no camera | needs no camera |
+| `save_stereo_pairs.py` | Left/right PNG pairs on the space key or every Nth frame, plus `pairs.csv` (index, host_ns, driver_ns, driver_clock; the driver columns empty with DirectShow and `--synthetic`, filled on Windows with `--backend msmf`, run without a camera only) and `capture_info.json` (mode, control values, SDK version) | none | `--synthetic` |
+| `record_video.py` | Both eyes side by side into one video file (MJPG `.avi` by default, or lossless FFV1 `.mkv` with `--lossless`), a CSV of frame times (`host_ns`, and `driver_ns`/`driver_clock` where the capture backend gives them: on Windows `--backend msmf`, not DirectShow; run without a camera only) and a `.json` of the mode and control values; the lossless file's pixel values: generated frames only; not run with the camera | none | `--synthetic` |
+| `play_recording.py` | Reads that recording back through `Device` as if it were the camera, and shows or counts the frames; `--start`/`--start-seconds` seek, `--real-time`/`--speed` pace it, `--loop` repeats; read back a 443-frame MJPG recording made with the camera once (one PC, one camera, 2026-11-24); seek, speed and loop on generated recordings only | no camera | needs no camera |
 | `list_controls.py` | Every control the camera advertises: current value, range, default, how far its effect is verified | none | `--synthetic` |
 | `set_controls_once.py` | Manual exposure and gain in one `set_many()` call at startup; prints readback and `kept` | one `set_many()` call | `--synthetic` |
+| `presets.py` | Saves every control to a JSON preset; `--load FILE` lists what differs and loads it, printing readback and `kept`; run without a camera only | none when saving; `--load`: one `set_many()` call | `--synthetic` |
 | `led_level.py` | Sets the IR illuminator level once and compares the image before and after | one write | `--synthetic` |
-| `measure_fps.py` | Intervals between frames from `host_ns`: mean, min, max, late frames, repeated images | none | `--synthetic` |
-| `capture_dataset_npz.py` | N frames into one `.npz` (`left`, `right`, `host_ns`) for training or analysis | none | `--synthetic` |
+| `measure_fps.py` | Intervals between frames from `host_ns`: mean, min, max, late frames, repeated images. Where OpenCV passes on the capture driver's time stamp (`driver_ns`: Linux V4L2; Windows only with `--backend msmf`, which finds the Weevia S1 by name in the Media Foundation list (the name lookup itself: run without a camera only); none with DirectShow), the same intervals on that clock, the first frame's driver time (not the start of streaming: about 364,400 s on one PC with one camera, once — use differences) and how far each frame trails the earliest (`host_ns - driver_ns`); `--backend msmf` and DirectShow run with the camera once (one PC, one camera, 2026-11-24): MSMF 276 of 900 frames per eye repeating the previous image with driver-time intervals of 11.11 ms (mean, min and max), DirectShow 0 of 900 — see `StereoFrame` in `API.md`; V4L2 not run with the camera | none | `--synthetic` |
+| `capture_dataset_npz.py` | N frames into one `.npz` (`left`, `right`, `host_ns`) for training or analysis, and a `.json` of the mode and control values | none | `--synthetic` |
 | `torch_dataloader.py` | Reads that `.npz` with a PyTorch `Dataset` and `DataLoader` (needs `torch`) | no camera | needs no camera |
-| `list_devices.py` | Video devices Windows reports, in order, and how many are a Weevia S1; what to do with none or two | no camera | `--synthetic` (a made-up list) |
+| `list_devices.py` | Video devices Windows reports, in DirectShow's order (`--backend msmf`: Media Foundation's; the two lists can be in a different order (seen once on one PC, with `list_devices(backend="msmf")` — not with this example)), and how many are a Weevia S1; what to do with none or two. `--backend msmf` run without a camera only (a made-up list); not run with the camera | no camera | `--synthetic` (a made-up list) |
 | `threaded_capture.py` | Reads on one thread, processes the latest frame on another (a queue of one); counts the frames skipped | none | `--synthetic` |
 | `brightness_stats.py` | Per-eye mean, min, max and share of saturated pixels for N frames, into a CSV | none | `--synthetic` |
 | `handle_stall.py` | On `DeviceError` (including one eye stopping): close, ask for the USB cable to be re-inserted, reopen; gives up after N tries | none | `--synthetic` (a fake capture) |
 | `calibration_info.py` | The installed calibration: K, D, eye size, R, t and baseline (mm), or the SDK's message when there is none | no camera | `--synthetic` (a made-up calibration in a temporary folder) |
+| `calibration_check.py` | Whether a calibration file fits the camera: how far features matched between the eyes lie from the file's epipolar lines (median, 95th percentile) and the share with positive disparity — numbers only, no pass/fail. `--pairs-dir` checks saved PNG pairs instead of the camera | none | `--synthetic` (generated frames, checked against the made-up calibration and a wrong one) |
 
 - **`--synthetic`** uses `opticmix_vision.synthetic`: generated frames and simulated controls with made-up
   ranges. It shows that the code runs; its frame rate, ranges and brightness say nothing about the camera.
@@ -39,5 +41,7 @@ python examples/live_preview.py --help       # every option, and what the exampl
   timestamp from the camera.
 - **Images are as captured**: not rectified, no depth — rectification and depth are not in this package.
 - **Platform**: Windows. On Linux (experimental) the examples have not been run.
-- The six examples added in 0.0.4 (`play_recording.py`, `list_devices.py`, `threaded_capture.py`,
-  `brightness_stats.py`, `handle_stall.py`, `calibration_info.py`) have been run without a camera only.
+- Of the six examples added in 0.0.4, `play_recording.py` has been run with the camera once (one PC, one camera, 2026-11-24): it read back the 443 frames of an MJPG recording of the camera. `list_devices.py`, `threaded_capture.py`,
+  `brightness_stats.py`, `handle_stall.py` and `calibration_info.py` have been run without a camera only.
+- `calibration_check.py` (added in 0.0.5) has been run without a camera only (generated frames and
+  generated PNG pairs); not run with the camera.

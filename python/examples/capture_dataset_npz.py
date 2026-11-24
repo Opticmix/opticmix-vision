@@ -10,6 +10,9 @@ The file holds three arrays:
   right    (N, H, W) uint8   right eye
   host_ns  (N,)      int64   host monotonic clock right after each frame was read (not a camera timestamp)
 
+Next to it, stereo_dataset.json holds the negotiated mode, the camera's layout and left/right order,
+every control value, the SDK version and the frame count.
+
 Frames are kept in memory until the end: at 800x800 per eye that is 1.28 MB a frame, so 100 frames
 take about 128 MB. Load the file with numpy.load(); torch_dataloader.py reads it into PyTorch.
 
@@ -31,6 +34,7 @@ for _stream in (sys.stdout, sys.stderr):                          # Hangul/symbo
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
 from opticmix_vision import Device, DeviceConfig, DeviceError  # noqa: E402
+from opticmix_vision.recording import write_capture_info  # noqa: E402
 
 
 def open_camera(synthetic: bool):
@@ -62,6 +66,9 @@ def main() -> int:
                 if i:
                     f = cam.read()
                 left[i], right[i], host_ns[i] = f.left, f.right, f.host_ns     # copies out of the frame
+            write_capture_info(a.out.with_suffix(".json"), cam, npz={
+                "file": a.out.name, "frames": a.frames, "eye_size": [w, h], "late_frames": cam.late_frames,
+                "estimated_missed_frames": cam.estimated_missed_frames})
     except DeviceError as exc:
         print(f"Camera error: {exc}", file=sys.stderr)
         return 2

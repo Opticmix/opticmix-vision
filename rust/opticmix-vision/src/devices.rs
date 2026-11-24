@@ -184,9 +184,114 @@ pub fn list_modes(name: &str, raw: Option<&str>) -> Vec<Mode> {
     out
 }
 
+/// Media Foundation's video capture sources (`MFEnumDeviceSources`, source type VIDCAP): their names, in list order.
+///
+/// OpenCV's `CAP_MSMF` opens device index N as entry N of this same call (OpenCV 4.10.0 and 4.13.0,
+/// `modules/videoio/src/cap_msmf.cpp`: `DeviceList::read` enumerates with only the VIDCAP source type set, and
+/// `CvCapture_MSMF::open(int)` activates `devices[index]`), so an index in this list is the index OpenCV's MSMF backend
+/// takes. Microsoft documents neither the order nor that two calls agree on it — the same assumption the DirectShow
+/// lookup makes (a camera plugged in between this call and opening can shift it).
+/// Activates no device (read only). Empty list on non-Windows.
+pub fn enumerate_mf_video_devices() -> Result<Vec<String>> {
+    #[cfg(windows)]
+    {
+        let _com = crate::dshow::com::ComInit::mta()?;
+        // The activation objects are released at the end of this statement, before CoUninitialize (`_com`),
+        // for the same reason as in the DirectShow enumeration.
+        let names = unsafe { mf_enum::sources()? }.into_iter().map(|(_, n)| n).collect();
+        Ok(names)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+/// The Media Foundation video source list, shared by the device list above and Media Foundation capture (`mf.rs`).
+#[cfg(windows)]
+pub(crate) mod mf_enum {
+    use std::sync::OnceLock;
+
+    use windows::core::PWSTR;
+    use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::System::Com::CoTaskMemFree;
+
+    use crate::error::{Result, SdkError};
+
+    pub(crate) fn dev_err(what: &str, e: windows::core::Error) -> SdkError {
+        SdkError::Device(format!("{what} failed: HRESULT 0x{:08X}", e.code().0 as u32))
+    }
+
+    /// The MFStartup result, once per process. A failure is remembered too, so every call gives the same error.
+    pub(crate) static MF_STARTED: OnceLock<Result<()>> = OnceLock::new();
+
+    // MFShutdown is never called: Media Foundation stays started until the process ends.
+    pub(crate) fn mf_startup() -> Result<()> {
+        MF_STARTED
+            .get_or_init(|| unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.map_err(|e| dev_err("MFStartup", e)))
+            .clone()
+    }
+
+    /// Every video capture source with its friendly name ("" when it has none), in `MFEnumDeviceSources` order.
+    /// COM must be initialized on this thread. Activates nothing.
+    pub(crate) unsafe fn sources() -> Result<Vec<(IMFActivate, String)>> {
+        mf_startup()?;
+        let mut attrs: Option<IMFAttributes> = None;
+        MFCreateAttributes(&mut attrs, 1).map_err(|e| dev_err("MFCreateAttributes", e))?;
+        let attrs = attrs.ok_or_else(|| SdkError::Device("MFCreateAttributes gave nothing".into()))?;
+        attrs
+            .SetGUID(&MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID)
+            .map_err(|e| dev_err("SetGUID", e))?;
+        let mut pp: *mut Option<IMFActivate> = std::ptr::null_mut();
+        let mut count = 0u32;
+        MFEnumDeviceSources(&attrs, &mut pp, &mut count).map_err(|e| dev_err("MFEnumDeviceSources", e))?;
+        // Take over the reference each array element holds (a clone would leave the element's reference
+        // unreleased), then free only the array.
+        let list: Vec<IMFActivate> = if pp.is_null() || count == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts_mut(pp, count as usize).iter_mut().filter_map(Option::take).collect()
+        };
+        CoTaskMemFree(Some(pp as _));
+        Ok(list
+            .into_iter()
+            .map(|a| {
+                let n = friendly_name(&a).unwrap_or_default();
+                (a, n)
+            })
+            .collect())
+    }
+
+    unsafe fn friendly_name(a: &IMFActivate) -> Result<String> {
+        let mut s = PWSTR::null();
+        let mut len = 0u32;
+        a.GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &mut s, &mut len)
+            .map_err(|e| dev_err("GetAllocatedString", e))?;
+        let out = s.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(s.0 as _));
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MFStartup does not open a camera (it only initializes the MF platform). A second call returns the remembered result.
+    #[cfg(windows)]
+    #[test]
+    fn mf_starts_once_per_process() {
+        assert_eq!(mf_enum::mf_startup(), Ok(()));
+        assert!(mf_enum::MF_STARTED.get().is_some());
+        assert_eq!(mf_enum::mf_startup(), Ok(()));
+    }
+
+    /// Off Windows there is no Media Foundation: an empty list, not an error.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_media_foundation_list_is_empty_off_windows() {
+        assert_eq!(enumerate_mf_video_devices(), Ok(Vec::new()));
+    }
 
     /// Sample from Python tests/test_devices.py (format taken from a real run, other device names and IDs replaced with fake ones).
     const FFMPEG_DEVICES: &str = r#"[dshow @ 000001] "WN Dual Camera" (video)

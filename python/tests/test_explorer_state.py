@@ -96,3 +96,13 @@ def test_reset_lines_count_the_writes():
     lines = reset_lines({"gain": (28, 0), "backlight_compensation": (96, 50)})
     assert lines[:2] == ["gain  28 → 0", "backlight_compensation  96 → 50"]
     assert lines[-1] == "This will write to the camera 2 times."
+
+
+def test_a_mode_and_its_value_count_as_one_write():
+    """The Load preset dialog: auto_exposure + exposure share one device property, so set_many writes them once."""
+    pytest.importorskip("opticmix_vision._core")      # the control table comes from the extension
+    from opticmix_vision.explorer.state import reset_lines
+    lines = reset_lines({"auto_exposure": ("auto", "manual"), "exposure": (-5, -7), "gain": (28, 40)})
+    assert lines[-1] == "This will write to the camera 2 times."
+    assert reset_lines({}, nothing="Everything is already at the preset's values.") == [
+        "Everything is already at the preset's values."]

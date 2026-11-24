@@ -18,7 +18,7 @@ import pytest
 import opticmix_vision
 
 DOC = Path(__file__).resolve().parents[1] / "API.md"
-MODULES = ["device", "devices", "controls", "led", "synthetic", "calibration", "calib", "viewer", "explorer"]
+MODULES = ["device", "devices", "controls", "led", "synthetic", "recording", "calibration", "calib", "presets", "doctor", "viewer", "explorer"]
 
 MODULE_RE = re.compile(r"^## `(opticmix_vision(?:\.\w+)*)`\s*$")
 ENTRY_RE = re.compile(r"^#{3,4} `([A-Za-z_][\w.]*)(\(.*\)(?: -> .+)?)?`\s*$")

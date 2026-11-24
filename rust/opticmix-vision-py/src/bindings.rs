@@ -296,6 +296,13 @@ fn enumerate_video_devices(py: Python<'_>) -> PyResult<Vec<Option<String>>> {
         .map_err(|e| to_py(py, e))
 }
 
+/// Media Foundation video capture source names, in the order OpenCV's CAP_MSMF counts device indexes. Activates no device.
+#[pyfunction]
+fn enumerate_mf_video_devices(py: Python<'_>) -> PyResult<Vec<String>> {
+    py.detach(devices::enumerate_mf_video_devices)
+        .map_err(|e| to_py(py, e))
+}
+
 #[pyfunction]
 #[pyo3(signature = (names, index, expected))]
 fn choose(
@@ -852,6 +859,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_counts, m)?)?;
     m.add_function(wrap_pyfunction!(reset_write_counts, m)?)?;
     m.add_function(wrap_pyfunction!(enumerate_video_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(enumerate_mf_video_devices, m)?)?;
     m.add_function(wrap_pyfunction!(choose, m)?)?;
     m.add_function(wrap_pyfunction!(list_devices, m)?)?;
     m.add_function(wrap_pyfunction!(list_modes, m)?)?;

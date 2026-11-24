@@ -130,10 +130,13 @@ def banner_text(backend_name: str, backend_note: str) -> str:
     return f"Limited controls (OpenCV fallback): {backend_note}"
 
 
-def reset_lines(plan: Mapping[str, tuple[Any, Any]]) -> list[str]:
+def reset_lines(plan: Mapping[str, tuple[Any, Any]], *, nothing: str = "Everything is already at the device defaults."
+                ) -> list[str]:
+    """One line per change, then how many writes: a mode and its value (one group) are one write."""
     if not plan:
-        return ["Everything is already at the device defaults."]
+        return [nothing]
     lines = [f"{n}  {value_text(n, cur)} → {value_text(n, dflt)}" for n, (cur, dflt) in plan.items()]
-    n = len(plan)
+    group = {c.name: c.key for c in CONTROLS}
+    n = len({group.get(name, name) for name in plan})
     lines.append(f"This will write to the camera {n} time{'s' if n != 1 else ''}.")
     return lines

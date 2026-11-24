@@ -6,6 +6,9 @@ camera. Selection is therefore always by name.
 
 Windows: parsing the ffmpeg output and picking by name run in the Rust core (`devices.rs`). Running ffmpeg,
 and falling back to enumerating DirectShow directly, stay here in Python so a caller can swap that step.
+`backend="msmf"` lists Media Foundation's video sources instead (Rust core), in the order OpenCV's CAP_MSMF
+counts device indexes. Media Foundation listing: run with the camera once (one PC, one camera, 2026-11-24);
+picking by name in that list (`resolve_by_name(backend="msmf")`): run without a camera only.
 
 Linux: `find_v4l2_node()` reads `/sys/class/video4linux` (no extension needed). Linux name lookup:
 implemented, not yet run on the camera.
@@ -13,6 +16,7 @@ implemented, not yet run on the camera.
 from __future__ import annotations
 
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,11 +79,40 @@ def _native_devices() -> list[str]:
         return []
 
 
-def list_devices(*, _raw: str | None = None) -> list[DeviceInfo]:
-    """Video devices in DirectShow enumeration order (Windows). Laptop webcams are included — the user has to
-    pick among them, so nothing is filtered out.
+def _mf_devices() -> list[str]:
+    """Media Foundation's video capture sources (Windows), names in the order OpenCV's CAP_MSMF counts device
+    indexes — see `enumerate_mf_video_devices` in the Rust core's `devices.rs` for the source. Activates no
+    device. Other OSes: empty list."""
+    return list(_native.core().enumerate_mf_video_devices())
 
-    ffmpeg is usually not installed; without it DirectShow is enumerated directly, in the same order as OpenCV."""
+
+def _os_name(device: int | str, backend: str) -> str | None:
+    """The camera's name as the OS lists it, read only: sysfs on Linux (OpenCV index N is /dev/videoN), the
+    DirectShow list on Windows with backend "dshow", the Media Foundation list with backend "msmf" (OpenCV's
+    indices for each follow its list). None when unknown."""
+    try:
+        if sys.platform.startswith("linux"):
+            node = Path(device).name if isinstance(device, str) else f"video{device}"
+            return (Path(SYSFS_V4L) / node / "name").read_text().strip()
+        if sys.platform == "win32" and backend in ("dshow", "msmf") and isinstance(device, int):
+            names = _native_devices() if backend == "dshow" else _mf_devices()
+            return names[device] if 0 <= device < len(names) else None
+    except (OSError, ValueError, RuntimeError):  # a name we cannot read is left out, never an error
+        pass
+    return None
+
+
+def list_devices(*, backend: str = "dshow", _raw: str | None = None) -> list[DeviceInfo]:
+    """Video devices in the order a Windows capture backend lists them — the index is the one OpenCV's backend of
+    that name takes. Laptop webcams are included — the user has to pick among them, so nothing is filtered out.
+
+    backend="dshow": DirectShow. ffmpeg is usually not installed; without it DirectShow is enumerated directly,
+    in the same order as OpenCV. backend="msmf": Media Foundation's video sources (`MFEnumDeviceSources`, the
+    list OpenCV's CAP_MSMF indexes). The two lists need not be in the same order."""
+    if backend == "msmf":
+        return [DeviceInfo(index=i, name=n) for i, n in enumerate(_mf_devices())]
+    if backend != "dshow":
+        raise ValueError(f"backend must be 'dshow' or 'msmf': {backend!r}")
     if _raw is None:
         try:
             _raw = _ffmpeg_devices()
@@ -88,9 +121,10 @@ def list_devices(*, _raw: str | None = None) -> list[DeviceInfo]:
     return [DeviceInfo(index=i, name=n) for i, n in _native.core().list_devices(_raw)]
 
 
-def resolve_by_name(needle: str, *, _raw: str | None = None) -> DeviceInfo:
-    """Picks one device by partial name match (case-insensitive), Windows. Does not guess when it is ambiguous."""
-    devices = list_devices(_raw=_raw)
+def resolve_by_name(needle: str, *, backend: str = "dshow", _raw: str | None = None) -> DeviceInfo:
+    """Picks one device by partial name match (case-insensitive) from `list_devices(backend=...)`, Windows. Does
+    not guess when it is ambiguous."""
+    devices = list_devices(backend=backend, _raw=_raw)
     index, name = _native.core().pick_by_name(needle, [(d.index, d.name) for d in devices])
     return DeviceInfo(index=index, name=name)
 

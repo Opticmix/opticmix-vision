@@ -144,11 +144,13 @@ class ExplorerApp:
                   font=("Segoe UI", 13), relief="flat", activebackground=PANEL,
                   activeforeground=LIME, borderwidth=0).pack(side="right", padx=4)
 
-        # a missing serial number is shown, not left blank.
-        sn = tk.Label(bar, text="SN: —", bg=PANEL, fg=TEXT_DIM, font=MONO)
+        # what the OS knows of the camera's USB device (not opened), and that it has no serial number.
+        from ..doctor import _usb_summary
+        sn = tk.Label(bar, text=_usb_summary(self.synthetic), bg=PANEL, fg=TEXT_DIM, font=MONO)
         sn.pack(side="right", padx=(8, 4))
-        self._tooltip(sn, "This camera reports no USB serial number.\n"
-                          "Two units cannot be told apart in software — label them physically.")
+        self._tooltip(sn, "VID:PID, USB device revision (bcdDevice) and USB link speed, read from the OS without\n"
+                          "opening the camera. This camera reports no USB serial number: two units cannot be told\n"
+                          "apart in software — label them physically. python -m opticmix_vision.doctor prints more.")
 
         self.device_var = tk.StringVar()
         self.device_combo = ttk.Combobox(bar, textvariable=self.device_var, state="readonly",

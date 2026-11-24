@@ -5,21 +5,27 @@ so R(x) = L(x + d), d > 0.
 UVC control imitation: `controls` is a Controls on top of SimBackend (made-up ranges and defaults). Exposure,
 gain and LED values affect brightness; the purpose is to make the viewer's key controls visible on screen,
 not to model a real device's response curve.
+
+SyntheticPlaneSource is geometric instead: a textured plane seen through a given calibration by both eyes, so a
+calibration check on its frames knows which file fits. No controls.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from ._ctrl_sim import SimBackend
 from ._cvprops import from_controls, prop_name, to_controls
 from .controls import Controls
-from .device import NegotiatedMode, StereoFrame
+from .device import NegotiatedMode, StereoFrame, _FrameStats
 
-__all__ = ["SyntheticStereoSource"]
+if TYPE_CHECKING:
+    from .calibration import StereoCalibration
+
+__all__ = ["SyntheticStereoSource", "SyntheticPlaneSource"]
 
 
 def _texture(h: int, w: int, rng: np.random.Generator) -> np.ndarray:
@@ -34,7 +40,8 @@ def _texture(h: int, w: int, rng: np.random.Generator) -> np.ndarray:
 
 
 class SyntheticStereoSource:
-    """A synthetic camera with the same surface as `Device` (read / get_prop / set_prop / controls / mode / close).
+    """A synthetic camera with the same surface as `Device` (read / get_prop / set_prop / controls / mode / close,
+    and the frame statistics late_frames / estimated_missed_frames / actual_fps).
 
     eye_size: one eye's (width, height). The frame (sbs) width is reported in mode as 2×width.
     realtime: if True, waits to match fps (to get a feel for real speed in the viewer). Tests use False.
@@ -52,6 +59,7 @@ class SyntheticStereoSource:
                                          "CAP_PROP_FRAME_HEIGHT": float(self.h)}
         self._i = 0
         self._t0 = time.perf_counter()
+        self._stats = _FrameStats()
         self.mode = NegotiatedMode(width=2 * self.w, height=self.h, fps=self.fps, fourcc="SYNT",
                                    backend_name="synthetic")
 
@@ -102,7 +110,21 @@ class SyntheticStereoSource:
         right = img[:, self.disparity: self.disparity + self.w].copy()
         f = StereoFrame(left=left, right=right, host_ns=time.perf_counter_ns(), index=self._i)
         self._i += 1
+        self._stats.add(f.index, f.host_ns, self.fps)
         return f
+
+    # ---- frame statistics, as Device (host intervals) --------------------------------------------
+    @property
+    def late_frames(self) -> int:
+        return self._stats.late
+
+    @property
+    def estimated_missed_frames(self) -> int:
+        return self._stats.missed
+
+    @property
+    def actual_fps(self) -> float:
+        return self._stats.fps
 
     def close(self) -> None:
         if self._controls is not None:
@@ -114,3 +136,53 @@ class SyntheticStereoSource:
 
     def __exit__(self, *exc: Any) -> None:
         self.close()
+
+
+def _eye_rays(eye: Any) -> np.ndarray:
+    """Per-pixel ray (x, y, 1) in the eye's frame; NaN beyond 80° off axis (outside the rendered circle)."""
+    import cv2
+    w, h = eye.size
+    u, v = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
+    xy = cv2.fisheye.undistortPoints(np.stack([u, v], -1).reshape(-1, 1, 2), eye.K, eye.D).reshape(h, w, 2)
+    xy[np.hypot((u - eye.cx) / eye.fx, (v - eye.cy) / eye.fy) > np.radians(80)] = np.nan
+    return np.dstack([xy, np.ones((h, w))])
+
+
+class SyntheticPlaneSource:
+    """Frames of a textured plane 350-600 mm in front of the left eye, moved at random between frames, as both eyes
+    of `calibration` (a StereoCalibration) see it. `calibration` is kept as an attribute, like
+    `Device.calibration`. Generated, not measured."""
+
+    MM_PER_PX = 2.0
+
+    def __init__(self, calibration: StereoCalibration, *, seed: int = 0) -> None:
+        import cv2
+        self.calibration = calibration
+        self._rng = np.random.default_rng(seed)
+        n = 1536
+        tex = sum(wt * cv2.resize(self._rng.random((k, k)).astype(np.float32), (n, n), interpolation=cv2.INTER_CUBIC)
+                  for k, wt in ((48, 1.0), (192, 0.7), (384, 0.5)))
+        self._tex = cv2.normalize(tex, None, 20, 230, cv2.NORM_MINMAX).astype(np.uint8)
+        R, t = calibration.extrinsics.R, calibration.extrinsics.t
+        # right eye: p_left = R^T (p_right - t) -> origin -R^T t, direction R^T d (row vectors: d @ R)
+        self._eyes = [(np.zeros(3), _eye_rays(calibration.left)),
+                      (-R.T @ t, _eye_rays(calibration.right) @ R)]
+        self._i = 0
+
+    def read(self) -> StereoFrame:
+        import cv2
+        z = self._rng.uniform(350.0, 600.0)
+        ox, oy = self._rng.uniform(-100.0, 100.0, 2)
+        half = self._tex.shape[0] / 2
+        eyes = []
+        for o, d in self._eyes:
+            s = (z - o[2]) / d[..., 2]
+            mx = ((o[0] + s * d[..., 0] - ox) / self.MM_PER_PX + half).astype(np.float32)
+            my = ((o[1] + s * d[..., 1] - oy) / self.MM_PER_PX + half).astype(np.float32)
+            mx[~np.isfinite(mx)] = -1.0
+            my[~np.isfinite(my)] = -1.0
+            img = cv2.remap(self._tex, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            eyes.append(np.clip(img + self._rng.normal(0.0, 2.0, img.shape), 0, 255).astype(np.uint8))
+        f = StereoFrame(left=eyes[0], right=eyes[1], host_ns=time.perf_counter_ns(), index=self._i)
+        self._i += 1
+        return f

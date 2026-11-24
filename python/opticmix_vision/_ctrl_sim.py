@@ -28,6 +28,7 @@ class SimBackend:
     """값을 dict 에 들고 있는 백엔드. 쓰기를 기록하고, 어느 스레드가 불렀는지 남긴다(테스트가 본다)."""
 
     name = "sim"
+    model = "synthetic"          # Controls.model: presets saved here do not load on a camera without force
     exposure_units = "log2_s_nominal"
     note = "simulated controls — ranges and defaults are made up, not measured"
 

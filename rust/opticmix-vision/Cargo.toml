@@ -1,6 +1,6 @@
 [package]
 name = "opticmix-vision"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 rust-version = "1.88"
 description = "Rust API for the Weevia S1 stereo-IR camera (preview): device lookup, MJPG capture, stereo split, camera controls"
@@ -8,19 +8,19 @@ license = "Apache-2.0"
 repository = "https://github.com/Opticmix/opticmix-vision"
 readme = "README.md"
 # Kept out of the published crate: tests/ reads the repository's Python package and other crates' sources;
-# examples/ holds internal check tools (camera probes, the read-back comparison step). The README carries the public example.
-exclude = ["tests/", "examples/"]
+# examples/internal_* are internal check tools (camera probes, the read-back comparison step). The other examples ship.
+exclude = ["tests/", "examples/internal_*"]
 keywords = ["camera", "stereo", "uvc", "infrared", "weevia"]
 categories = ["multimedia::video", "hardware-support"]
 
 [features]
 default = ["capture"]
 # Frame capture (Device, MJPG decoding, Media Foundation / V4L2) and the Linux V4L2 controls. Without it the crate keeps
-# the controls (DirectShow), stereo split, stall check and LED. The Python extension (opticmix-vision-py) turns it off
-# so it does not pull in the capture dependencies (bindgen on Linux in particular).
-capture = ["dep:zune-jpeg", "dep:zune-core", "dep:v4l", "windows/Win32_Media_MediaFoundation"]
-# Test doubles (backend::mock::MockBackend) outside the tests, e.g. for internal tools. Ranges and defaults are made up.
-# The capture double (capture::fake::FakeCapture) also needs `capture`.
+# the controls (DirectShow), the Media Foundation device list, stereo split, stall check and LED. The Python extension
+# (opticmix-vision-py) turns it off so it does not pull in the capture dependencies (bindgen on Linux in particular).
+capture = ["dep:zune-jpeg", "dep:zune-core", "dep:v4l"]
+# Public: test doubles that let the examples run without a camera (`--synthetic`) — simulated controls
+# (backend::mock::MockBackend) and, with `capture`, a capture double (capture::fake::FakeCapture). Ranges are made up.
 test-support = []
 
 [dependencies]
@@ -31,9 +31,10 @@ zune-core = { version = "0.5", optional = true }
 serde_json = "1"
 jpeg-encoder = "0.6"
 
-# Pinned to the version and features the build was checked with. `capture` adds MediaFoundation (mf.rs).
+# Pinned to the version and features the build was checked with. MediaFoundation is always on: the device list
+# (devices::enumerate_mf_video_devices) needs it without `capture`; capture through it (mf.rs) needs `capture`.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_DirectShow", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Ole"] }
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_DirectShow", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Ole"] }
 
 # Linux capture (v4l2.rs) and controls (v4l2_ctrl.rs), enabled by `capture`. v4l2-sys-mit 0.3.0 (default features of v4l)
 # runs bindgen on linux/videodev2.h at build time: a Linux build needs libclang and kernel headers
@@ -41,8 +42,37 @@ windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_Di
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = { version = "0.14", optional = true }
 
+# Public examples (README, "Examples"). Those that open a camera need `capture`; `--synthetic` needs `test-support`.
+[[example]]
+name = "measure_fps"
+required-features = ["capture"]
+
+[[example]]
+name = "save_stereo_pairs"
+required-features = ["capture"]
+
+[[example]]
+name = "list_controls"
+required-features = ["capture"]
+
+[[example]]
+name = "set_controls_once"
+required-features = ["capture"]
+
+[[example]]
+name = "threaded_capture"
+required-features = ["capture"]
+
+[[example]]
+name = "led_level"
+required-features = ["capture"]
+
+[[example]]
+name = "handle_stall"
+required-features = ["capture"]
+
 # docs.rs (https://docs.rs/about/metadata): Windows is the main platform, so it is the landing page; Linux is built too.
-# Default features (`capture`) so `Device` is documented; not all-features (`test-support` is internal test doubles).
+# Default features (`capture`) so `Device` is documented; not all-features (`test-support` is test doubles).
 # The Linux build runs bindgen: the docs.rs Linux image (https://docs.rs/about/builds -> rust-lang/crates-build-env,
 # linux/packages.txt) installs clang, libclang-dev and linux-libc-dev, and v4l2-sys-mit 0.3.0 itself builds there.
 [package.metadata.docs.rs]

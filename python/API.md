@@ -1,6 +1,6 @@
 # opticmix-vision API reference
 
-Reference for the public Python API of `opticmix_vision` 0.0.4. It lists every
+Reference for the public Python API of `opticmix_vision` 0.0.5. It lists every
 public name, with its signature as `inspect.signature` reports it. What has been
 run against the camera, and on which platform, is stated in [README.md](README.md)
 and not repeated here.
@@ -8,8 +8,10 @@ and not repeated here.
 Public modules: [`opticmix_vision`](#opticmix_vision) (package),
 [`device`](#opticmix_visiondevice), [`devices`](#opticmix_visiondevices),
 [`controls`](#opticmix_visioncontrols), [`led`](#opticmix_visionled),
-[`synthetic`](#opticmix_visionsynthetic), [`calibration`](#opticmix_visioncalibration),
-[`calib`](#opticmix_visioncalib), [`viewer`](#opticmix_visionviewer),
+[`synthetic`](#opticmix_visionsynthetic), [`recording`](#opticmix_visionrecording),
+[`calibration`](#opticmix_visioncalibration),
+[`calib`](#opticmix_visioncalib), [`presets`](#opticmix_visionpresets), [`doctor`](#opticmix_visiondoctor),
+[`viewer`](#opticmix_visionviewer),
 [`explorer`](#opticmix_visionexplorer). Names starting with `_` are private, and so
 are modules not listed here.
 
@@ -36,7 +38,7 @@ works. `opticmix_vision.__all__`:
 
 | Name | Defined in |
 |---|---|
-| `__version__` | package — the version string, `"0.0.4"` |
+| `__version__` | package — the version string, `"0.0.5"` |
 | `Device`, `DeviceConfig`, `DeviceError`, `EndOfRecording`, `NegotiatedMode`, `StereoFrame`, `split_stereo`, `LAYOUTS`, `LR_ORDERS` | [`opticmix_vision.device`](#opticmix_visiondevice) |
 | `LedControl`, `LedControlUnavailable`, `DEFAULT_LED_PROP` | [`opticmix_vision.led`](#opticmix_visionled) |
 | `Controls`, `ControlInfo`, `WriteResult`, `ControlsUnavailable`, `ControlStateError`, `CONTROLS`, `write_counts`, `reset_write_counts` | [`opticmix_vision.controls`](#opticmix_visioncontrols) |
@@ -128,7 +130,24 @@ Class method. The settings for a Weevia S1, with the camera found by name:
 `layout="sbs"`, `lr_order="first_is_right"`, `backend="dshow"`, 1600×800,
 `fps=90.0`, `fourcc="MJPG"`. Any field can be overridden by keyword.
 
-- Windows: the device index is found with `devices.resolve_by_name("WN Dual Camera")`.
+- Windows: the device index is found with `devices.resolve_by_name("WN Dual Camera")`
+  (the DirectShow list).
+- Windows with `backend="msmf"`: the index is found with
+  `devices.resolve_by_name("WN Dual Camera", backend="msmf")` — the Media Foundation
+  list, which is the list OpenCV's `CAP_MSMF` counts device indexes in (OpenCV 4.13.0
+  `modules/videoio/src/cap_msmf.cpp`: `CvCapture_MSMF::open(int)` activates entry N of
+  `MFEnumDeviceSources` with the video-capture source type). The two lists need not be
+  in the same order. Media Foundation lookup and Python MSMF capture: run once on one PC
+  with one camera (2026-11-24); see "Media Foundation through OpenCV" under `StereoFrame`.
+  Opened through MSMF, the camera controls are the OpenCV fallback: no ranges or
+  defaults, and no `power_line_frequency` or `low_light_compensation` — the price of
+  getting `StereoFrame.driver_ns`.
+- Windows with `backend="any"`: OpenCV tries its capture backends in priority order
+  (Media Foundation before DirectShow in OpenCV 4.13, `videoio_registry.cpp`) and,
+  when one fails to open, tries the next with the same index. So the index is used
+  only when the Weevia S1 has the same index in both lists; otherwise `DeviceError`
+  asks for `backend="msmf"` or `backend="dshow"`. `Device.open()` also refuses a
+  device that `backend="any"` opened by index on Windows through any other backend.
 - Linux: the device is `devices.find_v4l2_node("WN Dual Camera")` and `backend`
   defaults to `"v4l2"`. As the README puts it: "Linux name lookup: implemented, not
   yet run on the camera."
@@ -143,21 +162,35 @@ cfg = DeviceConfig.weevia_s1(device="/dev/video2", backend="v4l2")   # name the 
 
 #### `DeviceConfig.recording(path: str | Path, **overrides: Any) -> DeviceConfig`
 
-Class method. Plays a video file written by `examples/record_video.py` (both eyes
-side by side, left eye in the left half) as if it were the camera: `layout="sbs"`,
+Class method. Plays a recording (written by [`recording.Recorder`](#recorderpath-str--path-source-any--codec-str--mjpg-fps-float--none--none-controls-callable-dictstr-any--none--none--none),
+the viewer's `v` key or `examples/record_video.py`: both eyes side by side, left eye
+in the left half) as if it were the camera: `layout="sbs"`,
 `lr_order="first_is_left"`, `stall_frames=0`. This is the order in the file, not the
-camera's: `record_video.py` writes the eyes after the split, left first; the camera
-itself is `first_is_right`. `read()` raises `EndOfRecording` after the last frame. `host_ns` is the time the frame was read back, not when it
-was captured — the recording's CSV has the capture times. A compressed recording
-does not have the camera's pixel values.
+camera's: the recording holds the eyes after the split, left first; the camera
+itself is `first_is_right`. `read()` raises `EndOfRecording` after the last frame.
+
+On the opened `Device`, [`playback`](#deviceplayback) seeks, sets the speed and
+real-time pacing, loops and pauses; `mode` is the mode the recording was made in and
+`recording_info` is its JSON. A frame's `index` is its number in the file. `host_ns`
+is the time the frame was read back, unless `playback.recorded_time` is set (then it
+is the time recorded in the CSV). A compressed (MJPG) recording does not have the
+camera's pixel values; the lossless (FFV1) file keeps the pixel values the SDK
+delivered (generated frames only; not run with the camera).
+`Recorder` (MJPG) and reading a recording back have been run with the camera once (one PC, one camera, 2026-11-24: 443 frames recorded and read back). Seeking, speed, looping and pausing: generated frames only; not run with the camera. Python only; the Rust crate
+has no recording API yet.
 
 Raises `DeviceError` when the file does not exist.
 
 ```python
 with Device(DeviceConfig.recording("recording.avi")) as cam:
+    pb = cam.playback
+    print(pb.frame_count, pb.duration_s, cam.mode.to_dict())
+    pb.seek(seconds=2.0)              # or pb.seek(120) for frame 120
+    pb.real_time = True               # at the recorded intervals
+    pb.set_speed(0.5)                 # half speed
     try:
         while True:
-            frame = cam.read()
+            frame = cam.read()        # frame.index is the frame number in the file
     except EndOfRecording:
         pass
 ```
@@ -187,7 +220,7 @@ backend name, `""` when not available).
 
 The five fields as a `dict`.
 
-### `StereoFrame(left: np.ndarray, right: np.ndarray, host_ns: int, index: int)`
+### `StereoFrame(left: np.ndarray, right: np.ndarray, host_ns: int, index: int, driver_ns: int | None = None, driver_clock: str | None = None, driver_sequence: int | None = None)`
 
 One stereo frame (frozen dataclass).
 
@@ -195,7 +228,19 @@ One stereo frame (frozen dataclass).
 |---|---|
 | `left`, `right` | (h, w) `uint8` images of the left and right eye. With `split_stereo`, these can be views into the raw frame |
 | `host_ns` | host monotonic clock (`time.perf_counter_ns()`) taken right after the frame was read. It is not a device timestamp |
-| `index` | frame number counted by this `Device`, from 0. It is not a device counter |
+| `index` | frame number counted by this `Device`, from 0 (from a recording: the frame's number in the file). It is not a device counter |
+| `driver_ns` | the operating system capture driver's time stamp for the frame, in ns, as OpenCV passes it on in `CAP_PROP_POS_MSEC` (OpenCV 4.13 sources: `cap_msmf.cpp`, `cap_v4l.cpp`), converted back to whole driver units. `None` with DirectShow — OpenCV returns -1 there, and DirectShow is the Weevia S1 default on Windows (`DeviceConfig.weevia_s1(backend="msmf")` gives Media Foundation; see "Media Foundation through OpenCV" below) — and for a recording, unless `Playback.recorded_time` is set: then the value recorded in its CSV. Opened through MSMF, the camera controls are the OpenCV fallback (no ranges or defaults, no `power_line_frequency` or `low_light_compensation`): that is the price of this time stamp |
+| `driver_clock` | the clock `driver_ns` is on, `None` exactly when it is: `"media_foundation"` = the sample time (100 ns units) Media Foundation's source reader gives with the converted sample OpenCV receives (see below). On one PC (Windows 11) with one camera (2026-11-24, once) the first Media Foundation time was about 364,400 s — not the start of streaming; on this PC it was within a few seconds of Python's `time.perf_counter_ns()` (compared across two runs by file times, not within one process), but what the clock's zero is has not been established. Use differences between frames, not the absolute value; `"v4l2"` = the V4L2 buffer time stamp (microseconds) — OpenCV does not pass on the buffer's clock flag, so whether it is `CLOCK_MONOTONIC` is not checked (the Rust crate checks it) |
+| `driver_sequence` | the driver's frame sequence number. Always `None` here: OpenCV does not pass on the V4L2 sequence number, and Media Foundation has none. The Rust crate gives it on Linux, with `Device::driver_missed_frames()` counting the gaps, and also `driver_time_source` (start of exposure or end of frame, as the V4L2 driver reports it in the buffer flags, which OpenCV does not pass on) |
+
+None of the times is a camera (device) time: the camera sends no clock this package reads. Whether a
+driver time marks the exposure or the arrival of the frame is not known; the gap between the driver time and
+`host_ns` has not been measured. Frames missing between driver sequence numbers are counted from the driver's
+own numbers in Rust only; `Device.late_frames` and `Device.estimated_missed_frames` are estimated from
+`host_ns` intervals instead, so the two can differ. V4L2 driver times have been run without a camera only (made-up
+driver times); not run with the camera.
+
+Media Foundation through OpenCV (`backend="msmf"`). OpenCV 4.13.0 `modules/videoio/src/cap_msmf.cpp`: it asks Media Foundation's source reader to convert the camera's format to RGB — RGB32 when it opens a Direct3D 11 device, otherwise RGB24 (lines 1153–1159, 1039) — and `CAP_PROP_FOURCC` returns the first field of that output type (lines 2170–2171: RGB32 is 22, `'\x16\x00\x00\x00'`; RGB24 is 20), not `MJPG`; `CAP_PROP_POS_MSEC` is the time the source reader gave with that converted sample, divided by 10,000 (lines 1824, 2181–2182); each read takes the next sample from a queue of at most three and drops the queued ones when it is full (lines 411, 461–472, 536–548), so OpenCV's live-capture path does not hand back the previous sample. So `driver_ns` here is the converted sample's time; the Rust crate reads the camera's MJPG samples from Media Foundation without conversion. Run with the camera once (one PC, one camera, 2026-11-24; `examples/measure_fps.py`, Media Foundation, 900 frames): 276 of 900 frames per eye repeated the previous image, and the intervals between `driver_ns` times were 11.11 ms (mean, min and max), so on this path `driver_ns` does not show whether a new image arrived; the cause has not been established. On the same PC and camera, DirectShow gave 0 of 900 and 0 of 450 repeated images, and the Rust crate's `measure_fps` (Media Foundation, no conversion) gave 0 of 450 with driver-time intervals from 0.01 to 16.90 ms (mean 11.23). Host-measured rates: 90.1 frames per second (Python, Media Foundation) and 89.1 (Rust).
 
 #### `StereoFrame.size`
 
@@ -245,7 +290,10 @@ before the frame rate. The order is handled here, so set the mode through
 
 Raises `DeviceError` when the camera cannot be opened, when the OpenCV build lacks
 the requested backend, when `extra_props` names a format property, or when an
-`extra_props` control write fails.
+`extra_props` control write fails. On Windows with `backend="any"` and a device
+index, it also raises (and lets the device go) when OpenCV opened it through a
+backend other than Media Foundation or DirectShow: OpenCV tries every camera backend
+with the same index, so the index may name another device there.
 
 #### `Device.close() -> None`
 
@@ -258,14 +306,54 @@ Property. `True` between `open()` and `close()`.
 
 #### `Device.mode`
 
-Property. The `NegotiatedMode`. Raises `DeviceError` before `open()`.
+Property. The `NegotiatedMode`. For a recording, the mode it was recorded in (from
+its JSON; without one, the video file's own size, rate and codec). Raises
+`DeviceError` before `open()`.
 
 #### `Device.read() -> StereoFrame`
 
 Reads one frame and splits it according to `config.layout` and `config.lr_order`.
 Raises `DeviceError` when the read fails (timeout or camera unplugged), when
 called before `open()`, or when the `stall_frames` check trips (the message names
-the eye).
+the eye). From a recording, `EndOfRecording` after the last frame.
+
+#### `Device.playback`
+
+Property. The [`recording.Playback`](#playbackpath-str--path) when the device plays a
+recording (`DeviceConfig.recording`): `seek`, `position`, `frame_count`,
+`duration_s`, `set_speed`, `real_time`, `loop`, `recorded_time`, `pause`,
+`resume`. `None` for a camera.
+
+#### `Device.recording_info`
+
+Property. The capture info saved with the recording (its `.json`, see
+[`capture_info`](#capture_infosource-any--controls-dictstr-any--none--none-extra-any---dictstr-any)): the mode it was
+recorded in, the camera's layout and left/right order, the control values when
+recording started, the SDK version, codec, `compressed`, frame count. `None` for a
+camera, or for a recording without a `.json`.
+
+#### `Device.late_frames`
+
+Property. Frames since `open()` that arrived more than 1.5 frame periods (at
+`mode.fps`) after the frame before. Estimated from the host times (`host_ns`), not
+read from a device frame counter: a late frame can be delivery jitter rather than a
+lost frame. For a recording, counted on the recorded times. Unrelated to the Rust
+`Device::dropped_frames()` (undecodable samples skipped).
+
+#### `Device.estimated_missed_frames`
+
+Property. Frames estimated missing since `open()`: for each late interval,
+`round(interval / period) - 1`. Estimated from host times, not a device counter.
+
+#### `Device.actual_fps`
+
+Property. Frames per second over the last 30 frames, from host times; `0.0` until
+two frames in a row are read. For a recording, the recorded rate.
+
+The three statistics have been run on generated frames only; not run with the
+camera. The Rust crate has the same three, with the same rule: `Device::late_frames()`,
+`estimated_missed_frames()` and `actual_fps()` (Rust `measure_fps` printed them with the camera once: one PC, one camera, 2026-11-24). Rust counts every sample,
+including those `read_raw()` returns and those that did not decode; Python counts the frames `read()` returns.
 
 #### `Device.read_raw() -> tuple[np.ndarray, int]`
 
@@ -278,14 +366,16 @@ The raw frame before the split, and the host time in ns
 Property. The camera's `Controls`, created on first use. On Windows with
 `backend="dshow"` and an integer `device`, controls go to DirectShow directly; if
 that is not available, or on other backends, they go through OpenCV
-(`Controls.backend_note` says why). Raises `DeviceError` before `open()`.
+(`Controls.backend_note` says why). Raises `DeviceError` before `open()`, and for a
+recording (its control values are in `recording_info["controls"]`).
 
 #### `Device.calibration`
 
 Property. The `StereoCalibration` installed with
 `python -m opticmix_vision.calib add <file.json>`, when exactly one is installed
 (see [`calib.resolve`](#resolve---stereocalibration)). The SDK cannot check that the
-file belongs to this camera: the camera reports no USB serial number. Raises
+file belongs to this camera: the camera reports no USB serial number
+(`calib.check` measures whether it fits). Raises
 `calib.CalibLookupError` when none or more than one is installed, or when the
 file's eye size does not match the frame (half the frame width × frame height).
 Frame capture does not need a calibration.
@@ -334,8 +424,9 @@ Windows; `find_v4l2_node` is for Linux.
 
 ### `DeviceInfo(index: int, name: str)`
 
-A video device: its DirectShow enumeration index (the same order OpenCV uses) and
-its name.
+A video device: its index in the list it came from (DirectShow, or Media Foundation
+with `backend="msmf"`; each in the order OpenCV's backend of that name uses) and its
+name.
 
 ### `Mode(fourcc: str, width: int, height: int, max_fps: float)`
 
@@ -355,22 +446,38 @@ found.
 Subclass of `LookupError`. More than one camera matches the name; without a serial
 number they cannot be told apart, so none is picked.
 
-### `list_devices() -> list[DeviceInfo]`
+### `list_devices(*, backend: str = "dshow") -> list[DeviceInfo]`
 
-Video devices in DirectShow enumeration order (Windows). Built-in webcams are
-included. Uses `ffmpeg` when it is on `PATH`, otherwise enumerates DirectShow
-directly; when that fails too, returns an empty list.
+Video devices in the order a Windows capture backend lists them; the index is the one
+OpenCV's backend of that name takes. Built-in webcams are included.
 
-### `resolve_by_name(needle: str) -> DeviceInfo`
+- `backend="dshow"`: DirectShow. Uses `ffmpeg` when it is on `PATH`, otherwise
+  enumerates DirectShow directly; when that fails too, returns an empty list.
+- `backend="msmf"`: Media Foundation's video capture sources (`MFEnumDeviceSources`
+  with the video-capture source type), the list OpenCV's `CAP_MSMF` counts device
+  indexes in (OpenCV 4.13.0 `modules/videoio/src/cap_msmf.cpp`,
+  `CvCapture_MSMF::open(int)`). Activates no device. An empty list off Windows.
+  Microsoft does not document the order, or that two listings agree; a camera plugged
+  in between listing and opening can shift it. Run with the camera once (one PC, one
+  camera, 2026-11-24): it listed the camera by name; `resolve_by_name(backend="msmf")`
+  run without a camera only.
 
-The one device whose name contains `needle` (case-insensitive), Windows. Raises
-`NoMatch` or `MultipleMatches`.
+The two lists can be in a different order: on one PC with one camera (2026-11-24), `devices.list_devices(backend="msmf")` and `list_devices()` returned the same three cameras in a different order, once. An index goes only with the backend whose list it came from.
+`examples/list_devices.py --backend msmf` prints the Media Foundation list, and
+`python -m opticmix_vision.doctor` prints both. `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run without a camera only (made-up lists); they have not been run with the camera. Any other `backend`
+raises `ValueError`.
+
+### `resolve_by_name(needle: str, *, backend: str = "dshow") -> DeviceInfo`
+
+The one device in `list_devices(backend=backend)` whose name contains `needle`
+(case-insensitive), Windows. Raises `NoMatch` or `MultipleMatches`.
 
 ```python
 from opticmix_vision.devices import resolve_by_name
 
-info = resolve_by_name("WN Dual Camera")
-print(info.index, info.name)
+info = resolve_by_name("WN Dual Camera")                    # DirectShow index
+mf = resolve_by_name("WN Dual Camera", backend="msmf")      # Media Foundation index
+print(info.index, mf.index, info.name)
 ```
 
 ### `list_modes(name: str) -> list[Mode]`
@@ -440,8 +547,15 @@ All controls of one camera. Reads happen immediately; writes are queued to the
 worker. `guard=False` removes the spacing and the counters; it is for the synthetic
 camera, not for a real device. Usable as a context manager (closes on exit).
 
-Attributes: `backend_name` (`str`, the backend in use) and `backend_note` (`str`,
-why a fallback backend is in use, or what it lacks; may be empty).
+Attributes: `backend_name` (`str`, the backend in use), `backend_note` (`str`,
+why a fallback backend is in use, or what it lacks; may be empty) and `model`
+(`str | None`: `"WN Dual Camera"` — the camera's USB name — when the DirectShow
+backend has checked it, or, for the OpenCV fallback, when `Device` finds that name
+for the opened device in the DirectShow list, or the Media Foundation list with
+`backend="msmf"` (Windows), or in
+`/sys/class/video4linux/videoN/name` (Linux); `"synthetic"` for the simulated
+controls; `None` when it cannot be told). Presets record `model` and check it when
+loading.
 
 #### `Controls.names() -> tuple[str, ...]`
 
@@ -507,6 +621,47 @@ expected to have no effect on a monochrome sensor are included only with
 #### `Controls.reset_to_defaults(*, include_mono: bool = False) -> list[WriteResult]`
 
 Writes what `plan_reset()` lists. Does not wait.
+
+#### `Controls.save_preset(path: str | Path, name: str | None = None, note: str | None = None) -> Path`
+
+Reads every control and writes a preset file (JSON, see
+[`presets`](#opticmix_visionpresets)): each readable value with its units, the
+auto/manual modes, `model`, the backend, the SDK version and the time (UTC). Reads
+only. `name` defaults to the file name without `.json`. Overwrites `path`. Returns
+`path`.
+
+#### `Controls.plan_preset(path: str | Path, *, force: bool = False, include_mono: bool = False) -> dict[str, tuple[Any, Any]]`
+
+What `load_preset()` would change, as `{name: (current, preset)}`. Checks the whole
+preset the same way and raises the same errors; writes nothing.
+
+#### `Controls.load_preset(path: str | Path, *, force: bool = False, include_mono: bool = False, timeout: float | None = 10.0) -> PresetLoad`
+
+Writes the preset's values that differ from the camera's, in one `set_many()` call
+(a mode and its value, e.g. `auto_exposure` and `exposure`, are one write), then
+waits up to `timeout` seconds for the results (`None`: no limit; `0`: does not
+wait). Returns a [`presets.PresetLoad`](#opticmix_visionpresets)
+with a `WriteResult` per control written (`status`, `readback`, `kept`), the
+controls already at the preset's value, those left to auto and the mono-only ones
+not written.
+
+Controls expected to have no effect on the monochrome sensor (`hue`, `saturation`,
+`white_balance`, `auto_white_balance`) are saved, but loading leaves them alone
+unless `include_mono=True` — the same rule as `plan_reset()`. Every write is a risk
+on this camera, so a write that cannot change the image is not made.
+
+Before anything is written the whole preset is checked, and `presets.PresetError`
+is raised with nothing written when: the file is not a preset; it was saved from
+another `model`, or this camera's model is unknown (`presets.PresetModelError`;
+`force=True` loads it anyway); it names a control this camera does not have; a
+value's units differ from this camera's (saved on another platform or backend —
+save it again here, or delete that control from the file; `force` does not override
+this); or a value is the wrong type, out of the camera's range or not one of its
+choices. A value of a group the preset puts in auto (e.g. `exposure` with
+`auto_exposure` `"auto"`) is not written.
+
+Run without a camera only; writing a preset to the camera writes several controls
+at once — see README, "Camera controls": write once at startup.
 
 #### `Controls.close() -> None`
 
@@ -744,9 +899,10 @@ with SyntheticStereoSource() as src:
 
 ## `opticmix_vision.synthetic`
 
-A generated stereo source for running code without a camera. It is not measured
-data. The right image is the left image shifted by a fixed disparity
-(R(x) = L(x + d), d > 0), with a moving bright dot so frames visibly change.
+Generated stereo sources for running code without a camera. They are not measured
+data. In `SyntheticStereoSource` the right image is the left image shifted by a
+fixed disparity (R(x) = L(x + d), d > 0), with a moving bright dot so frames
+visibly change; `SyntheticPlaneSource` renders a plane through a calibration.
 
 ### `SyntheticStereoSource(*, eye_size: tuple[int, int] = (320, 200), fps: float = 90.0, disparity: int = 8, seed: int = 0, realtime: bool = False)`
 
@@ -755,7 +911,8 @@ The same surface as `Device`: `read`, `get_prop`, `set_prop`, `controls`, `mode`
 `mode` reports a side-by-side frame of `2 × width`, fourcc `"SYNT"`, backend
 `"synthetic"`. `realtime=True` paces `read()` to `fps`. Its controls use made-up
 ranges and defaults with no write spacing; exposure, gain and
-`backlight_compensation` change the image brightness.
+`backlight_compensation` change the image brightness. It also has `Device`'s frame
+statistics `late_frames`, `estimated_missed_frames` and `actual_fps`.
 
 #### `SyntheticStereoSource.read() -> StereoFrame`
 
@@ -784,6 +941,244 @@ with SyntheticStereoSource(eye_size=(640, 400)) as src:
     frame = src.read()
     print(frame.size, src.mode.to_dict())
 ```
+
+### `SyntheticPlaneSource(calibration: StereoCalibration, *, seed: int = 0)`
+
+Generated frames of a textured plane 350–600 mm in front of the left eye, moved at
+random between frames, as both eyes of `calibration` (a `StereoCalibration`) see
+it — so a calibration check on its frames knows which file fits. `calibration` is
+kept as an attribute, as on `Device`. No controls, no `mode`. Not measured data.
+
+#### `SyntheticPlaneSource.read() -> StereoFrame`
+
+The next generated frame (eye size = the calibration's).
+
+---
+
+## `opticmix_vision.recording`
+
+Recording frames to a file, playing a recording back, and the capture-info JSON
+saved next to captures. `Recorder` (MJPG) and reading a recording back have been run with the camera once (one PC, one camera, 2026-11-24: 443 frames recorded and read back). Seeking, speed, looping and pausing: generated frames only; not run with the camera.
+Python only; the Rust crate has no recording API yet.
+
+A recording is three files with the same name. The `.csv` and `.json` are named
+after the video without its extension, so two recordings in one folder need
+different names, not only different extensions (`Recorder` refuses rather than
+overwrite another recording's files):
+
+| File | Contents |
+|---|---|
+| `<name>.avi` / `.mkv` | both eyes side by side (left eye in the left half), 8-bit gray |
+| `<name>.csv` | `frame, host_ns, driver_ns, driver_clock`: when each frame arrived (host monotonic clock, not a camera timestamp), and the frame's `StereoFrame.driver_ns` and `driver_clock` — the capture driver's time stamp and its clock — with both cells empty where the frame had none (DirectShow, the Windows default; the synthetic source). A CSV of only `frame, host_ns` (written by earlier versions) plays back as before, with no driver times. On Windows fill it with `--backend msmf` (`examples/record_video.py`, `examples/save_stereo_pairs.py`; in code `DeviceConfig.weevia_s1(backend="msmf")`); the controls then go through OpenCV's fallback (no ranges or defaults). Through OpenCV's Media Foundation path the driver times came evenly 11.11 ms apart on one PC with one camera (once, 2026-11-24) while images repeated; these times do not show whether a new image arrived. Run without a camera only; not run with the camera. |
+| `<name>.json` | `capture_info` at the start, plus `recording`: `codec`, `compressed`, `layout`/`lr_order` of the file, `fps_label`, `eye_size`, `frames`, `first_host_ns`/`last_host_ns`, `duration_s`, `breaks` (frame numbers after each `Recorder.pause`), `control_changes` (`{"frame", "name", "value", "status"}` for each change made while recording), `controls_at_end`, `late_frames`/`estimated_missed_frames` over the recording, `closed` |
+
+The codec `"MJPG"` (default) is compressed: pixel values change. `"FFV1"`
+(`LOSSLESS_CODEC`): the lossless file keeps the pixel values the SDK delivered
+(generated frames only; not run with the camera). Its files are larger, and each
+frame takes longer to write than MJPG, so it may not keep up with 90 fps: the JSON's
+`estimated_missed_frames` and `Recorder.estimated_missed_frames` say how many frames
+were missed; then record MJPG, ask a lower frame rate, or keep frames in memory
+(`examples/capture_dataset_npz.py`). FFV1 needs an OpenCV build with the FFV1
+encoder (checked: the opencv-python 4.13 wheel on Windows; other builds not
+checked).
+
+A recording that was not closed (the process stopped while recording): an MJPG
+`.avi` cannot be opened (`DeviceError` says so); an FFV1 `.mkv` plays up to where it
+was written. The CSV is written line by line; when its frame count and the video's
+differ, `Playback` plays the smaller count and warns (`RuntimeWarning`).
+
+### `LOSSLESS_CODEC`
+
+`str` — `"FFV1"`.
+
+### `capture_info(source: Any, *, controls: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]`
+
+What was capturing, as a JSON-ready `dict`: `opticmix_vision` (SDK version),
+`created` (local wall-clock time, ISO 8601), `host_clock`, `mode` (the negotiated
+mode), `source` (`"camera"`, `"synthetic"` or `"recording"`), `camera` (`device`,
+`device_name` as DirectShow (Windows, `backend="dshow"`) or sysfs (Linux) lists it,
+`None` when unknown, `backend`, `layout`, `lr_order` from the `DeviceConfig`; camera
+only), `calibration_files` (the installed calibration files with their sha256;
+camera only — the SDK cannot check that a file belongs to this camera), `controls`
+(`controls.snapshot()`: every control value; simulated values for the synthetic
+source, `None` with the reason in `controls_note` when controls cannot be read) and,
+for a recording played back, `recorded_from` (its own info). `extra` is added as is.
+`controls`, when given, is written as `controls` instead of reading the camera, and
+`controls_note` says the values were given, not read then (the viewer gives the
+values it knows: read when it opened, then its own writes). Reads controls unless
+given, never writes them.
+
+### `write_capture_info(path: str | Path, source: Any, **extra: Any) -> dict[str, Any]`
+
+`capture_info(source, **extra)` written to `path` as JSON (`controls=` too). Returns the `dict`. The
+viewer's `s` key and the examples `save_stereo_pairs.py` and
+`capture_dataset_npz.py` write it next to what they save.
+
+### `Recorder(path: str | Path, source: Any, *, codec: str = "MJPG", fps: float | None = None, controls: Callable[[], dict[str, Any] | None] | None = None)`
+
+Writes frames to `path` with the `.csv` and `.json` next to it. `source` is the
+`Device` (or synthetic source) the frames come from; its capture info is taken when
+the recorder is created. The three files are opened when the recorder is created,
+at the eye size the source's negotiated mode gives (`sbs`, or `tb` when the
+`DeviceConfig` says so), so opening them does not hold up the first frames. When
+that size is unknown (a source without a `mode`, `plane_pack`) or the first frame
+has another size, they are opened on the first `write()`; frames that arrive while
+they open are missed and counted like any other. Raises `OSError` (with what to
+check) when the video file cannot be opened, and `FileExistsError` when a file with
+the same name and another extension (`.avi`, `.mkv`, `.mp4`, `.mov`, or the `.npz` of
+`examples/capture_dataset_npz.py`) is in the folder: the `.csv` and `.json` next to it
+would be overwritten; the message says to record to another name or move that file.
+Recording again to the same `path` replaces that recording: it is moved to
+`<file>.replaced` while recording, deleted when the new recording closes with a frame,
+and put back when it closes with none (or the files cannot be opened or moved). If the
+process stops while recording, `<name>.avi`/`.csv`/`.json` are the unfinished recording
+and the `.replaced` files the earlier one, and recording to that path raises
+`FileExistsError`: to keep the earlier recording, delete or move the three unfinished
+files first, then take `.replaced` off the names; to keep the unfinished one, delete the
+`.replaced` files. `codec` is
+four characters: `"MJPG"` (with `.avi`) or `LOSSLESS_CODEC` (with `.mkv` or `.avi`).
+`fps` is the frame rate written into the file, a label only (default: the source's
+negotiated rate, or 30). `controls` is a function giving the control values for the
+JSON, called when the recorder is created and when it closes (`controls_at_end`),
+instead of reading the camera then (`controls.snapshot()`); when it returns `None`
+the camera is read. The viewer passes the values it knows.
+A context manager: `close()` on exit. Attributes: `path`,
+`csv_path`, `info_path`, `codec`, `compressed`, `fps`, `frames`, `paused`, `info`.
+`late_frames` / `estimated_missed_frames` count over the frames written so far, from
+their `host_ns` intervals at the source's negotiated rate (the rule of
+`Device.late_frames`); a pause is not counted as a gap.
+
+```python
+from opticmix_vision.recording import LOSSLESS_CODEC, Recorder
+from opticmix_vision.synthetic import SyntheticStereoSource
+
+with SyntheticStereoSource() as src, Recorder("take1.mkv", src, codec=LOSSLESS_CODEC) as rec:
+    for _ in range(90):
+        rec.write(src.read())
+print(rec.frames, rec.info["recording"]["compressed"])   # 90 False
+```
+
+#### `Recorder.write(frame: Any) -> None`
+
+Appends one `StereoFrame` and its CSV row: `frame`, `host_ns`, `driver_ns`, `driver_clock` (the last two
+empty when `driver_ns` is `None`). Does nothing while paused. Raises
+`OSError` (with what to check) when the video file is opened here (see above) and
+cannot be.
+
+#### `Recorder.note_control(name: str, value: Any, status: str | None = None) -> None`
+
+Records a control change made while recording in the JSON's `control_changes`:
+`{"frame", "name", "value"}` (and `"status"` when given), where `frame` is the
+number of the next frame written. The viewer calls it for each LED, exposure, gain
+and auto-exposure change it writes while recording, and for a preset it loads
+(name `"preset"`, the file name as the value, then each control it queues). `status` is the write's status
+when it was requested (for example `"pending"`), not a confirmation that the camera
+applied it; the values the camera reported when recording stopped are in `controls_at_end`.
+
+#### `Recorder.pause() -> None`
+
+Stops writing until `resume()`; frames in between are not recorded. The JSON lists
+the frame number after each pause in `breaks`; playback and the late / missed
+estimates do not count the pause as a gap.
+
+#### `Recorder.resume() -> None`
+
+Writes again.
+
+#### `Recorder.close() -> None`
+
+Closes the files and writes the final frame count, first and last `host_ns`,
+duration, late / missed estimates, `controls_at_end` (after waiting up to 1 s for
+queued writes) and `closed: true` into the JSON, and deletes the recording it
+replaced. With no frame written, removes its three files instead (an empty video
+cannot be played) and puts back the recording it replaced. Safe to call more than once.
+
+#### `Recorder.missed_advice`
+
+Property. `""` when no frame was missed; otherwise one ASCII line on what to do:
+record MJPG (only for a lossless recording), ask a lower frame rate (`--fps`), or keep
+frames in memory (`examples/capture_dataset_npz.py`). `examples/record_video.py` and
+the viewer print it; the viewer puts `First try examples/record_video.py (it records
+with no preview window).` before it.
+
+### `Playback(path: str | Path)`
+
+A recording read back frame by frame. `Device(DeviceConfig.recording(path))` uses
+it as its capture and returns it as `Device.playback`. It reads the `.csv` for frame
+times (without it: frame number / the file's frame rate) and the driver times recorded with them
+(`recorded_driver`), and the `.json` as `info`
+(`None` without it). Raises `OSError` when OpenCV cannot open the file.
+
+| Attribute | Meaning |
+|---|---|
+| `real_time` | `False` (default): `read()` returns the next frame as soon as it is decoded. `True`: `read()` waits so frames come at the recorded intervals (the CSV's `host_ns`) divided by `speed`; a pause in recording (`breaks`) is not waited out. Frames are not dropped when the caller is slower |
+| `speed` | playback speed for `real_time`, set with `set_speed` (default 1.0) |
+| `loop` | `True`: after the last frame, playback starts again at frame 0 instead of ending |
+| `recorded_time` | `True`: a frame's `host_ns` is the recorded time from the CSV instead of the time it was read back, and its `driver_ns` / `driver_clock` are the ones recorded with it (`None` where the CSV cells are empty, the CSV has no such columns, or there is no CSV). `False` (default): `driver_ns` and `driver_clock` are `None` — a recorded driver time is not put beside a read-back `host_ns`, so `host_ns - driver_ns` never mixes the two |
+| `paused` | while paused, `read()` returns the current frame again; `seek()` still moves |
+| `info` | the recording's JSON as a `dict`, or `None` |
+| `path` | the video file |
+| `breaks` | frame numbers that follow a pause in recording (from the JSON) |
+| `late_frames`, `estimated_missed_frames` | over the whole recording, from the CSV's intervals at the recorded rate, pauses excluded — known when the file is opened. `Device.late_frames` counts only the frames read |
+
+It also has the `VideoCapture` methods `Device` calls (`read`, `get`, `set`,
+`isOpened`, `release`, `getBackendName`).
+
+#### `Playback.status`
+
+Property. `"playing"`, `"paused"` or `"ended"` (after the last frame, without
+`loop`; a `seek` leaves it). There is no status callback: read `status`, and
+`read()` ends with `EndOfRecording`.
+
+#### `Playback.frame_count`
+
+Property. Frames in the recording.
+
+#### `Playback.duration_s`
+
+Property. Recorded time from the first frame to the last, in seconds.
+
+#### `Playback.position`
+
+Property. The file frame number of the current frame: the one `read()` returned
+last, or the one a `seek()` moved to (it is returned next).
+
+#### `Playback.position_s`
+
+Property. Recorded time of `position` from the first frame, in seconds.
+
+#### `Playback.time_s(index: int) -> float`
+
+Recorded time of frame `index` from the first frame, in seconds.
+
+#### `Playback.recorded_ns(index: int) -> int`
+
+The `host_ns` recorded for frame `index` (clamped to the recording).
+
+#### `Playback.recorded_driver(index: int) -> tuple[int | None, str | None]`
+
+`(driver_ns, driver_clock)` recorded for frame `index` (clamped to the recording), whatever
+`recorded_time` is; `(None, None)` where the CSV cells are empty, the CSV has no driver columns (earlier versions), or
+there is no CSV. Run without a camera only; not run with the camera.
+
+#### `Playback.seek(frame: int | None = None, *, seconds: float | None = None) -> int`
+
+Moves to a frame number, or to the first frame recorded at or after `seconds` from
+the first frame; give one of the two (`ValueError` otherwise). Clamped to the
+recording. The next `read()` returns that frame. Returns the frame number.
+
+#### `Playback.set_speed(speed: float) -> None`
+
+Playback speed for `real_time`: `2.0` is twice as fast as recorded, `0.5` half.
+`ValueError` unless positive.
+
+#### `Playback.pause() -> None`
+
+Holds the current frame: `read()` returns it again until `resume()`.
+
+#### `Playback.resume() -> None`
+
+Plays on from the current frame.
 
 ---
 
@@ -962,7 +1357,7 @@ print(load_calibration(path).baseline_mm)   # 50.0
 Installing the calibration file for your camera, so `Device.calibration` finds it.
 The camera reports no USB serial number, so the SDK cannot tell which unit is
 connected: you install the file for your camera, and with exactly one file
-installed, that file is used.
+installed, that file is used. `check` measures whether a file fits the camera.
 
 Files are stored as `<serial>.json` in `store_dir()`.
 
@@ -997,8 +1392,88 @@ Serials of the installed files, sorted.
 ### `resolve() -> StereoCalibration`
 
 The installed calibration when there is exactly one. Raises `CalibLookupError`
-when none is installed, or when more than one is (the message lists them and the
-folder).
+when none is installed, or when more than one is (the message lists them, the
+folder, and `calib check --all`, which compares them on the connected camera).
+
+### `check(device: Any, calibration: StereoCalibration | None = None, *, frames: int = 10, every: int = 10) -> CheckResult`
+
+Measures whether `calibration` fits the camera `device` reads from. `device` is an
+open `Device` (or anything with `read()` returning a `StereoFrame`); `calibration`
+defaults to `device.calibration`. `read_pairs(device, frames=frames, every=every)`
+first, then `check_pairs`: all frames are read before any matching starts. Point
+the camera at a textured scene in view of both eyes. Raises `ValueError` when
+`frames` or `every` is below 1 or the eye size differs from the calibration's.
+
+It returns numbers only — **there is no pass/fail threshold**. Two values have been
+measured, once each on Windows: on one camera a matching file gave a median of
+0.44 px; another camera's file gave 30.4 px. They tell a file that fits from one
+that does not; they are not a precision figure. `check` itself has been run
+without a camera only (generated frames); not run with the camera.
+
+### `check_pairs(pairs: Iterable[tuple[np.ndarray, np.ndarray]], calibration: StereoCalibration) -> CheckResult`
+
+The calculation of `check` on `(left, right)` images you already have (grayscale,
+or BGR converted to grayscale), such as pairs saved by the viewer. For each pair:
+SIFT features matched between the eyes (ratio test 0.7; a pair with fewer than 20
+matches is skipped), undistorted with each eye's KB4 model, kept where |x| and |y|
+are below 1.2 in normalized coordinates in both eyes; then the distance of each
+right-eye point from the epipolar line of its left-eye point (essential matrix from
+`R`, `t`), multiplied by the left eye's fx to give pixels. Raises `ValueError` when
+an image size differs from the calibration's eye size (the message names the
+mode to open, e.g. `Open the 1600x800 mode.`).
+
+### `compare_pairs(pairs: Iterable[tuple[np.ndarray, np.ndarray]], calibrations: Mapping[str, StereoCalibration]) -> dict[str, CheckResult]`
+
+`check_pairs` for several files on the same pairs; the features are matched once.
+`calibrations` maps your names (serials, say) to files; the result keeps that
+order. The file with the smallest median is not necessarily the camera's: when
+every median is large, none of the files may belong to it. Raises `ValueError`
+naming the file whose eye size differs from the images.
+
+### `read_pairs(device: Any, *, frames: int = 10, every: int = 10) -> list[tuple[np.ndarray, np.ndarray]]`
+
+Reads from `device` (anything with `read()` returning a `StereoFrame`): drops 30
+frames, then reads `frames * every` and keeps a copy of one `(left, right)` pair
+every `every` frames. Raises `ValueError` when `frames` or `every` is below 1.
+
+### `load_pairs(folder: str | Path) -> list[tuple[np.ndarray, np.ndarray]]`
+
+Grayscale `(left, right)` pairs from PNG files in `folder`, sorted by name: the
+viewer's `<name>_left.png` + `<name>_right.png` and `examples/save_stereo_pairs.py`'s
+`left_<n>.png` + `right_<n>.png`. Non-ASCII paths work. Raises `ValueError` when
+there is no pair or a file is not an image.
+
+### `CheckResult(median_px: float, p95_px: float, frac_le_1px: float, frac_le_2px: float, pairs: int, points: int, disparity_positive: float)`
+
+The result of `check` (frozen dataclass). `median_px`, `p95_px`: median and 95th
+percentile of the epipolar distance in pixels. `frac_le_1px`, `frac_le_2px`: the
+fraction of points within 1 px and 2 px. `pairs`: pairs with at least 20 matches;
+`points`: points used. `disparity_positive`: the fraction of points that lie further
+right in the left eye than in the right (normalized coordinates, averaged over
+pairs) — near 1 when the file's left and right are the camera's left and right,
+near 0 when they are swapped. The numbers are `nan` when no point was used.
+
+#### `CheckResult.enough`
+
+Property. `True` when there are at least `MIN_PAIRS` pairs and `MIN_POINTS` points;
+with fewer, the numbers do not tell anything.
+
+#### `CheckResult.summary() -> str`
+
+The text `calib check` prints: the numbers; a note when fewer than half the points
+have positive disparity (the file's left and right look swapped against the
+camera's); the two measured values above; and, as the next step, to compare the
+file's serial with the camera's label when the median is far above 0.44 px. With
+too few points it prints only the counts and asks for a scene with more texture;
+with enough points but fewer than `MIN_PAIRS` pairs, it asks for 5 pairs or more.
+
+### `MIN_PAIRS`
+
+`int`, 5 — the fewest pairs with matches for `CheckResult.enough`.
+
+### `MIN_POINTS`
+
+`int`, 200 — the fewest points for `CheckResult.enough`.
 
 ### `main(argv: list[str] | None = None) -> int`
 
@@ -1007,55 +1482,383 @@ The command line below. Returns the exit code.
 ### Command line: `python -m opticmix_vision.calib`
 
 ```
-usage: python -m opticmix_vision.calib [-h] {add,list} ...
+usage: python -m opticmix_vision.calib [-h] {add,list,check} ...
 
 positional arguments:
-  {add,list}
-    add       install the calibration file for your camera
-    list      show installed calibrations and the folder
+  {add,list,check}
+    add             install the calibration file for your camera
+    list            show installed calibrations and the folder
+    check           measure whether a calibration fits the connected camera (no pass/fail)
 ```
 
 | Command | Does |
 |---|---|
 | `add FILE` | `add(FILE)`; prints the serial, the status and the installed path |
 | `list` | prints `store_dir()` and the installed serials |
+| `check [--file FILE]... [--all] [--frames N] [--pairs-dir DIR] [--synthetic]` | opens the camera with `DeviceConfig.weevia_s1()`, reads `N` pairs (`read_pairs`, default 10, at least `MIN_PAIRS`), closes it, then prints `CheckResult.summary()` for the installed file or for `FILE`. With more than one file — several installed, `--all` (every installed file), or `--file` given more than once — it prints one row per file (serial and source, median, 95th percentile, share within 1 px, share of positive disparity, points) from `compare_pairs` and names the smallest median without calling it the camera's file. `--pairs-dir` reads saved pairs (`load_pairs`) instead of the camera. `--synthetic` uses generated frames of a generated calibration (`SyntheticPlaneSource`) instead of the camera; with `--file`, checks that file against them |
 
-Exit code 0 on success, 1 on an error (message on stderr).
+Exit code 0 on success, 1 on an error (message on stderr; when the camera is not
+found or stops, the message adds what to do and that `--pairs-dir` works without
+it), 2 for a command-line error (such as `--frames` below 5); `check` also exits 2
+when there were too few matches to tell for every file.
 
 ```
 python -m opticmix_vision.calib add S1-0042.json
 python -m opticmix_vision.calib list
+python -m opticmix_vision.calib check
+python -m opticmix_vision.calib check --all
+python -m opticmix_vision.calib check --pairs-dir captures/20261124-101500 --file S1-0042.json
 ```
+
+---
+
+## `opticmix_vision.presets`
+
+Control presets: every readable control saved to a JSON file, and loaded back with
+`Controls.load_preset()` in one guarded `set_many()` call. Save and load with
+`Controls.save_preset()`, `Controls.plan_preset()` and `Controls.load_preset()`;
+this module has the file format, the preset folder and the command line. The
+viewer (`n` / `p` / `P` keys, `--preset`) and the explorer's Settings window use
+the same files and the same calls.
+
+Run without a camera only; writing a preset to the camera writes several controls
+at once — see README, "Camera controls": write once at startup.
+
+A preset file:
+
+```json
+{
+  "format": "opticmix-controls-preset",
+  "version": 1,
+  "name": "bench",
+  "note": "lab bench",
+  "device": {"model": "WN Dual Camera", "product": "Weevia S1", "backend": "dshow"},
+  "sdk_version": "0.0.5",
+  "saved_at": "2026-11-24T09:00:00+00:00",
+  "controls": {
+    "gain": {"value": 28, "units": "raw"},
+    "exposure": {"value": -5, "units": "log2_s_nominal"},
+    "auto_exposure": {"value": "manual", "units": "raw"}
+  }
+}
+```
+
+`controls` holds every control the camera could read, in `CONTROLS` order, in the
+form `set()` takes; `units` is `ControlInfo.units`. A file may leave controls out;
+those are not touched. The device values in the example above are illustrative.
+
+### `FORMAT`
+
+`"opticmix-controls-preset"`, the `format` of every preset file.
+
+### `VERSION`
+
+`1`, the file version this SDK writes and reads.
+
+### `BUILTIN`
+
+`"defaults"`: on the command line, `load defaults` is
+`Controls.reset_to_defaults()` (the camera's own defaults; auto/manual modes are
+left alone; not yet run against the camera). It is not a file.
+
+### `PresetError`
+
+Subclass of `ValueError`. The file is not a preset, or it does not fit the connected
+camera. Nothing was written.
+
+### `PresetModelError`
+
+Subclass of `PresetError`. The preset was saved from another camera model, or this
+camera's model is unknown (`Controls.model` is `None`). `force=True` loads it
+anyway; the explorer offers "Load anyway".
+
+### `PresetInfo(name: str, path: Path, model: str | None, saved_at: str, note: str)`
+
+One preset in `store_dir()` (named tuple). `name` is the file name without `.json`.
+
+### `PresetLoad(results: tuple[WriteResult, ...], unchanged: tuple[str, ...], left_out: tuple[str, ...], skipped_mono: tuple[str, ...] = ())`
+
+What `Controls.load_preset()` did (frozen dataclass).
+
+| Field | Meaning |
+|---|---|
+| `results` | one `WriteResult` per control written: final, or `"pending"` if `timeout` ran out |
+| `unchanged` | controls already at the preset's value — not written |
+| `left_out` | values of a group the preset puts in auto — not written |
+| `skipped_mono` | controls with no effect on the mono sensor whose value differs — not written (`include_mono=True` writes them) |
+
+#### `PresetLoad.ok`
+
+Property. `True` when every write finished and the camera kept every value it read
+back (no `"failed"`, `"pending"` or `kept == False`).
+
+### `store_dir() -> Path`
+
+The preset folder: `%APPDATA%\opticmix\presets` on Windows;
+`$XDG_CONFIG_HOME/opticmix/presets`, or `~/.config/opticmix/presets`, elsewhere —
+beside the calibration folder.
+
+### `preset_path(name: str) -> Path`
+
+`store_dir()/<name>.json`. Raises `PresetError` when `name` is a path rather than a
+file name.
+
+### `read_preset(path: str | Path) -> dict[str, Any]`
+
+The preset as a `dict`, after checking `format`, `version`, `device` and
+`controls`. Raises `PresetError` for a file that is not a preset and `OSError` when
+it cannot be read. Does not compare it with a camera.
+
+### `list_presets(model: str | None = None) -> list[PresetInfo]`
+
+The presets in `store_dir()`, sorted by name. With `model`, only those saved from
+that model — pass `Controls.model` to see the presets for the connected camera.
+Files that are not presets are skipped (a warning is logged).
+
+### `main(argv: list[str] | None = None) -> int`
+
+The command line below. Returns the exit code.
+
+### Command line: `python -m opticmix_vision.presets`
+
+```
+usage: python -m opticmix_vision.presets [-h] {list,show,save,load} ...
+
+positional arguments:
+  {list,show,save,load}
+    list                the presets in the preset folder (for the connected
+                        model, if one is found)
+    show                what a preset holds
+    save                read every control from the camera into NAME
+    load                write a preset to the camera ('defaults': the camera's
+                        own defaults)
+```
+
+| Command | Opens the camera | Does |
+|---|---|---|
+| `list [--model MODEL] [--all]` | no | prints `store_dir()`, the built-in `defaults` and each preset's name, model, time and note. By default only the presets of the connected model, when a Weevia S1 is in the device list (DirectShow list or sysfs, read without opening the camera); otherwise every preset. `--model` picks a model, `--all` shows every preset |
+| `show NAME\|FILE` | no | prints a preset's header and values |
+| `save NAME [--note TEXT] [--overwrite]` | yes, reads only | `save_preset(preset_path(NAME))`; refuses an existing name without `--overwrite` |
+| `load NAME\|FILE\|defaults [--dry-run] [--force] [--include-mono]` | yes | `--dry-run` prints `plan_preset()` (or `plan_reset()`) and writes nothing; otherwise `load_preset()` (or `reset_to_defaults()`) and prints each result with `kept`, what was not written and why, then this process's write count |
+
+`save` and `load` take `--synthetic` to use simulated controls instead of a camera.
+A `NAME` is looked up in `store_dir()` (a missing one says so and names the
+folder); an existing file or a path ending in `.json` is used as it is. Exit code 0 on success; 1 on an error (message on
+stderr) or when a loaded value was refused or not kept.
+
+```
+python -m opticmix_vision.presets save bench --note "lab bench"
+python -m opticmix_vision.presets load bench --dry-run
+python -m opticmix_vision.presets load bench
+```
+
+
+## `opticmix_vision.doctor`
+
+One command that prints what to paste into a bug report. Without `--open` it does
+not open the camera: the USB details come from the operating system's device list
+(Windows: the device tree through cfgmgr32; Linux: sysfs). On Windows the link
+speed is asked of the USB hub driver the camera is plugged into, as Microsoft's
+USBView does; when that fails it is `unknown`.
+
+The report holds:
+
+| Part | What |
+|---|---|
+| Findings | One line per problem found: the compiled extension missing, no Weevia S1 or two of them, a device the OS reports with a problem code, a USB link below SuperSpeed, a camera that did not open, a negotiated format other than MJPG, frames arriving well below the negotiated rate, a read error, a stalled eye, any control write |
+| System, SDK | OS, Python, `opticmix_vision` and the installed pip packages, `_core` (present or the import error), numpy, OpenCV and its camera backends, and whether `OPTICMIX_WRITE_LOG` is set |
+| Video devices | Windows: the DirectShow list with its index (`DeviceConfig(device=...)`), then the Media Foundation list (`list_devices(backend="msmf")`, the indexes `backend="msmf"` takes; listed, no device opened) and, when the Weevia S1's index differs between the two, a line saying so — information, not a finding (the two lists can be in a different order). Linux: `/dev/videoN`, name and sysfs `index`. How many Weevia S1 are connected, counted as `DeviceConfig.weevia_s1()` looks them up |
+| USB | For each camera: VID:PID, USB device revision (`bcdDevice`), status (`OK`, `problem code N`), location path, link speed (`Low`, `Full`, `High`, `Super`, `Super+` or `unknown`) and, on Windows, whether the device is SuperSpeed-capable |
+| Not reported by this camera | Serial number (the camera has none), firmware version (no verified way to read it — the USB device revision is shown instead, and how it relates to the firmware version has not been verified), temperature (no readout is known) |
+| Calibration | The `calib.store_dir()` folder, the files in it and what `calib.resolve()` says |
+| Camera (`--open` only) | The modes the camera advertises (Windows, when ffmpeg is on the PATH); the negotiated mode; for `--seconds` (default 3): frames, frame rate and intervals on the host clock, late intervals (over 1.5× the median), images identical to the previous one per eye and the longest run, compared with `DeviceConfig`'s `stall_frames` default (90); every control's value, range, default, units and verification state (read only); the SDK's control-write count before and after (`write_counts()`), which should not change |
+| Log | Warnings logged by `opticmix_vision` and Python warnings raised during the run (for example the control-write warnings) |
+
+Paths under your home folder are shown starting with `~`; no USB serial number or
+device instance ID is included.
+
+### `collect(*, open_camera: bool = False, synthetic: bool = False, seconds: float = 3.0, device: int | str | None = None, timestamps: str | Path | None = None) -> dict[str, Any]`
+
+The report as a `dict` that `json.dumps` accepts (keys `report`, `format`, `time`,
+`synthetic`, `system`, `sdk`, `video_devices`, `usb`, `weevia_s1`, `not_available`,
+`calibration`, `camera`, `log`, `findings`; `weevia_s1.count` is `None` where the
+devices were not looked for). On Windows, `video_devices.media_foundation` holds the
+Media Foundation list: `devices` (`index`, `name`), `error` and `note` (the line
+printed when the Weevia S1's index differs from DirectShow's, else `None`); it is
+absent on other systems and with `synthetic=True` (what the two lists look like: the
+example output in tutorial 01). `video_devices.source` (and `usb.source`) is a label for
+people to read — do not compare it in a program. `open_camera=True` opens the
+camera as `Device(DeviceConfig.weevia_s1(stall_frames=0))` (or with `device=`), sets
+no control, reads frames for `seconds` and reads every control; `timestamps` names a
+CSV file to write each frame's `frame, host_ns, interval_ms, left_identical,
+right_identical` to. `synthetic=True` reads no hardware: the device and USB parts
+are skipped, and `open_camera` uses `SyntheticStereoSource` (generated frames,
+simulated controls). Errors are reported in the dict, not raised.
+
+### `format_text(report: dict[str, Any]) -> str`
+
+The report as the text the command prints.
+
+### `main(argv: list[str] | None = None) -> int`
+
+The command line below. Returns 0 when the report was printed (problems are in the
+report, under Findings).
+
+### Command line: `python -m opticmix_vision.doctor`
+
+```
+usage: python -m opticmix_vision.doctor [-h] [--open] [--synthetic] [--json] [--seconds SECONDS]
+                                        [--device DEVICE] [--timestamps FILE] [--output FILE]
+
+options:
+  --open             open the camera: mode, frame rate, stalls, controls (read only)
+  --synthetic        read no hardware: generated frames, simulated controls
+  --json             print the report as JSON
+  --seconds SECONDS  how long --open reads frames (default 3)
+  --device DEVICE    with --open: the device index or /dev/videoN instead of finding it by name
+  --timestamps FILE  with --open: write each frame's host time to a CSV file
+  --output FILE      write the report to FILE in UTF-8 instead of printing it (JSON when FILE ends
+                     in .json, or with --json)
+```
+
+```
+python -m opticmix_vision.doctor                  # paste the output into the issue
+python -m opticmix_vision.doctor --open           # also opens the camera, writes no control
+python -m opticmix_vision.doctor --output report.json   # UTF-8 JSON file to attach
+python -m opticmix_vision.doctor --synthetic --open
+```
+
+Use `--output` rather than `>` to save the report: in Windows PowerShell 5.1, `>`
+writes UTF-16, which `json.load` does not read as UTF-8.
+
+The explorer's top bar shows the same USB line for the Weevia S1 (VID:PID, USB
+device revision, link speed, no serial), read without opening the camera.
+
+`--open` has been run with the camera once (one PC, one camera, 2026-11-24); without `--open`, `--json` and Linux: run without a camera only
+(generated frames, and fake device lists on Windows and Linux).
 
 ---
 
 ## `opticmix_vision.viewer`
 
 A window showing the left and right images side by side, with keys for the
-illuminator, exposure and gain, and saving of left/right PNGs. The functions below
-are the loop the command uses, usable on their own (with a window, or headless).
+illuminator, exposure and gain, saving of left/right PNGs, and recording to a video
+file; it also plays such a recording back, with keys to pause, step, jump and change
+the speed. The top line shows the frame index, frames per second and the late /
+missed frame estimates (`Device.late_frames`, `estimated_missed_frames`,
+`actual_fps`). A second line shows each eye's share of saturated pixels, for setting
+the LED and exposure. The viewer reads every control once, when it opens
+(`controls.snapshot()`). After that, the LED / exposure / gain line and the
+controls in the `.json` of `s` and `v` are those values with the viewer's own
+writes (the value read back after each); a control whose write was refused is read
+once again, and `n`, `p` and `P` read every control (to save or compare a preset).
+A change made by another program shows when the viewer is opened again. Keys `n`,
+`p` and `P` save, choose and load control presets
+(the [`presets`](#opticmix_visionpresets) files), and the camera's own defaults
+(`Controls.plan_reset` / `reset_to_defaults`, as the explorer's Reset to defaults).
+Key `c` shows the installed calibration file (`Device.calibration`), read from the
+file only. Recording with `v` has been run with the camera once (one PC, one camera, 2026-11-24): one recording started and stopped with `v` (392 frames, about 130 missed while recording), no stall error; its `.json` carries `controls_note`. Playback keys, the frame
+statistics, the saturation line, the preset keys, the defaults and `c` have been run on generated
+frames only; not run with the camera. The functions below are the loop the
+command uses, usable on their own (with a window, or headless).
 
 ### `KEY_HELP`
 
-`str` — the key help line shown with `h`:
-`q/ESC quit | s save | l/L LED -/+ | e/E exposure -/+ | g/G gain -/+ | a auto-exposure | h help`.
+`str` — the key help shown with `h` (wrapped to the window's width, about 9 pixels a character; the
+calibration lines and messages wrap the same way):
+`q/ESC quit | s save | v record | l/L LED -/+ | e/E exposure -/+ | g/G gain -/+ | a auto-exposure | n save preset | p/P choose/load preset or defaults | c calibration file | recording: space pause ,/. step [/] -/+1 s -/+ speed | LED/exp/gain line: as opened + viewer's writes | h help`.
 
-### `ViewerState(led_step: float = 8.0, exposure_step: float = 1.0, gain_step: float = 8.0, saved: int = 0, show_help: bool = False, key_help: str = "q/ESC quit | s save | l/L LED -/+ | e/E exposure -/+ | g/G gain -/+ | a auto-exposure | h help", last_error: str = "", messages: list[str] = <factory>)`
+### `ViewerState(led_step: float = 8.0, exposure_step: float = 1.0, gain_step: float = 8.0, saved: int = 0, show_help: bool = False, key_help: str = "q/ESC quit | s save | v record | l/L LED -/+ | e/E exposure -/+ | g/G gain -/+ | a auto-exposure | n save preset | p/P choose/load preset or defaults | c calibration file | recording: space pause ,/. step [/] -/+1 s -/+ speed | LED/exp/gain line: as opened + viewer's writes | h help", last_error: str = "", messages: list[str] = <factory>, saturation_level: int = 255, preset_name: str | None = None)`
 
 Key-handling state (dataclass). The `*_step` fields set how far one key press moves
 the illuminator, exposure and gain. `saved` counts saved pairs, `messages` collects
 status lines, `last_error` keeps the last error. While a key is held, only the
 target value changes; it is written once after the keys have been quiet for 0.6 s.
+A key goes on from the value the overlay shows (read once, then the viewer's own
+writes), not from a fresh read of the camera.
+`saturation_level`: the overlay counts pixel values at this level or above as
+saturated. `preset_name`: the name `n` saves under (`None`: `viewer_<time>`).
+Preset messages are also printed (`[viewer] ...`; errors to stderr).
 
 #### `ViewerState.handle_key(key: int, dev: Any, now: float | None = None) -> str | None`
 
-Handles one key code for the source `dev`. Returns `"quit"`, `"save"` or `None`.
-On quit, pending changes are written first.
+Handles one key code for the source `dev`. Returns `"quit"`, `"save"`, `"record"`
+(the `v` key) or `None`. `n`, `p` and `P` call `save_preset`, `choose_preset`
+and `load_preset` below; `c` calls `show_calibration`.
+On quit, pending changes are written first. When `dev` plays a recording
+(`dev.playback`), space pauses and resumes (at the end: plays again from the
+start), `,`/`.` pause and step one frame back/forward, `[`/`]` jump one second
+back/forward, and `-`/`+` (or `=`) halve or double the speed (1/16× to 16×); the
+control and preset keys only show that a recording has no camera controls and
+that the values when it was recorded are in its `.json`.
 
 #### `ViewerState.commit(dev: Any, now: float | None = None, *, force: bool = False) -> None`
 
 Writes the accumulated target values once the keys have been quiet long enough, or
 immediately with `force=True`.
+
+#### `ViewerState.save_preset(dev: Any) -> Path | None`
+
+The `n` key: `Controls.save_preset` of every readable control into
+`presets.preset_path(preset_name or "viewer_<time>")`. Reads only. An existing file
+is not replaced (the message says to choose another `--preset-name`). Returns the
+file, or `None` with the reason in `last_error`.
+
+#### `ViewerState.choose_preset(dev: Any, path: str | Path | None = None) -> None`
+
+The `p` key: the next preset in `presets.list_presets(controls.model)` (the presets
+saved from this camera's model, in name order), after the last one `defaults` — the
+camera's own defaults, what the explorer's Reset to defaults and
+`python -m opticmix_vision.presets load defaults` write — then the first again; or
+`path` (`"defaults"`, `presets.BUILTIN`, for the defaults; a file named `defaults`
+as a `Path`). It shows what loading it would change (`Controls.plan_preset`;
+`Controls.plan_reset` for the defaults: auto/manual modes left alone, values in auto
+left out), as `preset NAME (i/n): k to write: gain 100->32, ... - P loads` or
+`preset defaults: the camera's own defaults, auto/manual modes left alone; k to
+write: ... - P loads`; with no saved preset it says so first. Writes nothing. A
+preset that does not fit this camera (a control it lacks, other units, a value out
+of range) is refused with the reason (`... not usable: ... Nothing was written.`)
+and `P` then loads nothing. A preset saved from another model is shown with
+`saved from X, not this camera (Y)` and `P loads anyway` — like the explorer's
+Load anyway.
+
+#### `ViewerState.load_preset(dev: Any) -> None`
+
+The `P` key: writes the preset chosen with `p` (or `--preset`) with
+`Controls.load_preset` — the whole file is checked first, then one `set_many()` of
+the values that differ; controls with no effect on the mono sensor are not written.
+For `defaults` it calls `Controls.reset_to_defaults()` (the recording's JSON entry is
+`{"name": "preset", "value": "defaults", ...}`). Either way the values written, as
+read back, become the values the overlay and the `.json` of `s` and `v` show.
+A change from the LED / exposure / gain keys still waiting is written first, so the
+preset's values win. Does not wait for the writes. Inside `run_viewer`, a load made
+while recording goes into the recording's JSON when it is requested
+(`Recorder.note_control`, like the keys): `{"name": "preset", "value": "<file name>",
+"status": "loaded"}`, then each control queued with its status at the request (for
+example `"pending"`).
+
+#### `ViewerState.show_calibration(dev: Any) -> None`
+
+The `c` key: the installed calibration file as four lines on the window and in the log
+— `calibration SERIAL (MODEL)  file PATH - installed file, not matched to this camera
+(no USB serial)`, then per eye
+`left   KB4 WxH  fx ..  fy ..  cx ..  cy ..  D k1 k2 k3 k4`, then
+`baseline .. mm  t tx ty tz mm  R .. deg` (the rotation angle between the eyes);
+`c` again hides them. The file is `dev.calibration` (`Device.calibration`: exactly one
+installed file, its eye size checked against the mode), or `calib.resolve()` for a
+source without it. Reads the file only: no control is read or written, and no
+rectified view is drawn. With no file, more than one, or another eye size, the lines
+are `calib.CalibLookupError`'s message (`calibration: No calibration installed.
+Install the file for your camera: python -m opticmix_vision.calib add <file.json>`).
+
+#### `ViewerState.poll(timeout: float | None = None) -> None`
+
+Reports a preset load once every write has its final result: `preset NAME loaded:
+k written`, or each control that was refused (`gain failed (the driver's error)`)
+or that the camera did not keep (`gain: camera kept 32, not 40`) in `last_error`,
+with one line per write in the log. It does not write to the recording; the camera's
+values when recording stops are in `controls_at_end`. Only looks; with `timeout`,
+waits up to that long first (`run_viewer` waits 2 s at the end).
 
 ### `compose_view(frame: StereoFrame, *, texts: Sequence[str] = (), gap: int = 8, scale: float = 1.0, left: np.ndarray | None = None, right: np.ndarray | None = None) -> np.ndarray`
 
@@ -1063,17 +1866,52 @@ Left | right side by side as one BGR image, separated by `gap` pixels, scaled by
 `scale`, with `texts` drawn line by line at the top left. `left`/`right`, when
 given, are drawn instead of the frame's images.
 
-### `run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = None, out_dir: str | Path | None = None, key_feed: Iterable[int] | None = None, window: str = "Weevia S1 Viewer", scale: float = 1.0, state: ViewerState | None = None, view: View | None = None) -> dict[str, Any]`
+### `run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = None, out_dir: str | Path | None = None, key_feed: Iterable[int] | None = None, window: str = "Weevia S1 Viewer", scale: float = 1.0, state: ViewerState | None = None, view: View | None = None, wait_ms: int = 1, lossless: bool = False) -> dict[str, Any]`
 
 The loop: read → view → compose → show → key. `source` is a `Device` or
 `SyntheticStereoSource`.
 
 - `headless=True` runs without a window; `key_feed` then supplies the key codes,
-  one per frame, and the loop ends when it runs out.
+  one per frame, and the loop ends when it runs out. Each fed key is a separate press.
+- In the window, `s`, `v`, `n`, `p`, `P`, `a`, `c`, `h` and space act once per press:
+  OpenCV reports no key release, so a key held down comes again and again, and the
+  same key within 0.6 s of the last time it came is ignored — after a short pause
+  it acts again. The window says so once per press (`v ignored: same key within
+  0.6 s (held?) - press again after a pause`), not on every repeat. A keyboard
+  repeat delay set longer than 0.6 s in the OS lets one repeat through. The LED /
+  exposure / gain and seek keys go on while held.
 - `max_frames` stops after that many frames. `out_dir` is where `s` saves
-  (default `captures`).
+  (default `captures`): `<time>_<frame>_left.png`, `_right.png` and a `.json` of
+  [`capture_info`](#capture_infosource-any--controls-dictstr-any--none--none-extra-any---dictstr-any) with the frame's
+  index and `host_ns`.
 - `view(frame, state) -> (left, right, extra_text_lines)` changes only what is
-  drawn; `s` always saves the frame as received.
+  drawn; `s` always saves, and `v` always records, the frame as received.
+- `v` starts and stops a recording in `out_dir` with
+  [`recording.Recorder`](#recorderpath-str--path-source-any--codec-str--mjpg-fps-float--none--none-controls-callable-dictstr-any--none--none--none):
+  `<time>_<frame>.avi` (MJPG, both eyes side by side, left eye in the left half), or
+  `.mkv` (FFV1, lossless) with `lossless=True`, and the `.csv` and `.json` next to
+  it — the files `examples/record_video.py` writes. The files are opened when `v` is
+  pressed and the recording starts with the next frame. Control changes written while
+  recording go into the JSON (`Recorder.note_control`). The REC line shows the
+  frames estimated missed since recording started; when recording stops with
+  missed frames, the message says what to do: first `examples/record_video.py`, which
+  records with no preview window, then `Recorder.missed_advice` (MJPG when it was
+  lossless, a lower `--fps`, `examples/capture_dataset_npz.py`). `v` runs
+  alongside the preview and may not keep up with 90 fps even with MJPG. If the video writer cannot be opened, the
+  reason goes to `last_error`, the window and stderr. A recording still open when
+  the loop ends is closed.
+- Each frame the window shows `saturated (>=255)  L 0.00%  R 0.00%`: the percent of
+  each eye's pixel values at `state.saturation_level` or above, counted on every
+  pixel of the frame as received (not what `view` draws). It is not written to the
+  recording or capture JSON.
+- `state.poll()` runs every frame, so a preset loaded with `P` reports its results
+  as they arrive; the load itself goes into a recording's JSON when `P` is pressed.
+- `wait_ms` is how long the window waits for a key each frame.
+- When `source` is a recording (`DeviceConfig.recording`), the window shows its
+  position, length, speed and status with a seek bar under the image
+  (`cv2.createTrackbar`), and the LED / exposure line is hidden. After the last
+  frame (without `source.playback.loop`) the window stays on it, paused, until `q`;
+  headless, the loop ends quietly.
 
 Returns `{"frames": int, "saved": int, "fps": float, "last_error": str}`.
 
@@ -1094,7 +1932,8 @@ The command line below. Returns the exit code.
 
 ```
 usage: python -m opticmix_vision.viewer [-h] [--synthetic]
-                                        [--eye-size EYE_SIZE]
+                                        [--recording RECORDING] [--loop]
+                                        [--lossless] [--eye-size EYE_SIZE]
                                         [--device DEVICE]
                                         [--backend {any,dshow,msmf}]
                                         [--layout {sbs,tb,plane_pack}]
@@ -1103,24 +1942,39 @@ usage: python -m opticmix_vision.viewer [-h] [--synthetic]
                                         [--fps FPS] [--fourcc FOURCC]
                                         [--out OUT] [--scale SCALE]
                                         [--headless] [--frames FRAMES]
+                                        [--preset NAME|FILE]
+                                        [--preset-name NAME]
+                                        [--saturation-level N]
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--synthetic` | off | use `SyntheticStereoSource`, no camera |
+| `--recording FILE` | none | play a recording made with `v` or `examples/record_video.py` (`DeviceConfig.recording`), at the recorded pace (the CSV's frame times; as fast as it decodes with `--headless`); stays on the last frame (headless: exits after it). Not with `--synthetic` or `--device` |
+| `--loop` | off | with `--recording`: start again after the last frame |
+| `--lossless` | off | `v` records FFV1 `.mkv` (the pixel values the SDK delivered) instead of MJPG `.avi`; may not keep up with 90 fps |
 | `--eye-size WxH` | `320x200` | synthetic eye size |
 | `--device DEVICE` | none | camera index, or a path. Without it the Weevia S1 is found by name (`DeviceConfig.weevia_s1()`) |
-| `--backend {any,dshow,msmf}` | `dshow` | OpenCV backend; used only with `--device` |
+| `--backend {any,dshow,msmf}` | `dshow` | OpenCV backend, with or without `--device` (without it the Weevia S1 is looked up in that backend's list: `DeviceConfig.weevia_s1(backend=...)`; Linux: `v4l2` unless given). With `msmf` the camera controls (keys, presets, defaults) go through the OpenCV fallback, which has fewer controls. `--backend` without `--device`: run without a camera only |
 | `--layout {sbs,tb,plane_pack}` | none | required with `--device` |
 | `--lr-order {first_is_left,first_is_right}` | none | required with `--device` |
 | `--width`, `--height`, `--fps`, `--fourcc` | none | requested mode; override the Weevia S1 settings when given. `--fps` also sets the synthetic rate (default 90) |
-| `--out OUT` | `captures` | folder for the `s` key |
+| `--out OUT` | `captures` | folder for the `s` and `v` keys |
 | `--scale SCALE` | `1.0` | display scale |
 | `--headless` | off | no window |
 | `--frames FRAMES` | none | read this many frames, then exit |
+| `--preset NAME\|FILE` | none | before the first frame, load this preset (a name from `python -m opticmix_vision.presets list`, or a file): what it changes is printed, then written in one `set_many()`. A preset from another model is not loaded at start; `P` loads it. A missing preset, or `defaults` (the presets command's built-in), exits with code 2 before the camera is opened. Not with `--recording` |
+| `--preset-name NAME` | `viewer_<time>` | the name `n` saves under; an existing preset is not replaced |
+| `--saturation-level N` | `255` | the overlay counts pixel values at `N` or above (1–255) as saturated |
 
-Keys: `q`/`Esc` quit, `s` save left/right PNG, `l`/`L` LED −/+, `e`/`E`
-exposure −/+, `g`/`G` gain −/+, `a` auto-exposure on/off, `h` key help.
+Keys: `q`/`Esc` quit, `s` save left/right PNG, `v` start/stop recording,
+`l`/`L` LED −/+, `e`/`E`
+exposure −/+, `g`/`G` gain −/+, `a` auto-exposure on/off, `n` save the controls as
+a new preset, `p` next preset saved from this camera's model (shows what loading it
+would change; writes nothing), `P` load that preset, `h` key help.
+Playing a recording: space pause/resume (at the end: play again), `,`/`.` one frame
+back/forward, `[`/`]` one second back/forward, `-`/`+` half/double speed, and the bar
+under the image seeks.
 
 Exit code 0 on success; 2 when the camera cannot be opened or a frame read fails
 (one line on stderr). `--device` without `--layout` and `--lr-order` exits with a
@@ -1129,6 +1983,10 @@ message.
 ```
 python -m opticmix_vision.viewer
 python -m opticmix_vision.viewer --synthetic
+python -m opticmix_vision.viewer --recording captures/20261124_101500_000123.avi
+python -m opticmix_vision.viewer --recording captures/20261124_101500_000123.avi --loop
+python -m opticmix_vision.viewer --lossless
+python -m opticmix_vision.viewer --preset bench
 python -m opticmix_vision.viewer --device 1 --layout sbs --lr-order first_is_right --width 1600 --height 800 --fps 90 --fourcc MJPG
 ```
 
@@ -1137,7 +1995,12 @@ python -m opticmix_vision.viewer --device 1 --layout sbs --lr-order first_is_rig
 ## `opticmix_vision.explorer`
 
 A window (Tk) to see whether the camera works and to change its controls. Only the
-command and `main` are public.
+command and `main` are public. The Settings window (gear button) has
+"Reset to defaults…", "Save preset…" (`Controls.save_preset()` to a file you pick,
+starting in `presets.store_dir()`) and "Load preset…" (the presets saved from this
+camera's model — name, time, note — or "Other file…"; a dialog lists what would
+change and how many writes that is, and nothing is written until "Load"; a preset
+from another model offers "Load anyway"). Preset buttons: run without a camera only.
 
 ### `main(argv=None) -> int`
 

@@ -11,6 +11,21 @@ body:
     validations:
       required: true
   - type: textarea
+    id: doctor
+    attributes:
+      label: Output of python -m opticmix_vision.doctor
+      description: >-
+        Run `python -m opticmix_vision.doctor` and paste everything it prints: versions,
+        video devices, the camera's USB details and the installed calibration. It does not
+        open the camera. If the camera opens, `python -m opticmix_vision.doctor --open` adds
+        the mode, frame timing and control values; it writes no control.
+        The doctor is in opticmix-vision 0.0.5 and newer — with an older version, run
+        `pip install -U opticmix-vision` first. Using only the Rust crate: `pip install
+        opticmix-vision` and run the doctor (it does not open the camera), or write "Rust only".
+      render: shell
+    validations:
+      required: true
+  - type: textarea
     id: expected
     attributes:
       label: What you expected
