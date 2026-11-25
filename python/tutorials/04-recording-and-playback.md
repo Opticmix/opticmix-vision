@@ -1,12 +1,14 @@
 # 04 · Recording and playback
 
-Examples: [`record_video.py`](../examples/record_video.py), [`play_recording.py`](../examples/play_recording.py)
+Examples: [`record_video.py`](../examples/record_video.py), [`play_recording.py`](../examples/play_recording.py),
+[`export_recording.py`](../examples/export_recording.py)
 
 ## What you will do
 
 Record both eyes side by side into one video file, with a CSV of frame times and a JSON of what was
 capturing; record a lossless file; then read the files back through `Device` with the same loop you use for
-the camera — from the start, from a given frame or time, at the recorded pace or faster, and in a loop.
+the camera — from the start, from a given frame or time, at the recorded pace or faster, and in a loop; then
+write a recording's frames out as PNG pairs.
 
 ## Before you start
 
@@ -174,6 +176,40 @@ with Device(DeviceConfig.recording(a.video)) as cam:
   recorded with it (`driver_ns`, `driver_clock`); a CSV of only `frame, host_ns` (earlier versions) still plays.
 - The file's frame rate is only a label; the CSV is the record of real timing.
 
+### Frames out of a recording
+
+`export_recording.py` reads a recording the same way (`DeviceConfig.recording`, with `pb.recorded_time = True`)
+and writes each frame as a left/right PNG pair into a new folder, with `pairs.csv` (the columns of
+`save_stereo_pairs.py`, holding the times recorded in the recording's CSV), a copy of the recording's JSON as
+`capture_info.json`, and with `--npz` the frames in `frames.npz` (the format of `capture_dataset_npz.py`).
+`--start`, `--every` and `--count` pick the frames. Run with generated recordings, and with a camera recording
+once on Linux, from source before release; not run with a camera recording on Windows.
+
+With a recording made with the camera:
+
+```bash
+python examples/export_recording.py run1.avi --every 10      # every 10th frame, into run1_frames/
+```
+
+Without a camera:
+
+```bash
+python examples/export_recording.py --synthetic
+```
+
+Output with `--synthetic` (generated frames); with the camera the numbers differ.
+
+```text
+$ python examples/export_recording.py --synthetic
+recorded 30 generated frames (FFV1, lossless) to synthetic.mkv
+synthetic.mkv: 30 frames, codec FFV1, compressed False
+exported 30 of 30 frames from synthetic.mkv to synthetic_frames
+```
+
+The last line gives the frames exported and the frames in the recording (one per row of its CSV); the example
+exits 1 when it wrote another number than it counted from the recording. The folder must be new or empty: nothing
+is overwritten. From an MJPG recording the PNGs hold what the MJPG decodes to, not the camera's pixel values.
+
 ## If it does not work
 
 - **"OpenCV could not open a video writer for codec …"** (exit code 3) — check that the extension suits the
@@ -190,6 +226,8 @@ with Device(DeviceConfig.recording(a.video)) as cam:
   one that was there before. To keep the earlier one, delete or move the unfinished files first, then take
   `.replaced` off the names; to keep the unfinished one, delete the `.replaced` files.
 - **"Could not play …: no such recording"** — check the file name you passed.
+- **"… is not empty: give a new folder with --out"** (`export_recording.py`, exit code 2) — it does not
+  overwrite: give a new folder, or move the old one.
 - **A recording that was not closed** (the process stopped while recording) — an MJPG `.avi` cannot be
   opened, and the error says so; an FFV1 `.mkv` plays up to where it was written.
 - Problems opening the camera: [When something goes wrong](../README.md#when-something-goes-wrong) in the
@@ -200,3 +238,62 @@ with Device(DeviceConfig.recording(a.video)) as cam:
 
 [05 · Camera controls](05-camera-controls.md): read every control the camera advertises, and write exposure
 and gain once.
+
+## Rust
+
+The Rust crate has `record_video`, `play_recording` and `export_recording`. In a checkout of the
+repository, from `rust/opticmix-vision`, without a camera:
+
+```bash
+cargo run --release --features test-support --example record_video -- --synthetic --seconds 1
+cargo run --release --features test-support --example play_recording -- recording.avi
+cargo run --release --features test-support --example play_recording -- recording.avi --start 2 --speed 2
+cargo run --release --features test-support --example play_recording -- recording.avi --loop --frames 150
+cargo run --release --features test-support --example export_recording -- --synthetic
+```
+
+Output with `--synthetic` (generated frames); with the camera the numbers differ.
+
+```text
+$ cargo run --release --features test-support --example record_video -- --synthetic --seconds 1
+negotiated: 1600x800 MJPG 90.0 fps (synthetic)
+recording.avi: 91 frames, with recording.csv and recording.json
+late 0, estimated missed 0 (of which dropped by the write queue 0)
+
+$ cargo run --release --features test-support --example play_recording -- recording.avi
+recording.avi: 1600x800 MJPG 90.0 fps (synthetic), 91 frames, 1.00 s, closed
+frame 0: host_ns 100 driver_ns - left mean 174.7 right mean 99.4
+frame 1: host_ns 11536400 driver_ns - left mean 172.9 right mean 107.4
+frame 2: host_ns 22671900 driver_ns - left mean 174.7 right mean 99.4
+read 91 frames; late 0, estimated missed 0
+
+$ cargo run --release --features test-support --example play_recording -- recording.avi --start 2 --speed 2
+recording.avi: 1600x800 MJPG 90.0 fps (synthetic), 91 frames, 1.00 s, closed
+frame 2: host_ns 22671900 driver_ns - left mean 174.7 right mean 99.4
+frame 3: host_ns 33474800 driver_ns - left mean 172.9 right mean 107.4
+frame 4: host_ns 44545000 driver_ns - left mean 174.7 right mean 99.4
+read 89 frames; late 0, estimated missed 0
+
+$ cargo run --release --features test-support --example play_recording -- recording.avi --loop --frames 150
+recording.avi: 1600x800 MJPG 90.0 fps (synthetic), 91 frames, 1.00 s, closed
+frame 0: host_ns 100 driver_ns - left mean 174.7 right mean 99.4
+frame 1: host_ns 11536400 driver_ns - left mean 172.9 right mean 107.4
+frame 2: host_ns 22671900 driver_ns - left mean 174.7 right mean 99.4
+read 150 frames; late 0, estimated missed 0
+
+$ cargo run --release --features test-support --example export_recording -- --synthetic
+recorded 30 generated frames to synthetic.avi
+synthetic.avi: 30 frames, 1600x800 MJPG 90.0 fps (synthetic)
+exported 30 of 30 frames from synthetic.avi to synthetic_frames
+```
+
+- Rust writes and plays MJPG `.avi` only. Lossless FFV1 (`.mkv`, `record_video.py --lossless`) is Python only.
+- `record_video` encodes on a writing thread through a queue of `--queue-frames` frames, default 64; the Python
+  example's default is 0.
+- `play_recording` opens no window. `--start` is a frame number (there is no `--start-seconds`), `--speed`
+  implies `--real-time`, and it prints the first frames' recorded times.
+- `export_recording` writes 8-bit gray PGM pairs, as `save_stereo_pairs` does, and has no `--npz`. Its
+  `--synthetic` first records 30 generated frames to `synthetic.avi`, then exports them.
+- Rust recording and playback have been run with the camera once (one PC, one camera, 2026-11-25): `record_video`
+  10 s, 881 frames, estimated missed 5, dropped by the write queue 0; Rust and Python played the same file back as
+  881 frames. `export_recording` (Rust): run with generated recordings only; not run with a camera recording.

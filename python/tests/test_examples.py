@@ -430,10 +430,92 @@ def test_dataset_npz_then_torch_dataloader(tmp_path):
     assert "10 frames in 3 batches" in out
 
 
+def _png(path: Path) -> np.ndarray:
+    import cv2
+    return cv2.imdecode(np.fromfile(str(path), np.uint8), cv2.IMREAD_UNCHANGED)
+
+
+def test_export_recording_synthetic_writes_one_pair_per_csv_row_byte_for_byte(tmp_path):
+    """--synthetic records generated frames losslessly (FFV1), then exports them: one PNG pair per row of the
+    recording's CSV with its recorded times, the recording's JSON copied, the frames in an .npz — and the first PNG
+    pair is, byte for byte, the recording's first frame and the generated frame it was recorded from."""
+    from opticmix_vision import Device, DeviceConfig
+    from opticmix_vision.synthetic import SyntheticStereoSource
+    out = run(tmp_path, "export_recording.py", "--synthetic", "--npz")
+    video, d = tmp_path / "synthetic.mkv", tmp_path / "synthetic_frames"
+    recorded = list(csv.DictReader(open(video.with_suffix(".csv"), encoding="utf-8")))
+    rows = list(csv.DictReader(open(d / "pairs.csv", encoding="utf-8")))
+    assert list(rows[0]) == ["index", "host_ns", "driver_ns", "driver_clock", "left", "right"]
+    assert len(rows) == len(recorded) == 30
+    assert [[r["index"], r["host_ns"], r["driver_ns"], r["driver_clock"]] for r in rows] == \
+        [[r["frame"], r["host_ns"], r["driver_ns"], r["driver_clock"]] for r in recorded]
+    assert [(r["left"], r["right"]) for r in rows] == [(f"left_{i:06d}.png", f"right_{i:06d}.png") for i in range(30)]
+    assert sorted(p.name for p in d.iterdir()) == sorted(
+        [n for r in rows for n in (r["left"], r["right"])] + ["pairs.csv", "capture_info.json", "frames.npz", "frames.json"])
+    assert (d / "capture_info.json").read_bytes() == video.with_suffix(".json").read_bytes()
+    assert out.splitlines()[-1] == "exported 30 of 30 frames from synthetic.mkv to synthetic_frames"
+    generated = SyntheticStereoSource().read()
+    with Device(DeviceConfig.recording(video)) as cam:
+        first = cam.read()
+    for eye in ("left", "right"):
+        png = _png(d / rows[0][eye])
+        assert png.dtype == np.uint8 and png.shape == getattr(first, eye).shape == (200, 320)
+        assert png.tobytes() == getattr(first, eye).tobytes() == getattr(generated, eye).tobytes()
+    with np.load(d / "frames.npz") as z:
+        assert z["left"].shape == z["right"].shape == (30, 200, 320) and z["left"].dtype == np.uint8
+        assert z["left"][0].tobytes() == first.left.tobytes() and z["right"][0].tobytes() == first.right.tobytes()
+        assert z["host_ns"].tolist() == [int(r["host_ns"]) for r in recorded]
+    info = json.loads((d / "frames.json").read_text(encoding="utf-8"))
+    assert info["npz"]["frames"] == 30 and info["npz"]["file"] == "frames.npz" and info["source"] == "recording"
+
+
+def test_export_recording_start_every_count_and_nothing_is_overwritten(tmp_path):
+    run(tmp_path, "record_video.py", "--synthetic", "--seconds", "0.3", "--out", "r.avi")     # MJPG
+    n = len(list(csv.DictReader(open(tmp_path / "r.csv", encoding="utf-8"))))
+    assert n >= 12
+    out = run(tmp_path, "export_recording.py", "r.avi", "--out", "sel", "--start", "2", "--every", "3", "--count", "4")
+    rows = list(csv.DictReader(open(tmp_path / "sel" / "pairs.csv", encoding="utf-8")))
+    assert [int(r["index"]) for r in rows] == [2, 5, 8, 11]
+    assert out.splitlines()[-1] == f"exported 4 of {n} frames from r.avi to sel"
+    from opticmix_vision import Device, DeviceConfig
+    with Device(DeviceConfig.recording(tmp_path / "r.avi")) as cam:      # the PNGs hold what the MJPG decodes to
+        cam.playback.seek(11)
+        f = cam.read()
+    assert _png(tmp_path / "sel" / "right_000011.png").tobytes() == f.right.tobytes()
+
+    def refused(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(EXAMPLES / "export_recording.py"), *args], cwd=tmp_path,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    r = refused("r.avi", "--out", "sel")
+    assert r.returncode == 2 and "sel is not empty" in r.stderr
+    r = refused("--synthetic", "r.avi")
+    assert r.returncode == 2 and "r.avi exists" in r.stderr
+    r = refused("r.avi", "--out", "late", "--start", str(n))
+    assert r.returncode == 2 and f"the recording has {n} frames" in r.stderr and not (tmp_path / "late").exists()
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
+def test_export_recording_says_when_there_is_no_csv_and_how_much_memory_npz_takes(tmp_path):
+    assert "no .csv" not in run(tmp_path, "export_recording.py", "--synthetic", "s.mkv", "--out", "first")
+    (tmp_path / "s.csv").unlink()
+    out = run(tmp_path, "export_recording.py", "s.mkv", "--out", "nocsv", "--npz", "--count", "5")
+    assert ("no .csv next to the file: host_ns in pairs.csv is frame number / frame rate, not recorded times; "
+            "driver_ns and driver_clock are empty") in out
+    assert "--npz: keeps 5 frames in memory until the end, about 0.6 MB (320x200 per eye)" in out
+    with open(tmp_path / "nocsv" / "pairs.csv", encoding="utf-8", newline="") as fh:
+        rows = list(csv.reader(fh))
+    assert len(rows) == 6 and {len(r) for r in rows} == {6}
+    assert [int(r[1]) for r in rows[1:]] == [round(i * 1e9 / 90.0) for i in range(5)]      # labelled 90 fps
+    assert {(r[2], r[3]) for r in rows[1:]} == {("", "")}
+
+
 USB_LOCATION_NOTE = ("A USB location is not a serial number: it names the port the camera is plugged into, and it "
                      "changes when the camera is plugged into another port. Using two cameras at the same time is not "
-                     "supported. Picking a camera by USB location has been run without a camera only (made-up device "
-                     "lists); it has not been run with a camera, and not run with two cameras.")
+                     "supported. Picking a camera by USB location has been run with the camera once (one PC, one "
+                     "camera, 2026-11-25): with one camera connected, the list showed its USB location, and given "
+                     "that location it opened at 1600x800 MJPG and read one frame; a location no device has was "
+                     "refused (Python DirectShow, Rust Media Foundation); not run with two cameras.")
 
 
 def test_list_devices_counts_two_weevia(tmp_path):
@@ -459,6 +541,7 @@ def test_list_devices_shows_the_usb_location_windows_reports(monkeypatch, capsys
     monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
     monkeypatch.setattr(devices, "_native_devices", lambda: [("WN Dual Camera", "PCIROOT(0)#USB(3)"),
                                                              ("OBS Virtual Camera", None)])
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sys, "argv", ["list_devices.py"])
     assert mod.main() == 0
     assert capsys.readouterr().out.splitlines()[:3] == [
@@ -524,6 +607,24 @@ def test_open_by_usb_location_opens_the_camera_at_that_location(monkeypatch, cap
     assert out[:3] == ["Weevia S1 in the DirectShow list:", "  [0] USB location: PCIROOT(0)#USB(1)",
                        "  [1] USB location: PCIROOT(0)#USB(2)"]
     assert out[-1] == "one frame: left 320x200, right 320x200"
+
+
+def test_open_by_usb_location_lists_the_v4l2_nodes_on_linux(monkeypatch, capsys, tmp_path):
+    # without options on Linux: each Weevia S1 in the (made-up) V4L2 list with its sysfs name; DirectShow's not read
+    from opticmix_vision import devices
+    from test_devices import GADGET, WEEVIA_USB, _sysfs_tree
+    mod = _example("open_by_usb_location.py")
+    monkeypatch.setattr(devices, "SYSFS_V4L", _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB, "1-4": WEEVIA_USB}, {
+        "video0": (GADGET, 0, "2-1"), "video1": (GADGET, 1, "2-1"), "video2": ("Integrated Webcam", 0, None),
+        "video3": (GADGET, 0, "1-4")}))
+    monkeypatch.setattr(devices, "_ffmpeg_devices", lambda: pytest.fail("the DirectShow list was read"))
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "argv", ["open_by_usb_location.py"])
+    assert mod.main() == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "Weevia S1 in the V4L2 list:", "  [0] USB location: 2-1", "  [3] USB location: 1-4",
+        "Pass --usb-location with one of them — on Linux, the USB device's sysfs name (python -m "
+        "opticmix_vision.doctor prints it)."]
 
 
 def test_list_devices_synthetic_msmf_is_the_same_devices_in_another_order(tmp_path):
@@ -636,3 +737,80 @@ def test_presets_saves_then_loads_a_changed_value(tmp_path):
     assert "gain" in run(tmp_path, "presets.py", "--synthetic", "--load", str(p), "--dry-run")
     out = run(tmp_path, "presets.py", "--synthetic", "--load", str(p))
     assert "gain" in out and "kept True" in out and "all kept" in out
+
+
+# The Rust list_devices example prints the same lines (tests/examples_synthetic.rs in the Rust crate).
+VERBOSE_LIST = [
+    "3 video device(s) in the DirectShow list:",
+    "  [0] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)",
+    "      vid: 0x1d6b",
+    "      pid: 0x0200",
+    "      bcd_device: 0x0409",
+    "      link_speed: Super",
+    "  [1] Example Laptop Webcam   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)",
+    "      vid: not read",
+    "      pid: not read",
+    "      bcd_device: not read",
+    "      link_speed: not read",
+    "  [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)",
+    "      vid: 0x1d6b",
+    "      pid: 0x0200",
+    "      bcd_device: 0x0409",
+    "      link_speed: High",
+    "Not reported by the camera: a USB serial number, a firmware version (bcd_device is the USB device revision; how "
+    "it relates to the firmware version has not been verified), a temperature.",
+]
+
+
+def test_list_devices_verbose_prints_the_usb_ids_and_link_speed(tmp_path):
+    out = run(tmp_path, "list_devices.py", "--synthetic", "--verbose").splitlines()
+    assert out[:len(VERBOSE_LIST)] == VERBOSE_LIST
+    plain = run(tmp_path, "list_devices.py", "--synthetic").splitlines()
+    added = [ln for ln in out if ln.startswith("      ") or ln == VERBOSE_LIST[-1]]
+    assert len(added) == 13 and [ln for ln in out if ln not in added] == plain       # --verbose only adds lines
+    msmf = run(tmp_path, "list_devices.py", "--synthetic", "--backend", "msmf", "--verbose").splitlines()
+    assert msmf[2:6] == VERBOSE_LIST[7:11] and msmf[7:11] == VERBOSE_LIST[2:6]   # the same devices, another order
+
+
+def test_list_devices_on_linux_lists_the_v4l2_capture_nodes(monkeypatch, capsys, tmp_path):
+    # without --synthetic on Linux: the (made-up) sysfs list, the default there; DirectShow's must not be read
+    from opticmix_vision import devices
+    from test_devices import GADGET, ONE_CAMERA, WEEVIA_USB, _sysfs_tree
+    mod = _example("list_devices.py")
+    monkeypatch.setattr(devices, "SYSFS_V4L", _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB}, ONE_CAMERA))
+    monkeypatch.setattr(devices, "_ffmpeg_devices", lambda: pytest.fail("the DirectShow list was read"))
+    monkeypatch.setattr(sys, "platform", "linux")
+    for argv in (["--verbose"], ["--backend", "v4l2", "--verbose"]):
+        monkeypatch.setattr(sys, "argv", ["list_devices.py", *argv])
+        assert mod.main() == 0
+        assert capsys.readouterr().out.splitlines() == [
+            "1 video device(s) in the V4L2 list:",
+            f"  [0] {GADGET}   <- Weevia S1   USB location: 2-1",
+            "      vid: 0x1d6b", "      pid: 0x0200", "      bcd_device: 0x0409", "      link_speed: Super",
+            VERBOSE_LIST[-1],
+            "Weevia S1 ('WN Dual Camera') found: 1"]
+    monkeypatch.setattr(sys, "argv", ["list_devices.py", "--synthetic", "--backend", "v4l2"])
+    with pytest.raises(SystemExit) as exc:                 # the made-up lists are DirectShow's and Media Foundation's
+        mod.main()
+    assert exc.value.code == 2 and "--synthetic" in capsys.readouterr().err
+
+
+def test_list_devices_verbose_shows_what_windows_reports(monkeypatch, capsys):
+    # without --synthetic: a (fake) DirectShow list as the Rust core gives it, one device with nothing read
+    from opticmix_vision import devices
+    mod = _example("list_devices.py")
+
+    def no_ffmpeg():
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
+    monkeypatch.setattr(devices, "_native_devices", lambda: [
+        ("WN Dual Camera", "PCIROOT(0)#USB(3)", 0x1D6B, 0x0200, 0x0409, "Super+"), ("OBS Virtual Camera", None)])
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "argv", ["list_devices.py", "--verbose"])
+    assert mod.main() == 0
+    assert capsys.readouterr().out.splitlines()[:11] == [
+        "2 video device(s) in the DirectShow list:",
+        "  [0] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#USB(3)",
+        "      vid: 0x1d6b", "      pid: 0x0200", "      bcd_device: 0x0409", "      link_speed: Super+",
+        "  [1] OBS Virtual Camera",
+        "      vid: not read", "      pid: not read", "      bcd_device: not read", "      link_speed: not read"]

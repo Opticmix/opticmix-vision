@@ -33,6 +33,11 @@ pub trait Backend: Send {
     /// value None = keep the value (a write that switches to auto); auto None = leave the mode alone.
     fn write(&mut self, key: &str, value: Option<i64>, auto: Option<bool>) -> Result<()>;
     fn close(&mut self) -> Result<()>;
+    /// False when `Controls::reset_to_defaults` must write nothing (the defaults are shown, not written): the
+    /// V4L2 controls on Linux. The Python package's backend attribute `writes_defaults`.
+    fn writes_defaults(&self) -> bool {
+        true
+    }
 }
 
 /// Read-only wrapper — rejects writes before they reach the inner backend and only counts the attempts. It is the first
@@ -91,6 +96,9 @@ impl<B: Backend> Backend for ReadOnly<B> {
     fn close(&mut self) -> Result<()> {
         self.inner.close()
     }
+    fn writes_defaults(&self) -> bool {
+        self.inner.writes_defaults()
+    }
 }
 
 /// Test double — same as Python `_ctrl_sim.SimBackend`. **Ranges and defaults are made-up values** (Python SIM_RANGES as is).
@@ -138,6 +146,8 @@ pub mod mock {
         pub unranged: HashSet<String>,
         pub ignore_writes: HashSet<String>,
         pub fail_start: Option<String>,
+        /// true: `writes_defaults()` is false, as on Linux (V4L2).
+        pub defaults_not_written: bool,
         pub writes: Vec<Write>,
         pub threads: HashSet<ThreadId>,
         pub started: bool,
@@ -257,6 +267,9 @@ pub mod mock {
         fn close(&mut self) -> Result<()> {
             self.touch().closed = true;
             Ok(())
+        }
+        fn writes_defaults(&self) -> bool {
+            !self.st().defaults_not_written
         }
     }
 }

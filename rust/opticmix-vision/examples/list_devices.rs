@@ -1,10 +1,11 @@
-//! list_devices — list the video devices Windows reports, and how many of them are a Weevia S1.
+//! list_devices — list the video devices Windows (or Linux) reports, and how many of them are a Weevia S1.
 //!
 //! ```text
-//! cargo run --example list_devices                                  # DirectShow's list (the default)
+//! cargo run --example list_devices                                  # DirectShow's list (the default; Linux: V4L2's)
 //! cargo run --example list_devices -- --backend msmf                # Media Foundation's list
 //! cargo run --example list_devices -- --synthetic                   # no camera: a made-up list with two Weevia S1
 //! cargo run --example list_devices -- --synthetic --backend msmf    # no camera: the same made-up devices, another order
+//! cargo run --example list_devices -- --verbose                     # also each device's USB IDs and link speed
 //! ```
 //!
 //! Prints every video device in the order of one capture API's list — laptop webcams included — and marks the
@@ -22,12 +23,23 @@
 //! when Windows reports one (`DeviceInfo::usb_location`); open one of two cameras by it with
 //! `DeviceSelector::UsbLocation` (`cargo run --example open_by_usb_location`). A USB location is not a serial
 //! number: it names the port the camera is plugged into, and it changes when the camera is plugged into another
-//! port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run
-//! without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+//! port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the
+//! camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given
+//! that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python
+//! DirectShow, Rust Media Foundation); not run with two cameras.
 //!
-//! Linux and other systems: this listing is for Windows — the example says so and exits; list the cameras
-//! with `v4l2-ctl --list-devices`. On Linux `DeviceConfig::weevia_s1()` finds the camera by its V4L2 card name.
-//! `--synthetic` works everywhere.
+//! With `--verbose`, each device also gets one line for each of `DeviceInfo::vid`, `pid`, `bcd_device` (the USB
+//! vendor ID, product ID and device revision) and `link_speed` (the USB link as the hub reports it: Low, Full, High,
+//! Super or Super+), read as the doctor reads them, without opening the device; "not read" where Windows did not say.
+//! Not reported by the camera: a USB serial number, a firmware version (`bcd_device` is the USB device revision; how
+//! it relates to the firmware version has not been verified), a temperature.
+//!
+//! Linux (with the default `capture` feature, without `--backend msmf`): the video capture nodes in
+//! /sys/class/video4linux, from `devices::list_v4l2_devices()` (a UVC camera's metadata node is left out); the index
+//! is the N of /dev/videoN, which `DeviceSelector::Index(n)` opens, the USB location the USB device's sysfs name
+//! (e.g. 2-1), and `--verbose` reads the IDs and link speed from sysfs, as the doctor does. Run without a camera only
+//! (made-up sysfs trees, in the function's tests); not run with the camera on Linux. Other systems, and Linux without
+//! `capture`: the example says this listing is not there and exits. `--synthetic` works everywhere.
 //!
 //! Output with `--synthetic` (a made-up list, made-up USB locations):
 //!
@@ -40,25 +52,30 @@
 //! ```
 //!
 //! Camera: the DirectShow list was run with the camera once (one PC, one camera, 2026-11-24) — before it showed USB
-//! locations. `--backend msmf` and the USB locations: run without a camera only (a made-up list); not run with the
-//! camera. Does not open the camera. Writes to the camera: none.
+//! locations. `--backend msmf`, the USB locations and `--verbose`: run without a camera only (a made-up list); not run
+//! with the camera. Does not open the camera. Writes to the camera: none.
 
 use opticmix_vision::devices::{list_devices, list_mf_devices, DeviceInfo};
 use opticmix_vision::spec::WEEVIA_S1_NAME;
 
-const USAGE: &str = "usage: list_devices [--synthetic] [--backend dshow|msmf]";
+const USAGE: &str = "usage: list_devices [--synthetic] [--backend dshow|msmf] [--verbose]";
 const USB_LOCATION_NOTE: &str = "A USB location is not a serial number: it names the port the camera is plugged \
     into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not \
-    supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has \
-    not been run with a camera, and not run with two cameras.";
+    supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): \
+    with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG \
+    and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run \
+    with two cameras.";
+const NOT_REPORTED: &str = "Not reported by the camera: a USB serial number, a firmware version (bcd_device is the USB \
+    device revision; how it relates to the firmware version has not been verified), a temperature.";
 
 fn main() {
-    let (mut synthetic, mut msmf) = (false, false);
+    let (mut synthetic, mut msmf, mut verbose) = (false, false, false);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut it = args.iter().map(String::as_str);
     while let Some(arg) = it.next() {
         match arg {
             "--synthetic" => synthetic = true,
+            "--verbose" => verbose = true,
             "--backend" => match it.next() {
                 Some("msmf") => msmf = true,
                 Some("dshow") => msmf = false,
@@ -67,32 +84,40 @@ fn main() {
             other => usage_error(other),
         }
     }
-    if !synthetic && !cfg!(windows) {
+    let v4l2 = if synthetic || msmf { None } else { v4l2_devices() };
+    if !synthetic && !cfg!(windows) && v4l2.is_none() {
         println!(
-            "This listing is for Windows. On Linux: v4l2-ctl --list-devices (package v4l-utils). \
-             DeviceConfig::weevia_s1() finds the camera by its V4L2 card name, {WEEVIA_S1_NAME:?}."
+            "The DirectShow and Media Foundation lists are Windows'. On Linux this example lists the V4L2 capture \
+             nodes without --backend msmf, built with the capture feature (the default); or v4l2-ctl \
+             --list-devices (package v4l-utils). DeviceConfig::weevia_s1() finds the camera by its V4L2 card name, \
+             {WEEVIA_S1_NAME:?}."
         );
         return;
     }
-    let devices: Vec<DeviceInfo> = if synthetic {
-        // A made-up device list with made-up USB locations — not read from any computer. Media Foundation might
-        // list the same devices in another order.
+    let linux = v4l2.is_some();
+    let devices: Vec<DeviceInfo> = if let Some(listed) = v4l2 {
+        listed
+    } else if synthetic {
+        // A made-up device list with made-up USB locations, IDs and link speeds — not read from any computer; the
+        // webcam's IDs and link speed are left unread. Media Foundation might list the same devices in another order.
         let made_up = [
-            (WEEVIA_S1_NAME, "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"),
-            (
-                "Example Laptop Webcam",
-                "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)",
-            ),
-            (
-                WEEVIA_S1_NAME,
-                "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)",
-            ),
+            (WEEVIA_S1_NAME, "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)", Some("Super")),
+            ("Example Laptop Webcam", "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)", None),
+            (WEEVIA_S1_NAME, "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)", Some("High")),
         ];
         let order = if msmf { [1, 0, 2] } else { [0, 1, 2] };
         order
             .iter()
             .enumerate()
-            .map(|(index, &i)| DeviceInfo::new(index, made_up[i].0, Some(made_up[i].1.to_string())))
+            .map(|(index, &i)| {
+                let (name, location, link) = made_up[i];
+                let mut d = DeviceInfo::new(index, name, Some(location.to_string()));
+                if let Some(link) = link {
+                    (d.vid, d.pid, d.bcd_device, d.link_speed) =
+                        (Some(0x1D6B), Some(0x0200), Some(0x0409), Some(link.to_string()));
+                }
+                d
+            })
             .collect()
     } else if msmf {
         list_mf_devices().unwrap_or_else(|e| {
@@ -103,7 +128,9 @@ fn main() {
         list_devices(None)
     };
     let is_weevia = |name: &str| name.to_lowercase().contains(&WEEVIA_S1_NAME.to_lowercase());
-    let (this, other, other_flag) = if msmf {
+    let (this, other, other_flag) = if linux {
+        ("V4L2", "", "")
+    } else if msmf {
         ("Media Foundation", "DirectShow", "dshow")
     } else {
         ("DirectShow", "Media Foundation", "msmf")
@@ -122,11 +149,24 @@ fn main() {
             .map(|l| format!("   USB location: {l}"))
             .unwrap_or_default();
         println!("  [{}] {}{mark}{at}", d.index, d.name);
+        if verbose {
+            let hex = |v: Option<u16>| v.map_or("not read".to_string(), |v| format!("0x{v:04x}"));
+            println!("      vid: {}", hex(d.vid));
+            println!("      pid: {}", hex(d.pid));
+            println!("      bcd_device: {}", hex(d.bcd_device));
+            println!("      link_speed: {}", d.link_speed.as_deref().unwrap_or("not read"));
+        }
+    }
+    if verbose {
+        println!("{NOT_REPORTED}");
     }
     let found = devices.iter().filter(|d| is_weevia(&d.name)).count();
     println!("Weevia S1 ({WEEVIA_S1_NAME:?}) found: {found}");
     if found == 0 {
-        println!("Re-insert the cable; if the camera is missing from the list, Windows does not see it either.");
+        println!(
+            "Re-insert the cable; if the camera is missing from the list, {} does not see it either.",
+            if linux { "Linux" } else { "Windows" }
+        );
     } else if found > 1 {
         println!(
             "More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart \
@@ -136,6 +176,10 @@ fn main() {
         );
         println!("{USB_LOCATION_NOTE}");
     }
+    if linux {
+        println!("DeviceSelector::Index(n) opens /dev/videoN, the index shown.");
+        return;
+    }
     println!(
         "The {other} list (--backend {other_flag}) can be in a different order: an index goes only with the \
          backend whose list it came from."
@@ -144,6 +188,17 @@ fn main() {
         "Capture opens from the Media Foundation list: DeviceSelector::Index(n) is entry n of it{}.",
         if msmf { "" } else { " (--backend msmf)" }
     );
+}
+
+/// Linux with `capture`: the V4L2 capture nodes. `None` elsewhere (the listing is not there).
+#[cfg(all(feature = "capture", target_os = "linux"))]
+fn v4l2_devices() -> Option<Vec<DeviceInfo>> {
+    Some(opticmix_vision::devices::list_v4l2_devices())
+}
+
+#[cfg(not(all(feature = "capture", target_os = "linux")))]
+fn v4l2_devices() -> Option<Vec<DeviceInfo>> {
+    None
 }
 
 fn usage_error(arg: &str) -> ! {

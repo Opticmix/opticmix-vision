@@ -34,8 +34,9 @@ A recording that was not closed (the process stopped while recording): an MJPG .
 Play a recording with `Device(DeviceConfig.recording(path))`; `Device.playback` is the `Playback` here (seek,
 speed, real-time pacing, loop, pause, status). The Rust crate (`opticmix-vision`: `Recorder`,
 `Device::open_recording`) writes and plays the same MJPG .avi files, CSV and JSON; it neither writes nor plays
-FFV1, and its recordings name a checked V4L2 clock "v4l2_monotonic" in the CSV. Rust recording and playback:
-generated frames only; not run with the camera.
+FFV1, and its recordings name a checked V4L2 clock "v4l2_monotonic" in the CSV. Rust recording and playback
+have been run with the camera once (one PC, one camera, 2026-11-25): `record_video` 10 s, 881 frames, estimated missed
+5, dropped by the write queue 0; Rust and Python played the same file back as 881 frames.
 """
 
 from __future__ import annotations

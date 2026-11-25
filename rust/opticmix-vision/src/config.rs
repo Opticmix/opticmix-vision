@@ -21,8 +21,10 @@ pub enum DeviceSelector {
     /// Part of the name (as `Name`) at one USB location (`DeviceInfo::usb_location`, as `cargo run --example
     /// list_devices` prints it) — how to open one of two cameras that share a name. A USB location is not a serial
     /// number: it names the port the camera is plugged into, and it changes when the camera is plugged into another
-    /// port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run
-    /// without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+    /// port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with
+    /// the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location,
+    /// and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused
+    /// (Python DirectShow, Rust Media Foundation); not run with two cameras.
     UsbLocation { name: String, usb_location: String },
 }
 

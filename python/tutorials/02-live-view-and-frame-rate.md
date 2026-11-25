@@ -165,3 +165,9 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) in the p
 ## Next
 
 [03 · Saving frames](03-saving-frames.md): write left/right pairs to PNG and collect frames into a dataset.
+
+## Rust
+
+- `measure_fps.py`: the Rust `measure_fps` example, its commands and its `--synthetic` output are under Run it
+  above.
+- `live_preview.py`: no Rust example yet.

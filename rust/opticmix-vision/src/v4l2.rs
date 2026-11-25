@@ -1,5 +1,6 @@
 //! Linux capture — V4L2 mmap. Sets FOURCC (with size) first and FPS after — the order the Python package uses on V4L2.
-//! This module has not yet been run on the camera. A read fails if no frame arrives for 2 seconds.
+//! This module has been run with the camera once (one PC, one camera, 2026-11-25: measure_fps, record_video,
+//! play_recording). A read fails if no frame arrives for 2 seconds.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -96,7 +97,7 @@ fn pick(cfg: &DeviceConfig) -> Result<(PathBuf, String)> {
             let list: Vec<DeviceInfo> = hits
                 .iter()
                 .enumerate()
-                .map(|(index, (p, n))| DeviceInfo { index, name: n.clone(), usb_location: v4l2_usb_location(p) })
+                .map(|(index, (p, n))| DeviceInfo::new(index, n.clone(), v4l2_usb_location(p)))
                 .collect();
             let d = pick_by_usb_location(name, usb_location, &list)?;
             Ok(hits[d.index].clone())

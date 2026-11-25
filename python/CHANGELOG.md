@@ -1,5 +1,134 @@
 # Changelog
 
+## 0.0.7 — 2026-11-25
+
+### Added
+
+- New example `export_recording` (Python and Rust): writes the frames of a recording as left/right image pairs
+  into a new or empty folder (`left_000123`, 123 = the frame's number in the recording), with `pairs.csv`
+  (`index,host_ns,driver_ns,driver_clock,left,right`, the times recorded in the recording's CSV) and a copy of the
+  recording's JSON as `capture_info.json`; `--start`, `--every` and `--count` pick the frames, and the last line
+  gives the frames exported and the frames in the recording. Python writes PNG (the names and `pairs.csv` of
+  `examples/save_stereo_pairs.py`) and with `--npz` also `frames.npz` (the format of
+  `examples/capture_dataset_npz.py`); Rust writes 8-bit PGM, as its `save_stereo_pairs` example does, and plays
+  MJPG `.avi` recordings only. `--synthetic` records generated frames first (Python: lossless FFV1; Rust: `--features
+  test-support`). From an MJPG recording the images hold what it decodes to, not the camera's pixel values. Run with
+  generated recordings; the Python example also with a camera recording once on Linux, from source before release.
+  Not run with a camera recording on Windows, and the Rust example not with a camera recording.
+- `DeviceInfo` has the USB IDs and link speed of a listed device: `vid`, `pid` and `bcd_device` (`int`; the USB
+  vendor ID, product ID and device revision, from the USB device's hardware IDs in the Windows device tree) and
+  `link_speed` (`"Low"`, `"Full"`, `"High"`, `"Super"` or `"Super+"`, as the USB hub driver reports the
+  port), read without opening the device; `None` when they cannot be read. Rust: `DeviceInfo::vid`, `pid`,
+  `bcd_device` (`Option<u16>`) and `link_speed` (`Option<String>`), the same names and meanings, filled by
+  `devices::list_devices()`, `list_dshow_devices()` and `list_mf_devices()`; `DeviceInfo::new()` leaves them `None`.
+  Finding a camera to open reads the USB location only, as before (Python `devices.resolve_by_name()`, which
+  `DeviceConfig.weevia_s1()` uses, returns them `None`; Rust `Device` opening the same). Linux: see `list_devices(backend="v4l2")`
+  below. `python -m opticmix_vision.doctor` prints these fields for a device
+  the DirectShow list has, so the report and `devices.list_devices()` give one value, and keeps its own reading
+  where a field is `None`; its output is unchanged. An extension built from an older source now says to rebuild it
+  (`ControlsUnavailable`) instead of failing on the shape of its rows. `examples/list_devices.py --verbose` and the
+  Rust `list_devices -- --verbose` print one line for each. `bcd_device` is the USB device revision, not a firmware
+  version; the camera reports no USB serial number, no firmware version and no temperature, so there are no fields
+  for them. Run without a camera only (made-up device lists); not run with the camera.
+- Linux: the camera controls report each control's range and default. The OpenCV path that Linux uses now also asks
+  the V4L2 driver with `VIDIOC_QUERYCTRL` (on a second, read-only handle to the device node), so `Controls.describe()`
+  gives `minimum`, `maximum`, `step` and `default` for the controls the driver reports, as on Windows. New read-only
+  `Controls.driver_names` (the controls the driver reported when asked: on Windows the same as `names()`, on Linux
+  those the query answered for, `None` when the backend does not ask) and `Controls.writes_defaults` (`False` on
+  Linux). `names()`, `get()`, `set()` and presets otherwise work as in 0.0.6, through OpenCV. `reset_to_defaults()`
+  still writes nothing on Linux: the driver's defaults are shown, not written. When the driver cannot be asked there
+  are no ranges or defaults, as before, and `Controls.backend_note` says why. Run without a camera (a made-up driver,
+  and on Linux a real ioctl on a file that is not a camera), and run with the camera on Linux once (one PC, one
+  camera, 2026-11-25, from source before release): the driver answered on the read-only handle, also while streaming.
+  Camera controls on Linux remain not verified and not supported.
+- `tutorials/`: every page ends with a Rust section — for each step that has a Rust example, the `cargo run`
+  command and its output with `--synthetic` (generated frames), and for each step that has none, a line saying
+  so; with the Rust differences each example states (for example, Rust writes and plays MJPG `.avi` only, and
+  `save_stereo_pairs` and `export_recording` write PGM). Of the Rust example files, `list_devices` and `measure_fps`
+  have been run with the camera once (one PC, one camera, 2026-11-24), and `open_by_usb_location`, `record_video` and
+  `play_recording` once (one PC, one camera, 2026-11-25); on Linux, `measure_fps`, `record_video`, `play_recording`
+  and `list_controls` once (one PC, one camera, 2026-11-25, crate 0.0.6); the others not yet.
+- `--usb-location LOCATION` in `python -m opticmix_vision.viewer`, `python -m opticmix_vision.explorer`,
+  `python -m opticmix_vision.doctor --open`, `python -m opticmix_vision.presets save` and `load`, and
+  `python -m opticmix_vision.calib check`: opens the Weevia S1 at that USB location, to choose between two that
+  share a name — each tool finds it with `DeviceConfig.weevia_s1(usb_location=...)`, and the camera controls it
+  reads and writes (the viewer's keys and `--preset`, the explorer's Settings window, the doctor's control readout,
+  presets) are those of the same camera; the explorer's USB line (VID:PID, revision, link speed) is that camera's,
+  and the doctor's report names the USB location and the device it opened. The explorer finds the camera again by
+  that location each time it opens it (not there: it is not opened), and takes `--usb-location` on Windows only (on
+  Linux, where it lists no cameras: exit code 2). Windows: the location `examples/list_devices.py` or the doctor
+  prints; Linux: the USB device's sysfs name, e.g. `1-4.2`. No Weevia S1 at that location (the message lists each device's name and USB
+  location) or an empty or blank location: exit code 2, before anything is opened (the explorer before its window
+  opens; the doctor prints no report). With another way of choosing what to open (`--device`, `--synthetic`, the
+  viewer's `--recording`, `calib check --pairs-dir`): exit code 2. `doctor` needs `--open` for it. A USB location
+  is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged
+  into another port. Using two cameras at the same time is not supported. Run without a camera only (made-up device
+  lists); not run with a camera, and not run with two cameras.
+- Linux: `devices.list_devices(backend="v4l2")` lists the cameras — one `DeviceInfo` per video capture node in
+  `/sys/class/video4linux` (chosen as `find_v4l2_node` chooses them, so a UVC camera's metadata node is left out), in
+  `/dev/videoN` order: `index` is the N (what `DeviceConfig(device=N, backend="v4l2")` opens), `name` the node's
+  name, `usb_location` the USB device's sysfs name (e.g. `2-1`), and `vid`, `pid`, `bcd_device` and `link_speed` its
+  `idVendor`, `idProduct`, `bcdDevice` and `speed` (the same words as on Windows: 480 Mb/s `"High"`, 5000 `"Super"`,
+  more than 5000 `"Super+"`); `None` for what cannot be read. Reads sysfs only, opens no device; an empty list off
+  Linux. The doctor reads these values with the same function, so its Linux report and the list give one value; its
+  output is unchanged. `DeviceConfig.weevia_s1()` on Linux still finds the camera with `find_v4l2_node`, reading the
+  USB location only. `examples/list_devices.py` prints this list on Linux (`--backend v4l2`, the default there; with
+  `--verbose` the IDs and link speed). Rust: `devices::list_v4l2_devices()` (feature `capture`) gives the same
+  entries. The explorer still lists DirectShow's devices, the list of the backend it opens with, so on Linux it lists
+  no cameras, as in 0.0.6. Run without a camera only (made-up sysfs trees); not run with the camera on Linux.
+
+### Changed
+
+- Linux: `Controls.set()` / `set_many()` raise `ValueError`, and `load_preset()` raises `PresetError`, for a value
+  outside a range the V4L2 driver reports, before anything is written; 0.0.6 passed such a value to OpenCV. Controls
+  whose range the driver does not report are not checked, as before.
+- Linux: the explorer's Reset to defaults, `python -m opticmix_vision.presets load defaults` and the viewer's
+  `p`/`P` on the defaults say that the camera's defaults are shown, not written, instead of that everything is
+  already at the defaults; `presets load defaults` (also with `--dry-run`) then exits with status 1 (0.0.6: 0).
+- Rust on Linux: `Controls::reset_to_defaults()` no longer writes the defaults and `Controls::plan_reset()` is empty
+  (0.0.6 wrote them through V4L2), as in the Python package; `describe()` still gives the driver's defaults. New
+  read-only `Controls::writes_defaults()` (`false` for the V4L2 controls on Linux), the same name and meaning as
+  Python's `Controls.writes_defaults`. Windows unchanged. Run without a camera only; not run with the camera on Linux.
+- The explorer with two cameras that share a name: the device list shows each one's USB location
+  (`WN Dual Camera · <USB location>`), and the one chosen in the list is the one opened and written to by the
+  Settings window — found again by its USB location each time it is opened, since the list's order can change. 0.0.6
+  chose by name, so it always opened, and wrote to, the first of the two. Two of one name whose USB locations cannot
+  be read are not opened (the window says to connect one at a time). With two of one name, or with `--usb-location`,
+  the mode list is not asked of ffmpeg, which asks by name: the window opens 1600×800 MJPG and says why. Run without a
+  camera only (made-up device lists); not run with a camera, and not run with two cameras.
+- Linux: `devices.list_devices()` with no `backend` lists the V4L2 capture nodes (`backend="v4l2"`); 0.0.6 gave
+  an empty list there (it read DirectShow's). On Windows the default is still `"dshow"`, and an unknown `backend` now
+  says `'dshow', 'msmf' or 'v4l2'`.
+- Documentation: what 0.0.6 said had not been run with the camera and has since been run once on Windows (one PC,
+  one camera, 2026-11-25), with the code unchanged — picking a camera by USB location
+  (`DeviceConfig.weevia_s1(usb_location=...)`, `DeviceSelector::UsbLocation`, the `open_by_usb_location` examples):
+  with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG
+  and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with
+  two cameras. Rust recording and playback (`Recorder`, `Device::open_recording`, the `record_video` and
+  `play_recording` examples): `record_video` 10 s, 881 frames, estimated missed 5, dropped by the write queue 0;
+  Rust and Python played the same file back as 881 frames. The pages now say so.
+- Documentation, Linux (experimental; once, one PC, one camera, 2026-11-25): the 0.0.6 manylinux wheel has been
+  run with the camera — open, frames, recording and playback, read-only; finding the camera by name, and picking it
+  by USB location (opened at its location; a location with no camera refused; not run with two cameras); the
+  examples `measure_fps.py`, `record_video.py`, `play_recording.py`, `save_stereo_pairs.py`, `list_controls.py`
+  and `open_by_usb_location.py`. The Rust crate 0.0.6: `measure_fps`, `record_video`, `play_recording` and
+  reading the controls (`list_controls`); writing not run. Camera controls on Linux remain not verified and not
+  supported.
+
+### Fixed
+
+- Linux: `examples/open_by_usb_location.py` without `--usb-location` lists each Weevia S1 and its USB location
+  from V4L2's list (`devices.list_devices()`), as it does from DirectShow's on Windows; 0.0.6 printed no device
+  lines there (seen once with the camera on Linux, 2026-11-25). The new listing: run without a camera only (a
+  made-up sysfs tree); not run with the camera.
+- Rust on Linux: the `open_by_usb_location` example without `--usb-location` lists each Weevia S1 and its USB
+  location from the V4L2 list (`devices::list_v4l2_devices()`), as the Python example does; 0.0.6 printed no device
+  lines there. Its test uses an empty sysfs; not run with the camera on Linux.
+- Rust on Linux: the `list_devices` example lists the V4L2 capture nodes (`devices::list_v4l2_devices()`, with
+  the default `capture` feature; `--verbose` adds the USB IDs and link speed) instead of saying the listing is for
+  Windows; `DeviceSelector::Index(n)` opens the `/dev/videoN` it shows. Its tests use made-up sysfs trees; not run
+  with the camera on Linux.
+
 ## 0.0.6 — 2026-11-25
 
 ### Added

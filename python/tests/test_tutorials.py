@@ -26,7 +26,7 @@ PAGES = sorted(TUTORIALS.glob("[0-9][0-9]-*.md"))
 RUN_PAGES = [*PAGES, TUTORIALS / "tools.md"]
 
 SECTIONS = ("What you will do", "Before you start", "Run it", "What you should see", "How it works",
-            "If it does not work", "Next")
+            "If it does not work", "Next", "Rust")    # Rust: the crate's examples for the page's steps, or "no ... yet"
 SYNTHETIC_LABELS = ("Output with `--synthetic` (generated frames); with the camera the numbers differ.",
                     "Output with `--synthetic` (a made-up calibration, not a camera).")   # 08: no frames at all
 NO_CAMERA = {"play_recording.py", "torch_dataloader.py"}          # never open a camera

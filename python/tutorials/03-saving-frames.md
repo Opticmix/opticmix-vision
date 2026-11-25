@@ -119,3 +119,27 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) in the p
 
 [04 · Recording and playback](04-recording-and-playback.md): record both eyes into a video file and read it
 back as if it were the camera.
+
+## Rust
+
+The Rust crate has `save_stereo_pairs`. In a checkout of the repository, from
+`rust/opticmix-vision`, without a camera:
+
+```bash
+cargo run --release --features test-support --example save_stereo_pairs -- --synthetic --every 5 --count 3
+```
+
+Output with `--synthetic` (generated frames); with the camera the numbers differ.
+
+```text
+$ cargo run --release --features test-support --example save_stereo_pairs -- --synthetic --every 5 --count 3
+negotiated: 1600x800 MJPG 90.0 fps (synthetic)
+saved 3 pairs in captures\1795575648
+```
+
+- It writes 8-bit gray PGM (binary, "P5"), not PNG, so that it needs no image crate, and `pairs.csv` has the
+  columns `index,host_ns,left,right`. Each run writes into a new folder, `<out>/<seconds since 1970>/`
+  (`--out`, default `captures`).
+- It opens no window: it saves every `--every`-th frame (default 30) until `--count` pairs (default 10).
+- `capture_dataset_npz.py` and `torch_dataloader.py`: no Rust example yet.
+- With the camera: not run yet.

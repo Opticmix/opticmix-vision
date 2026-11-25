@@ -23,8 +23,8 @@ from tkinter import ttk
 import numpy as np
 
 from .. import __version__
-from ..device import WEEVIA_S1, WEEVIA_S1_NAME, Device, DeviceConfig
-from ..devices import DeviceInfo, list_devices, list_modes
+from ..device import WEEVIA_S1, WEEVIA_S1_NAME, Device, DeviceConfig, DeviceError
+from ..devices import DeviceInfo, list_devices, list_modes, resolve_by_name
 from .capture import CaptureWorker
 from .settings_window import SettingsWindow
 from .state import KNOWN_MODE, ExplorerState
@@ -71,9 +71,31 @@ def preferred_device(listed: list[DeviceInfo]) -> DeviceInfo:
     return next((d for d in listed if WEEVIA_S1_NAME.lower() in d.name.lower()), listed[0])
 
 
+def _twins(d: DeviceInfo, listed: list[DeviceInfo]) -> int:
+    """How many listed devices have d's name (the camera reports no USB serial number)."""
+    return sum(x.name == d.name for x in listed)
+
+
+def _label(d: DeviceInfo, listed: list[DeviceInfo]) -> str:
+    """The device list's text: the name, and the USB location when another device has the same name."""
+    return f"{d.name} · {d.usb_location}" if d.usb_location and _twins(d, listed) > 1 else d.name
+
+
+# ffmpeg is asked for the modes by name (and opens the device it finds by that name).
+NOT_BY_NAME = ("Mode list not read: ffmpeg asks by name, which two cameras can share — opening 1600×800 MJPG, the mode "
+               "verified on the Weevia S1")
+USB_LOCATION_HELP = ("open the Weevia S1 plugged in at this USB location, to choose between two that share a name "
+                     "(DeviceConfig.weevia_s1(usb_location=...)); as examples/list_devices.py or python -m "
+                     "opticmix_vision.doctor (location) prints it; no Weevia S1 there, or an empty one: exit code 2. "
+                     "Windows only: the explorer lists no cameras on Linux. Not a serial number: it changes when the "
+                     "camera is plugged into another port. Picking by USB location: run without a camera only "
+                     "(made-up device lists)")
+
+
 class ExplorerApp:
-    def __init__(self, *, synthetic: bool = False) -> None:
+    def __init__(self, *, synthetic: bool = False, usb_location: str | None = None) -> None:
         self.synthetic = synthetic
+        self.usb_location = usb_location   # the device list then holds the Weevia S1 at this USB location only
         self.state = ExplorerState()
         self.device: Device | None = None
         self.source = None               # what is streaming now (Device or synthetic); the settings window uses its controls
@@ -146,7 +168,7 @@ class ExplorerApp:
 
         # what the OS knows of the camera's USB device (not opened), and that it has no serial number.
         from ..doctor import _usb_summary
-        sn = tk.Label(bar, text=_usb_summary(self.synthetic), bg=PANEL, fg=TEXT_DIM, font=MONO)
+        sn = tk.Label(bar, text=_usb_summary(self.synthetic, self.usb_location), bg=PANEL, fg=TEXT_DIM, font=MONO)
         sn.pack(side="right", padx=(8, 4))
         self._tooltip(sn, "VID:PID, USB device revision (bcdDevice) and USB link speed, read from the OS without\n"
                           "opening the camera. This camera reports no USB serial number: two units cannot be told\n"
@@ -216,21 +238,35 @@ class ExplorerApp:
 
     # --- wiring ----------------------------------------------------------
     def _rescan(self) -> None:
+        missing = ""
         if self.synthetic:
             self._devices = [DeviceInfo(index=0, name="(synthetic)")]
         else:
-            self._devices = list_devices()
-        self.device_combo["values"] = [d.name for d in self._devices]
+            self._devices = list_devices(backend="dshow")   # the list of the backend it opens with (below)
+            if self.usb_location is not None:     # the one DeviceConfig.weevia_s1(usb_location=...) finds
+                try:
+                    at = DeviceConfig.weevia_s1(usb_location=self.usb_location).device
+                except (DeviceError, ValueError) as exc:
+                    at, missing = None, str(exc)
+                self._devices = [d for d in self._devices if d.index == at]
+        labels = [_label(d, self._devices) for d in self._devices]
+        self.device_combo["values"] = labels
         if not self._devices:
-            self.message_var.set("No camera found — connect one and press the refresh button")
+            self.message_var.set(missing or "No camera found — connect one and press the refresh button")
             return
-        self.device_var.set(preferred_device(self._devices).name)
+        self.device_var.set(labels[self._devices.index(preferred_device(self._devices))])
         self._on_device()
 
     def _on_device(self) -> None:
-        chosen = next(d for d in self._devices if d.name == self.device_var.get())
+        chosen = self._devices[self.device_combo.current()]     # by position: two cameras can share a name
         self.state.select_device(chosen)
-        self.state.set_modes([KNOWN_MODE] if self.synthetic else list_modes(chosen.name))
+        if self.synthetic:
+            self.state.set_modes([KNOWN_MODE])
+        elif self.usb_location is not None or _twins(chosen, self._devices) > 1:
+            self.state.set_modes([KNOWN_MODE])                    # asking by name could reach the other camera
+            self.state.mode_note = NOT_BY_NAME
+        else:
+            self.state.set_modes(list_modes(chosen.name))
         self.mode_combo["values"] = [m.label() for m in self.state.modes]
         self.mode_var.set(self.state.modes[0].label())
         self.message_var.set(self.state.mode_note)
@@ -246,9 +282,17 @@ class ExplorerApp:
             from ..synthetic import SyntheticStereoSource
             self.source = SyntheticStereoSource()
             return self.source
-        mode = self.state.mode
+        mode, dev = self.state.mode, self.state.device
+        if dev.usb_location:   # found again where it is plugged in, at every open: the list's order can change
+            index = resolve_by_name(dev.name, usb_location=dev.usb_location).index   # not there: nothing is opened
+        elif _twins(dev, self._devices) > 1:
+            raise DeviceError(f"{_twins(dev, self._devices)} cameras are named {dev.name!r} and their USB locations "
+                              "could not be read: they cannot be told apart (no USB serial number). Connect one at a "
+                              "time.")
+        else:
+            index = dev.index
         cfg = DeviceConfig(layout=WEEVIA_S1["layout"], lr_order=WEEVIA_S1["lr_order"], backend="dshow",
-                           device=self.state.device.index,
+                           device=index,
                            width=mode.width, height=mode.height,
                            fps=mode.max_fps, fourcc=mode.fourcc)
         # No control values are written on open; on this camera writing itself is risky. The screen shows the values
@@ -374,8 +418,21 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="opticmix-explorer")
     ap.add_argument("--synthetic", action="store_true",
                     help="run on generated frames, with no camera attached")
+    ap.add_argument("--usb-location", metavar="LOCATION", help=USB_LOCATION_HELP)
     a = ap.parse_args(argv)
-    return ExplorerApp(synthetic=a.synthetic).run()
+    if a.usb_location is not None:
+        if a.synthetic:
+            ap.error("--usb-location cannot be combined with --synthetic")
+        if sys.platform.startswith("linux"):
+            print("[explorer] could not open the camera: --usb-location: the explorer lists cameras on Windows only "
+                  "(on Linux: python -m opticmix_vision.viewer --usb-location)", file=sys.stderr)
+            return 2
+        try:                                   # before the window opens: nothing there is exit code 2
+            DeviceConfig.weevia_s1(usb_location=a.usb_location)
+        except (DeviceError, ValueError) as exc:
+            print(f"[explorer] could not open the camera: {exc}", file=sys.stderr)
+            return 2
+    return ExplorerApp(synthetic=a.synthetic, usb_location=a.usb_location).run()
 
 
 if __name__ == "__main__":

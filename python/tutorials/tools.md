@@ -31,7 +31,14 @@ python -m opticmix_vision.viewer                  # Weevia S1, found by name
 python -m opticmix_vision.viewer --synthetic      # no camera
 python -m opticmix_vision.viewer --recording captures/20261124_101500_000123.avi   # play a recording back
 python -m opticmix_vision.viewer --lossless       # v records lossless (FFV1 .mkv)
+python -m opticmix_vision.viewer --usb-location "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"   # one of two Weevia S1
 ```
+
+Two Weevia S1 connected at once share a name (the camera reports no USB serial number), so finding the camera by
+name stops. `--usb-location` opens the one at that USB location, as `DeviceConfig.weevia_s1(usb_location=...)`
+does — Windows: the location `python examples/list_devices.py` prints; Linux: the USB device's sysfs name, e.g.
+`1-4.2` — and the keys and presets then read and write that camera's controls. No Weevia S1 there, or an empty
+location, exits with code 2 before anything is opened. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
 
 ### Options
 
@@ -42,6 +49,7 @@ usage: python -m opticmix_vision.viewer [-h] [--synthetic]
                                         [--recording RECORDING] [--loop]
                                         [--lossless] [--eye-size EYE_SIZE]
                                         [--device DEVICE]
+                                        [--usb-location LOCATION]
                                         [--backend {any,dshow,msmf}]
                                         [--layout {sbs,tb,plane_pack}]
                                         [--lr-order {first_is_left,first_is_right}]
@@ -218,6 +226,7 @@ see the recording with its seek bar.
 ```bash
 python -m opticmix_vision.explorer                # finds the Weevia S1 if it is connected
 python -m opticmix_vision.explorer --synthetic    # no camera
+python -m opticmix_vision.explorer --usb-location "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"   # one of two Weevia S1
 ```
 
 ### Options
@@ -225,12 +234,25 @@ python -m opticmix_vision.explorer --synthetic    # no camera
 From `python -m opticmix_vision.explorer --help`:
 
 ```text
-usage: opticmix-explorer [-h] [--synthetic]
+usage: opticmix-explorer [-h] [--synthetic] [--usb-location LOCATION]
 
 options:
-  -h, --help   show this help message and exit
-  --synthetic  run on generated frames, with no camera attached
+  -h, --help            show this help message and exit
+  --synthetic           run on generated frames, with no camera attached
+  --usb-location LOCATION
+                        open the Weevia S1 plugged in at this USB location, to
+                        choose between two that share a name
+                        (DeviceConfig.weevia_s1(usb_location=...)); as
+                        examples/list_devices.py or python -m
+                        opticmix_vision.doctor (location) prints it; no Weevia
+                        S1 there, or an empty one: exit code 2. Windows only:
+                        the explorer lists no cameras on Linux. Not a serial
+                        number: it changes when the camera is plugged into
+                        another port. Picking by USB location: run without a
+                        camera only (made-up device lists)
 ```
+
+`--usb-location` (Windows only) leaves in the device list only the Weevia S1 at that USB location, finds it again there each time it opens it, shows that camera's USB details next to it, and the Settings window reads and writes that camera's controls. No Weevia S1 there, or an empty location, exits with code 2 before the window opens. Two cameras of one name, without `--usb-location`, are listed with their USB locations; the one chosen is the one opened and written to. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
 
 The explorer has no keyboard shortcuts; everything is a button or a list.
 
@@ -284,3 +306,7 @@ Run `python -m opticmix_vision.doctor` and paste its output into an issue; it do
 See [When something goes wrong](../README.md#when-something-goes-wrong) in the package README. The viewer
 prints `[viewer] could not open the camera: …` with the SDK's message when it cannot open the camera; the
 explorer shows the message over the video with `ERROR` — press the refresh button to look again.
+
+## Rust
+
+- The viewer and the explorer: no Rust example yet.

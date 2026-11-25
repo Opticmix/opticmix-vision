@@ -1,6 +1,6 @@
 # opticmix-vision API reference
 
-Reference for the public Python API of `opticmix_vision` 0.0.6. It lists every
+Reference for the public Python API of `opticmix_vision` 0.0.7. It lists every
 public name, with its signature as `inspect.signature` reports it. What has been
 run against the camera, and on which platform, is stated in [README.md](README.md)
 and not repeated here.
@@ -38,7 +38,7 @@ works. `opticmix_vision.__all__`:
 
 | Name | Defined in |
 |---|---|
-| `__version__` | package — the version string, `"0.0.6"` |
+| `__version__` | package — the version string, `"0.0.7"` |
 | `Device`, `DeviceConfig`, `DeviceError`, `EndOfRecording`, `NegotiatedMode`, `StereoFrame`, `split_stereo`, `LAYOUTS`, `LR_ORDERS` | [`opticmix_vision.device`](#opticmix_visiondevice) |
 | `LedControl`, `LedControlUnavailable`, `DEFAULT_LED_PROP` | [`opticmix_vision.led`](#opticmix_visionled) |
 | `Controls`, `ControlInfo`, `WriteResult`, `ControlsUnavailable`, `ControlStateError`, `CONTROLS`, `write_counts`, `reset_write_counts` | [`opticmix_vision.controls`](#opticmix_visioncontrols) |
@@ -149,14 +149,17 @@ Class method. The settings for a Weevia S1, with the camera found by name:
   asks for `backend="msmf"` or `backend="dshow"`. `Device.open()` also refuses a
   device that `backend="any"` opened by index on Windows through any other backend.
 - Linux: the device is `devices.find_v4l2_node("WN Dual Camera")` and `backend`
-  defaults to `"v4l2"`. As the README puts it: "Linux name lookup: implemented, not
-  yet run on the camera."
+  defaults to `"v4l2"`. As the README puts it: "Linux name lookup:
+  run with the camera once (one PC, one camera, 2026-11-25)."
 - Passing `device=` skips the lookup.
 - `usb_location=`: with two Weevia S1 connected, the one at that USB location
   (`DeviceInfo.usb_location` as `examples/list_devices.py` prints it; on Linux the USB
   device's sysfs name, e.g. `1-4.2`) — passed to the lookup of the backend it opens
   with (`resolve_by_name(..., usb_location=)` or `find_v4l2_node(..., usb_location=)`).
-  Passing it with `device=` raises `ValueError`. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+  The location is turned into the backend's index (or node) when the config is made, and the
+  camera is opened by that index: a camera plugged in or out in between can leave that index
+  to another device (the tools' `--usb-location` works the same way).
+  Passing it with `device=` raises `ValueError`. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 
 Raises `DeviceError` when no camera, or more than one, matches the name (and the
 USB location, when given).
@@ -401,6 +404,20 @@ that is not available, or on other backends, they go through OpenCV
 (`Controls.backend_note` says why). Raises `DeviceError` before `open()`, and for a
 recording (its control values are in `recording_info["controls"]`).
 
+On Linux (V4L2) the OpenCV path also asks the driver for each control's range and
+default (`VIDIOC_QUERYCTRL` on a second, read-only handle to the device node).
+This only adds information: `Controls.describe()` gives `minimum`, `maximum`,
+`step` and `default` for the controls the driver reports, `Controls.driver_names`
+says which those are, and `set()` / `set_many()` refuse a value outside a range
+the driver reports before anything is sent. `names()`, `get()`, `set()` and
+presets otherwise work as in 0.0.6, through OpenCV. `reset_to_defaults()` still
+writes nothing on Linux: the driver's defaults are shown, not written
+(`plan_reset()` is empty, `Controls.writes_defaults` is `False`). If the driver
+cannot be asked, there are no ranges or defaults, as before, and
+`Controls.backend_note` says why. Run with the camera on Linux once (one PC, one camera, 2026-11-25, from
+source before release): the driver answered on the read-only handle, also while streaming. Camera controls on
+Linux remain not verified and not supported.
+
 #### `Device.calibration`
 
 Property. The `StereoCalibration` installed with
@@ -457,12 +474,13 @@ Compatibility alias of [`controls.reset_write_counts()`](#reset_write_counts---n
 Listing connected cameras and picking one by name. The camera reports no USB
 serial number and device indexes shift when another camera is plugged in, so
 selection is by name — and, when two cameras share the name, by USB location.
-`list_devices`, `resolve_by_name`, `pick_by_usb_location` and `list_modes` are for
-Windows; `find_v4l2_node` is for Linux.
+`list_devices` is for Windows and Linux (`backend="v4l2"`, the default on Linux);
+`resolve_by_name`, `pick_by_usb_location` and `list_modes` are for Windows;
+`find_v4l2_node` is for Linux.
 
-A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 
-### `DeviceInfo(index: int, name: str, usb_location: str | None = None)`
+### `DeviceInfo(index: int, name: str, usb_location: str | None = None, vid: int | None = None, pid: int | None = None, bcd_device: int | None = None, link_speed: str | None = None)`
 
 A video device: its index in the list it came from (DirectShow, or Media Foundation
 with `backend="msmf"`; each in the order OpenCV's backend of that name uses), its
@@ -473,7 +491,47 @@ the device — for example `PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)`, the 
 string `python -m opticmix_vision.doctor` prints as `location`. The device is found
 from its DirectShow DevicePath (ffmpeg's "Alternative name") or its Media Foundation
 symbolic link. `None` when the device is not a present USB device (a virtual camera,
-for example) or the location cannot be read.
+for example) or the location cannot be read. Linux (`list_devices(backend="v4l2")`):
+the index is the N of `/dev/videoN`, the name the node's sysfs `name`, and
+`usb_location` the sysfs name of the USB device the node belongs to
+(`/sys/class/video4linux/videoN/device` and its parents, the nearest with an
+`idVendor` file), for example `2-1` — the `location` the doctor prints on Linux.
+
+The other four describe the same USB device, read the way the doctor reads them and
+without opening the device; each is `None` when it cannot be read:
+
+- `vid`, `pid`, `bcd_device` (`int`): the USB vendor ID, product ID and device
+  revision (`idVendor`, `idProduct`, `bcdDevice`, the last in binary-coded decimal),
+  from the USB device's hardware IDs in the device tree
+  (`USB\VID_1D6B&PID_0200&REV_0409` gives `0x1D6B`, `0x0200`, `0x0409`) — the
+  doctor's `VID:PID` and "USB device revision (bcdDevice)". `bcd_device` is not a
+  firmware version: how it relates to the firmware version has not been verified.
+  `None` when the device is not a present USB device or its hardware IDs carry no
+  `VID_…&PID_…&REV_…`.
+- `link_speed` (`str`): the speed of the USB link as the hub driver the device is
+  plugged into reports it for that port (asked as Microsoft's USBView asks; the
+  doctor's "link speed"): `"Low"` (1.5 Mb/s), `"Full"` (12 Mb/s), `"High"`
+  (480 Mb/s), `"Super"` (5 Gb/s) or `"Super+"` (10 Gb/s or more). `None` when the
+  hub cannot be asked, when the hub's port holds another device, or when `vid` and
+  `pid` could not be read. `"Low"`, `"Full"` or `"High"` is what the doctor reports
+  as a finding: the README's measured figures were over SuperSpeed and USB 2 is not
+  qualified — connect the camera to a USB 3 port directly.
+
+`list_devices()` fills them on Windows and, with `backend="v4l2"`, on Linux, where
+they come from the USB device's sysfs folder: `idVendor`, `idProduct` and
+`bcdDevice` (hex) and `speed` (Mb/s: 1.5 `"Low"`, 12 `"Full"`, 480 `"High"`, 5000
+`"Super"`, more than 5000 `"Super+"`), read by the function the doctor reads them
+with, so the two give one value. Picking from a list (`pick_by_usb_location`) keeps
+them. `resolve_by_name()`, which `DeviceConfig.weevia_s1()` uses to find the camera
+before opening it on Windows, reads the USB location only, as 0.0.6 did — no
+hardware IDs and no hub query before opening — so the `DeviceInfo` it returns has
+them `None`; on Linux `DeviceConfig.weevia_s1()` uses `find_v4l2_node`, which reads
+the USB location only too. A `DeviceInfo` you build yourself has them `None` unless
+you pass them. Not reported by the camera, so there is no field for
+them: a USB serial number, a firmware version (no verified way to read it) and a
+temperature (no readout is known). Reading the USB IDs and the link speed into
+these fields has been run without a camera only (made-up device lists; on Linux
+made-up sysfs trees); it has not been run with the camera.
 
 ### `Mode(fourcc: str, width: int, height: int, max_fps: float)`
 
@@ -495,11 +553,13 @@ number they cannot be told apart by name, so none is picked. When every match ha
 USB location, the message lists the locations and says to pick one by
 `usb_location`.
 
-### `list_devices(*, backend: str = "dshow") -> list[DeviceInfo]`
+### `list_devices(*, backend: str | None = None) -> list[DeviceInfo]`
 
-Video devices in the order a Windows capture backend lists them; the index is the one
+Video devices in the order a capture backend lists them; the index is the one
 OpenCV's backend of that name takes. Built-in webcams are included.
 
+- `backend=None` (the default): `"v4l2"` on Linux, `"dshow"` elsewhere — on Windows
+  the default list is DirectShow's, as before.
 - `backend="dshow"`: DirectShow. Uses `ffmpeg` when it is on `PATH`, otherwise
   enumerates DirectShow directly; when that fails too, returns an empty list.
 - `backend="msmf"`: Media Foundation's video capture sources (`MFEnumDeviceSources`
@@ -510,20 +570,32 @@ OpenCV's backend of that name takes. Built-in webcams are included.
   in between listing and opening can shift it. Run with the camera once (one PC, one
   camera, 2026-11-24): it listed the camera by name; `resolve_by_name(backend="msmf")`
   run without a camera only.
+- `backend="v4l2"`: Linux. The video capture nodes in `/sys/class/video4linux`,
+  chosen as `find_v4l2_node` chooses them (sysfs `index` 0, so a UVC camera's
+  metadata node is left out), in `/dev/videoN` order; the index is N, the device
+  `DeviceConfig(device=N, backend="v4l2")` opens (OpenCV's `CAP_V4L2` opens
+  `/dev/videoN`). Each carries its USB device's sysfs name and its IDs and link speed
+  from sysfs (see `DeviceInfo`). Reads sysfs only; opens no device. An empty list off
+  Linux. Run without a camera only (made-up sysfs trees); not run with the camera on Linux.
 
 The two lists can be in a different order: on one PC with one camera (2026-11-24), `devices.list_devices(backend="msmf")` and `list_devices()` returned the same three cameras in a different order, once. An index goes only with the backend whose list it came from.
 `examples/list_devices.py --backend msmf` prints the Media Foundation list, and
 `python -m opticmix_vision.doctor` prints both. `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run without a camera only (made-up lists); they have not been run with the camera. Any other `backend`
-raises `ValueError`.
+raises `ValueError`. An extension (`opticmix_vision._core`) built from an older source
+than these Python files raises `ControlsUnavailable` saying to rebuild it.
 
 ### `resolve_by_name(needle: str, *, usb_location: str | None = None, backend: str = "dshow") -> DeviceInfo`
 
 The one device in `list_devices(backend=backend)` whose name contains `needle`
 (case-insensitive), Windows. Raises `NoMatch` or `MultipleMatches`. With
 `usb_location`, only the device at that USB location counts
-(`pick_by_usb_location`); an empty or blank one raises `ValueError`.
-Picking a camera by USB location has been run without a camera only (made-up
-device lists); it has not been run with a camera, and not run with two cameras.
+(`pick_by_usb_location`); an empty or blank one raises `ValueError`. It reads the
+USB location only, as 0.0.6 did (it is how `DeviceConfig.weevia_s1()` finds the
+camera before opening it), so `vid`, `pid`, `bcd_device` and `link_speed` of what it
+returns are `None`; `list_devices()` has them.
+Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera
+connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a
+location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 
 ```python
 from opticmix_vision.devices import resolve_by_name
@@ -542,8 +614,9 @@ location (`None` where it could not be read), or `MultipleMatches`; an empty or
 blank `usb_location` raises `ValueError`. A USB location is not a serial number: it
 names the port the camera is plugged into, and it changes when the camera is plugged
 into another port. Using two cameras at the same time is not supported.
-Picking a camera by USB location has been run without a camera only (made-up
-device lists); it has not been run with a camera, and not run with two cameras.
+Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera
+connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a
+location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 
 ```python
 from opticmix_vision.devices import list_devices, pick_by_usb_location
@@ -569,8 +642,8 @@ more than one node with the same name; the capture node is the one whose sysfs
 device the node belongs to (`/sys/class/video4linux/videoN/device` and its parents,
 the nearest with an `idVendor` file), for example `1-4.2`, compared ignoring case —
 the `location` the doctor prints on Linux; an empty or blank one raises
-`ValueError`. Not run on Linux with a camera. Picking a camera by USB location has been run without a camera only (made-up
-device lists); it has not been run with a camera, and not run with two cameras.
+`ValueError`. Run on Linux with one camera once (opened at its location; a location with no camera refused). Not run with
+two cameras.
 
 ---
 
@@ -641,6 +714,31 @@ loading.
 Control names usable on this camera, in table order — only those the backend
 supports.
 
+Whether the camera itself reports a control: on Windows (DirectShow) the backend
+reads each control from the device, so a control the camera lacks is not in
+`names()`. The OpenCV path lists every control OpenCV can address, whether or not
+the camera has it; on Linux it also asks the driver, and `driver_names` holds the
+controls the driver reported (with their ranges in `describe()`). `driver_names`
+is `None` when the backend did not ask the driver.
+
+#### `Controls.driver_names`
+
+Read only. `frozenset[str] | None`: names of the controls the camera's driver
+reported when asked — on Windows (DirectShow) the same as `names()`; on Linux
+(V4L2) those `VIDIOC_QUERYCTRL` answered for; `None` for the OpenCV path on
+Windows, the simulated controls, and on Linux when the driver could not be asked.
+
+#### `Controls.writes_defaults`
+
+Read only. `bool`: `False` when `reset_to_defaults()` writes nothing and
+`plan_reset()` is empty whatever the device reports — the OpenCV path on Linux
+(V4L2), where camera control writes are not verified. The explorer's Reset to
+defaults, `presets load defaults` (exit status 1) and the viewer's `p`/`P` on the
+defaults then say that the defaults are shown, not written. The Rust crate has the
+same `Controls::writes_defaults()`: `false` for its V4L2 controls on Linux, where
+its `plan_reset()` is empty and `reset_to_defaults()` writes nothing (0.0.6 wrote
+them); not run with the camera on Linux.
+
 #### `Controls.get(name: str) -> Any`
 
 The device's current value. `None` when the backend cannot read it.
@@ -695,7 +793,7 @@ What `reset_to_defaults()` would change, as `{name: (current, default)}`. Writes
 nothing. Auto/manual modes are not touched, values currently in auto are left out,
 and controls whose default the device does not report are left out. Controls
 expected to have no effect on a monochrome sensor are included only with
-`include_mono=True`.
+`include_mono=True`. Empty on Linux (V4L2), where `reset_to_defaults()` writes nothing.
 
 #### `Controls.reset_to_defaults(*, include_mono: bool = False) -> list[WriteResult]`
 
@@ -1308,6 +1406,16 @@ Holds the current frame: `read()` returns it again until `resume()`.
 
 Plays on from the current frame.
 
+**Frames out of a recording.** `examples/export_recording.py` reads a recording through
+`Device(DeviceConfig.recording(path))` with `recorded_time = True` and writes, into a new or empty folder, each
+frame as a left/right PNG pair (`left_000123.png`, 123 = the frame's number in the recording), `pairs.csv`
+(`index, host_ns, driver_ns, driver_clock, left, right`, as `examples/save_stereo_pairs.py` writes it, with the
+times recorded in the recording's CSV), a copy of the recording's JSON as `capture_info.json`, and with `--npz`
+`frames.npz` (`left`, `right`, `host_ns`, as `examples/capture_dataset_npz.py` writes it). From an MJPG recording
+the PNGs hold what it decodes to, not the camera's pixel values. A recording without its `.csv` has no recorded
+times: `host_ns` in `pairs.csv` is then frame number / the file's frame rate and the driver columns are empty, and
+the example prints a line saying so. Run with generated recordings, and with a camera recording once on Linux, from source before release; not run with a camera recording on Windows.
+
 ---
 
 ## `opticmix_vision.calibration`
@@ -1676,13 +1784,13 @@ positional arguments:
 | `add FILE` | `add(FILE)`; prints the serial, the status and the installed path |
 | `list` | prints `store_dir()` and the installed serials |
 | `show [SERIAL\|FILE] [--json] [--synthetic]` | `show(...)` as text: the file's path, `installed file, not matched to this camera (no USB serial)`, its sha256 and whether `Device.calibration` uses it; for each eye the model, size (and the mode it is for), fx fy cx cy and D (k1..k4); then the baseline, t, all nine values of R, the Rodrigues vector in rad and in degrees, the rotation angle and axis, and the file's `meta`. With no file installed or several, it says what to do (exit code 1). `--json` prints the dict `show()` returns, and on an error `{"error": "<the message>"}` (the message also on stderr, exit code 1). `--synthetic` shows a generated calibration instead of a file. Opens no camera |
-| `check [--file FILE]... [--all] [--frames N] [--pairs-dir DIR] [--synthetic]` | opens the camera with `DeviceConfig.weevia_s1()`, reads `N` pairs (`read_pairs`, default 10, at least `MIN_PAIRS`), closes it, then prints `CheckResult.summary()` for the installed file or for `FILE`. With more than one file — several installed, `--all` (every installed file), or `--file` given more than once — it prints one row per file (serial and source, median, 95th percentile, share within 1 px, share of positive disparity, points) from `compare_pairs` and names the smallest median without calling it the camera's file. `--pairs-dir` reads saved pairs (`load_pairs`) instead of the camera. `--synthetic` uses generated frames of a generated calibration (`SyntheticPlaneSource`) instead of the camera; with `--file`, checks that file against them |
+| `check [--file FILE]... [--all] [--frames N] [--pairs-dir DIR] [--synthetic] [--usb-location LOCATION]` | opens the camera with `DeviceConfig.weevia_s1()` (with `--usb-location`, the Weevia S1 at that USB location: `DeviceConfig.weevia_s1(usb_location=...)`; not with `--pairs-dir` or `--synthetic`; run without a camera only, not with two cameras), reads `N` pairs (`read_pairs`, default 10, at least `MIN_PAIRS`), closes it, then prints `CheckResult.summary()` for the installed file or for `FILE`. With more than one file — several installed, `--all` (every installed file), or `--file` given more than once — it prints one row per file (serial and source, median, 95th percentile, share within 1 px, share of positive disparity, points) from `compare_pairs` and names the smallest median without calling it the camera's file. `--pairs-dir` reads saved pairs (`load_pairs`) instead of the camera. `--synthetic` uses generated frames of a generated calibration (`SyntheticPlaneSource`) instead of the camera; with `--file`, checks that file against them |
 
 Exit code 0 on success, 1 on an error (message on stderr; when the camera is not
 found or stops, the message adds what to do and that `--pairs-dir` works without
 it), 2 for a command-line error (such as `--frames` below 5, or `show --synthetic`
-with a serial or file); `check` also exits 2 when there were too few matches to tell
-for every file. The commands print UTF-8.
+with a serial or file, or a `--usb-location` with no Weevia S1 there or an empty one); `check` also exits 2 when
+there were too few matches to tell for every file. The commands print UTF-8.
 
 ```
 python -m opticmix_vision.calib add S1-0042.json
@@ -1822,13 +1930,16 @@ positional arguments:
 |---|---|---|
 | `list [--model MODEL] [--all]` | no | prints `store_dir()`, the built-in `defaults` and each preset's name, model, time and note. By default only the presets of the connected model, when a Weevia S1 is in the device list (DirectShow list or sysfs, read without opening the camera); otherwise every preset. `--model` picks a model, `--all` shows every preset |
 | `show NAME\|FILE` | no | prints a preset's header and values |
-| `save NAME [--note TEXT] [--overwrite]` | yes, reads only | `save_preset(preset_path(NAME))`; refuses an existing name without `--overwrite` |
-| `load NAME\|FILE\|defaults [--dry-run] [--force] [--include-mono]` | yes | `--dry-run` prints `plan_preset()` (or `plan_reset()`) and writes nothing; otherwise `load_preset()` (or `reset_to_defaults()`) and prints each result with `kept`, what was not written and why, then this process's write count |
+| `save NAME [--note TEXT] [--overwrite] [--usb-location LOCATION]` | yes, reads only | `save_preset(preset_path(NAME))`; refuses an existing name without `--overwrite` |
+| `load NAME\|FILE\|defaults [--dry-run] [--force] [--include-mono] [--usb-location LOCATION]` | yes | `--dry-run` prints `plan_preset()` (or `plan_reset()`) and writes nothing; otherwise `load_preset()` (or `reset_to_defaults()`) and prints each result with `kept`, what was not written and why, then this process's write count |
 
-`save` and `load` take `--synthetic` to use simulated controls instead of a camera.
+`save` and `load` take `--synthetic` to use simulated controls instead of a camera, and `--usb-location LOCATION`
+to open the Weevia S1 at that USB location (`DeviceConfig.weevia_s1(usb_location=...)`), to choose between two that
+share a name: every control read and written is that camera's. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
 A `NAME` is looked up in `store_dir()` (a missing one says so and names the
 folder); an existing file or a path ending in `.json` is used as it is. Exit code 0 on success; 1 on an error (message on
-stderr) or when a loaded value was refused or not kept.
+stderr) or when a loaded value was refused or not kept; 2 for a command-line error, and for a `--usb-location` with
+no Weevia S1 there or an empty one (nothing opened, nothing written).
 
 ```
 python -m opticmix_vision.presets save bench --note "lab bench"
@@ -1887,13 +1998,14 @@ The report as the text the command prints.
 ### `main(argv: list[str] | None = None) -> int`
 
 The command line below. Returns 0 when the report was printed (problems are in the
-report, under Findings).
+report, under Findings); 2 for a command-line error, and for a `--usb-location` with no Weevia S1 there or an
+empty one (no report is printed).
 
 ### Command line: `python -m opticmix_vision.doctor`
 
 ```
 usage: python -m opticmix_vision.doctor [-h] [--open] [--synthetic] [--json] [--seconds SECONDS]
-                                        [--device DEVICE] [--timestamps FILE]
+                                        [--device DEVICE] [--usb-location LOCATION] [--timestamps FILE]
                                         [--backend {dshow,msmf,v4l2}] [--output FILE]
 
 options:
@@ -1902,6 +2014,14 @@ options:
   --json             print the report as JSON
   --seconds SECONDS  how long --open reads frames (default 3)
   --device DEVICE    with --open: the device index or /dev/videoN instead of finding it by name
+  --usb-location LOCATION
+                     with --open: open the Weevia S1 plugged in at this USB location, to choose
+                     between two that share a name (DeviceConfig.weevia_s1(usb_location=...));
+                     Windows: as examples/list_devices.py or python -m opticmix_vision.doctor
+                     (location) prints it; Linux: the USB device's sysfs name, e.g. 1-4.2; no
+                     Weevia S1 there, or an empty one: exit code 2. Not a serial number: it
+                     changes when the camera is plugged into another port. Picking by USB
+                     location: run without a camera only (made-up device lists)
   --timestamps FILE  with --open: write each frame's host time to a CSV file
   --backend {dshow,msmf,v4l2}
                      with --open: the OpenCV capture backend (default: the Weevia S1 default for
@@ -1914,12 +2034,17 @@ options:
 python -m opticmix_vision.doctor                  # paste the output into the issue
 python -m opticmix_vision.doctor --open           # also opens the camera, writes no control
 python -m opticmix_vision.doctor --open --backend msmf   # through OpenCV's Media Foundation backend: repeated images are a finding
+python -m opticmix_vision.doctor --open --usb-location "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"   # one of two Weevia S1
 python -m opticmix_vision.doctor --output report.json   # UTF-8 JSON file to attach
 python -m opticmix_vision.doctor --synthetic --open
 ```
 
 Use `--output` rather than `>` to save the report: in Windows PowerShell 5.1, `>`
 writes UTF-16, which `json.load` does not read as UTF-8.
+
+`--open --usb-location LOCATION` opens the Weevia S1 that `DeviceConfig.weevia_s1(usb_location=...)` finds at
+that USB location (with `--backend`, in that backend's list) and reads that camera's controls; not with `--device`
+or `--synthetic`. The report's Camera section then begins with that USB location and the device opened (`camera.usb_location` and `camera.device` in the JSON) and a line saying that the modes the camera advertises are not listed (ffmpeg asks by name). A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
 
 The explorer's top bar shows the same USB line for the Weevia S1 (VID:PID, USB
 device revision, link speed, no serial), read without opening the camera.
@@ -2141,6 +2266,7 @@ usage: python -m opticmix_vision.viewer [-h] [--synthetic]
                                         [--recording RECORDING] [--loop]
                                         [--lossless] [--eye-size EYE_SIZE]
                                         [--device DEVICE]
+                                        [--usb-location LOCATION]
                                         [--backend {any,dshow,msmf}]
                                         [--layout {sbs,tb,plane_pack}]
                                         [--lr-order {first_is_left,first_is_right}]
@@ -2161,6 +2287,7 @@ usage: python -m opticmix_vision.viewer [-h] [--synthetic]
 | `--lossless` | off | `v` records FFV1 `.mkv` (the pixel values the SDK delivered) instead of MJPG `.avi`; may not keep up with 90 fps |
 | `--eye-size WxH` | `320x200` | synthetic eye size |
 | `--device DEVICE` | none | camera index, or a path. Without it the Weevia S1 is found by name (`DeviceConfig.weevia_s1()`) |
+| `--usb-location LOCATION` | none | the Weevia S1 at this USB location, to choose between two that share a name: `DeviceConfig.weevia_s1(usb_location=...)` (with `--backend`, in that backend's list); the keys, `p`/`P` and `--preset` read and write that camera's controls. Windows: as `examples/list_devices.py` prints it; Linux: the USB device's sysfs name, e.g. `1-4.2`. None there (the message lists each device's name and USB location), an empty one, or given with `--device`, `--synthetic` or `--recording`: exit code 2. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras |
 | `--backend {any,dshow,msmf}` | `dshow` | OpenCV backend, with or without `--device` (without it the Weevia S1 is looked up in that backend's list: `DeviceConfig.weevia_s1(backend=...)`; Linux: `v4l2` unless given). With `msmf` the camera controls (keys, presets, defaults) go through the OpenCV fallback, which has fewer controls. `--backend` without `--device`: run without a camera only |
 | `--layout {sbs,tb,plane_pack}` | none | required with `--device` |
 | `--lr-order {first_is_left,first_is_right}` | none | required with `--device` |
@@ -2183,7 +2310,7 @@ back/forward, `[`/`]` one second back/forward, `-`/`+` half/double speed, and th
 under the image seeks.
 
 Exit code 0 on success; 2 when the camera cannot be opened or a frame read fails
-(one line on stderr). `--device` without `--layout` and `--lr-order` exits with a
+(one line on stderr), and for a `--usb-location` with no Weevia S1 there. `--device` without `--layout` and `--lr-order` exits with a
 message.
 
 ```
@@ -2215,9 +2342,24 @@ Runs the window with the arguments below. Returns the exit code.
 ### Command line: `python -m opticmix_vision.explorer`
 
 ```
-usage: opticmix-explorer [-h] [--synthetic]
+usage: opticmix-explorer [-h] [--synthetic] [--usb-location LOCATION]
 
 options:
-  -h, --help   show this help message and exit
-  --synthetic  run on generated frames, with no camera attached
+  -h, --help            show this help message and exit
+  --synthetic           run on generated frames, with no camera attached
+  --usb-location LOCATION
+                        open the Weevia S1 plugged in at this USB location, to
+                        choose between two that share a name
+                        (DeviceConfig.weevia_s1(usb_location=...)); as
+                        examples/list_devices.py or python -m
+                        opticmix_vision.doctor (location) prints it; no Weevia
+                        S1 there, or an empty one: exit code 2. Windows only:
+                        the explorer lists no cameras on Linux. Not a serial
+                        number: it changes when the camera is plugged into
+                        another port. Picking by USB location: run without a
+                        camera only (made-up device lists)
 ```
+
+`--usb-location` (Windows only; on Linux, where the explorer lists no cameras, exit code 2): the device list holds only the Weevia S1 that `DeviceConfig.weevia_s1(usb_location=...)` finds there (the refresh button looks again; nothing there: the message says what is where), it is found again by that USB location at every open (not there: it is not opened, and the window shows the error), the USB line above it (VID:PID, revision, link speed) is that camera's, and the Settings window reads and writes that camera's controls. No Weevia S1 at that location, or an empty one: exit code 2 before the window opens; not with `--synthetic`. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
+
+Without `--usb-location`, two cameras that share a name are listed with their USB locations (`WN Dual Camera · <USB location>`), the one chosen in the list is opened, found again by its USB location at every open (the list's order can change), and the Settings window writes to it; two of one name whose USB locations cannot be read are not opened (the window says to connect one at a time). With two of one name, or with `--usb-location`, the mode list is not asked of ffmpeg (it asks by name): the window opens 1600×800 MJPG and says why. Run without a camera only (made-up device lists); not run with two cameras.

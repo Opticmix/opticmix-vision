@@ -58,11 +58,10 @@ impl MfCapture {
 
 /// Picks one from the video device list (`devices::enumerate_mf_video_devices` order) by `choose`.
 unsafe fn pick(cfg: &DeviceConfig) -> Result<(IMFActivate, String, Option<String>)> {
-    let named = sources()?;
-    let list: Vec<DeviceInfo> =
-        named.iter().enumerate().map(|(i, (_, n, l))| DeviceInfo::new(i, n.clone(), l.clone())).collect();
+    let named = sources(false)?; // the USB location only: opening needs no IDs or link speed
+    let list: Vec<DeviceInfo> = named.iter().map(|(_, d)| d.clone()).collect();
     let (i, usb_location) = choose(&cfg.device, &list)?;
-    Ok((named[i].0.clone(), named[i].1.clone(), usb_location))
+    Ok((named[i].0.clone(), list[i].name.clone(), usb_location))
 }
 
 /// The entry of the Media Foundation list `sel` names, and the USB location the controls look for (only with
@@ -195,7 +194,7 @@ impl Capture for MfCapture {
     /// (and by USB location when it was opened by one). Enumerates DirectShow directly (no ffmpeg child process). Two or more with the
     /// same name, opened by name, give `MultipleMatches`.
     fn controls_backend(&self) -> Result<Box<dyn Backend>> {
-        let list = crate::devices::list_dshow_devices()?;
+        let list = crate::devices::list_dshow_devices_with(false)?; // the USB location only
         let info = controls_device(&self.name, self.usb_location.as_deref(), &list)?;
         Ok(Box::new(DShowBackend::new(info.index, &EXPECTED_NAMES)?))
     }

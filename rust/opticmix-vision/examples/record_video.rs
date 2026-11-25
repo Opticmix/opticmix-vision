@@ -25,7 +25,9 @@
 //! late 0, estimated missed 0 (of which dropped by the write queue 0)
 //! ```
 //!
-//! Camera: not run with the camera yet. Writes to the camera: none (it reads every control for the JSON).
+//! Camera: run with the camera once (one PC, one camera, 2026-11-25): 10 s, 881 frames, estimated missed 5,
+//! dropped by the write queue 0; Rust and Python played the file back as 881 frames. On Linux once (one PC, one
+//! camera, 2026-11-25). Writes to the camera: none (it reads every control for the JSON).
 
 mod common;
 

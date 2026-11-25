@@ -30,7 +30,7 @@
 //! driver says it takes its time stamp (`driver_time_source`: start of exposure or end of frame). These are
 //! operating-system driver times, not a camera clock; whether they mark the exposure or the arrival of a frame
 //! is not known. This example has been run with the camera once on Windows (one PC, one camera,
-//! 2026-11-24); on Linux it has not been run with the camera.
+//! 2026-11-24); on Linux once (one PC, one camera, 2026-11-25, crate 0.0.6).
 //!
 //! Stall check: if one eye sends a byte-identical image `stall_frames` times in a row (default 90),
 //! `read()` returns an error naming the eye — on the units we have tested one eye's stream has

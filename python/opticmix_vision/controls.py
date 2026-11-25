@@ -56,6 +56,9 @@ VENDOR_MIN_COMMAND_GAP_S = 0.012
 GROUP_MIN_INTERVAL_S: dict[str, float] = {"exposure": VENDOR_MIN_COMMAND_GAP_S}   # between consecutive writes to the same group (= same UVC property)
 GLOBAL_MIN_GAP_S = VENDOR_MIN_COMMAND_GAP_S     # between any two writes, whatever the control
 WARN_AFTER_TOTAL = 3       # warn when this process's total write count reaches this number, then every this many after
+# What the explorer, `presets load defaults` and the viewer say when Controls.writes_defaults is False.
+DEFAULTS_NOT_WRITTEN = ("on Linux the camera's defaults are shown, not written - reset to defaults writes nothing "
+                        "(camera control writes on Linux are not verified)")
 
 Kind = Literal["int", "bool", "menu"]
 Effect = Literal["verified", "partial", "unverified", "none_expected_mono"]
@@ -248,7 +251,24 @@ class Controls:
         # The camera's USB name when the backend has confirmed it (DirectShow: 'WN Dual Camera'), "synthetic" for the
         # simulated controls, None when the backend cannot tell (OpenCV). Presets record it and check it on load.
         self.model: str | None = getattr(backend, "model", None)
+        self._writes_defaults: bool = getattr(backend, "writes_defaults", True)   # False: OpenCV on Linux (V4L2)
+        self._asks_each = inner is not None     # DirectShow: supports() reads each control from the device
+        keys = getattr(backend, "driver_keys", None)
+        self._driver_names = None if keys is None else frozenset(c.name for c in CONTROLS if c.key in keys)
         _live.add(self)
+
+    @property
+    def driver_names(self) -> frozenset[str] | None:
+        """Names of the controls the camera's driver reported when asked. Windows (DirectShow): names(), since each
+        control is read from the device. Linux (V4L2): those VIDIOC_QUERYCTRL answered for. None when the backend does
+        not ask the driver (the OpenCV fallback without that query, the simulated controls). Read only."""
+        return frozenset(self.names()) if self._asks_each else self._driver_names
+
+    @property
+    def writes_defaults(self) -> bool:
+        """False when reset_to_defaults() writes nothing and plan_reset() is empty whatever the device reports: the
+        OpenCV path on Linux (V4L2), where control writes are not verified. Read only."""
+        return self._writes_defaults
 
     def names(self) -> tuple[str, ...]:
         """Control names usable on this camera, in table order, only those the backend supports."""
@@ -322,12 +342,17 @@ class Controls:
 
         The mode (auto/manual) is not touched, and values currently in auto are left out (same as the
         AMCap Default button). Controls with no effect on a monochrome sensor are included only with
-        include_mono=True. Controls for which the device reports no default are left out.
+        include_mono=True. Controls for which the device reports no default are left out. Empty on Linux (V4L2):
+        the driver's defaults are shown by describe() but not written.
         """
+        if not self._writes_defaults:
+            return {}
         return {n: (c, d) for n, c, d in self._core.plan_reset(include_mono)}
 
     def reset_to_defaults(self, *, include_mono: bool = False) -> list[WriteResult]:
-        """Writes plan_reset(). Does not wait."""
+        """Writes plan_reset(). Does not wait. Writes nothing on Linux (V4L2)."""
+        if not self._writes_defaults:
+            return []
         _sync_guard()
         return [_result(t) for t in self._core.reset_to_defaults(include_mono)]
 

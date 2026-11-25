@@ -34,7 +34,7 @@ FFMPEG_OPTIONS = """[in#0] DirectShow video device options (from video devices)
 
 
 def test_lists_video_devices_in_enumeration_order():
-    got = list_devices(_raw=FFMPEG_DEVICES)
+    got = list_devices(backend="dshow", _raw=FFMPEG_DEVICES)
     assert got == [
         DeviceInfo(index=0, name="WN Dual Camera"),
         DeviceInfo(index=1, name="Example Front Webcam"),
@@ -43,7 +43,7 @@ def test_lists_video_devices_in_enumeration_order():
 
 
 def test_audio_devices_are_not_cameras():
-    assert all("Microphone" not in d.name for d in list_devices(_raw=FFMPEG_DEVICES))
+    assert all("Microphone" not in d.name for d in list_devices(backend="dshow", _raw=FFMPEG_DEVICES))
 
 
 def test_resolve_by_name_is_case_insensitive_substring():
@@ -138,8 +138,8 @@ def test_msmf_lookup_has_the_directshow_rules_for_none_and_two(monkeypatch):
 
 
 def test_an_unknown_listing_backend_is_refused():
-    with pytest.raises(ValueError, match="'dshow' or 'msmf'"):
-        list_devices(backend="v4l2")
+    with pytest.raises(ValueError, match="'dshow', 'msmf' or 'v4l2'"):
+        list_devices(backend="avfoundation")
 
 
 def test_os_name_reads_the_media_foundation_list_for_msmf(monkeypatch):
@@ -184,7 +184,7 @@ def _directshow(monkeypatch, listed):
 
 def test_listed_devices_carry_their_usb_location(monkeypatch):
     _directshow(monkeypatch, TWO_WEEVIA)
-    assert list_devices() == [DeviceInfo(0, "WN Dual Camera", LOC_A), DeviceInfo(1, "Example Webcam"),
+    assert list_devices(backend="dshow") == [DeviceInfo(0, "WN Dual Camera", LOC_A), DeviceInfo(1, "Example Webcam"),
                               DeviceInfo(2, "WN Dual Camera", LOC_B)]
 
 
@@ -307,3 +307,219 @@ def test_v4l2_node_with_no_usb_device_has_no_location(tmp_path):
     with pytest.raises(NoMatch, match=r"\[\('/dev/video0 WN Dual Camera', None\)\]\. "
                                       r"None: the USB location could not be read$"):
         find_v4l2_node("WN Dual Camera", usb_location="1-2", _sysfs=root)
+
+
+# ---------------------------------------------------------------- USB IDs and link speed: made-up lists, nothing is enumerated
+# (name, USB location, vid, pid, bcd_device, link_speed) as the Rust core lists them; the webcam's could not be read.
+DETAILED = [("WN Dual Camera", LOC_A, 0x1D6B, 0x0200, 0x0409, "Super"), ("Example Webcam", None, None, None, None, None)]
+WEEVIA_A = DeviceInfo(0, "WN Dual Camera", LOC_A, vid=0x1D6B, pid=0x0200, bcd_device=0x0409, link_speed="Super")
+
+
+def test_device_info_usb_ids_and_link_speed_default_to_none():
+    d = DeviceInfo(0, "WN Dual Camera", LOC_A)
+    assert (d.vid, d.pid, d.bcd_device, d.link_speed) == (None, None, None, None)
+
+
+def test_listed_devices_carry_their_usb_ids_and_link_speed(monkeypatch):
+    _directshow(monkeypatch, DETAILED)
+    assert list_devices(backend="dshow") == [WEEVIA_A, DeviceInfo(1, "Example Webcam")]
+
+
+def test_picking_keeps_the_usb_ids_and_link_speed(monkeypatch):
+    # pick_by_usb_location goes through the Rust core and back: nothing may be dropped on the way
+    _directshow(monkeypatch, DETAILED)
+    assert pick_by_usb_location("WN Dual Camera", LOC_A, list_devices(backend="dshow")) == WEEVIA_A
+    mine = DeviceInfo(3, "Example", "X", 1, 2, 3, "Full")
+    assert pick_by_usb_location("Example", "x", [mine]) == mine
+
+
+def test_the_core_rows_give_every_field(monkeypatch):
+    # the rows of the Rust core's DirectShow and Media Foundation lists, as the extension returns them
+    from opticmix_vision import _native, devices
+    asked = _fake_core(monkeypatch)
+
+    def no_ffmpeg():
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
+    assert list_devices() == [WEEVIA_A]
+    assert list_devices(backend="msmf") == [WEEVIA_A]
+    assert asked == [("list_dshow_devices", True), ("list_mf_devices", True)]
+
+
+def _fake_core(monkeypatch) -> list:
+    """The real extension with made-up lists that answer as the Rust core does: the Weevia S1 at LOC_A, and its IDs
+    and link speed only when they are asked for. Returns the (list, ids_and_link) of every call. Windows."""
+    from opticmix_vision import _native
+    real, asked = _native.core(), []
+
+    def lister(name):
+        def rows(*raw, ids_and_link=True):
+            asked.append((name, ids_and_link))
+            return [(0, "WN Dual Camera", LOC_A, *((0x1D6B, 0x0200, 0x0409, "Super") if ids_and_link else (None,) * 4))]
+        return staticmethod(rows)
+
+    class Core:
+        list_dshow_devices, list_mf_devices, list_devices = (lister(n) for n in
+                                                             ("list_dshow_devices", "list_mf_devices", "list_devices"))
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+    monkeypatch.setattr(_native, "core", Core)
+    monkeypatch.setattr(sys, "platform", "win32")
+    return asked
+
+
+def test_finding_the_camera_to_open_reads_the_usb_location_only(monkeypatch):
+    # DeviceConfig.weevia_s1() (and presets) find the camera through resolve_by_name: its lists are asked for the USB
+    # location only, as in 0.0.6 — no hardware IDs, no hub query in the steps before opening; list_devices() asks for all
+    from opticmix_vision import devices
+    from opticmix_vision.device import DeviceConfig
+    asked = _fake_core(monkeypatch)
+
+    def no_ffmpeg():
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
+    for backend in ("dshow", "msmf", "any"):
+        assert DeviceConfig.weevia_s1(backend=backend).device == 0
+    assert resolve_by_name("WN Dual Camera", usb_location=LOC_A) == DeviceInfo(0, "WN Dual Camera", LOC_A)
+    assert asked == [("list_dshow_devices", False), ("list_mf_devices", False), ("list_mf_devices", False),
+                     ("list_dshow_devices", False), ("list_dshow_devices", False)]
+    asked.clear()
+    assert list_devices() == [WEEVIA_A] and asked == [("list_dshow_devices", True)]       # the flag is not left set
+    monkeypatch.setattr(devices, "_ffmpeg_devices", lambda: "made-up ffmpeg listing")    # through ffmpeg
+    asked.clear()
+    resolve_by_name("WN Dual Camera")
+    list_devices()
+    assert asked == [("list_devices", False), ("list_devices", True)]
+
+
+def test_the_extension_takes_whether_to_read_the_ids_and_link_speed():
+    # the real extension: with ids_and_link=False a made-up ffmpeg listing gives the same rows, the location only
+    from opticmix_vision import _native
+    rows = _native.core().list_devices(FFMPEG_DEVICES, ids_and_link=False)
+    assert rows[0] == (0, "WN Dual Camera", None, None, None, None, None) and len(rows) == 3
+
+
+def test_an_older_extension_says_to_rebuild_it(monkeypatch):
+    # an extension built from an older source: device rows of three, no ids_and_link argument
+    from opticmix_vision import _native, devices
+    from opticmix_vision.controls import ControlsUnavailable
+    real = _native.core()
+
+    class Old:
+        def __getattr__(self, name):                # everything else: the real extension
+            return getattr(real, name)
+
+        @staticmethod
+        def list_dshow_devices():
+            return [(0, "WN Dual Camera", LOC_A)]
+        list_mf_devices = list_dshow_devices
+
+        @staticmethod
+        def list_devices(raw):
+            return [(0, "WN Dual Camera", LOC_A)]
+
+    class OldRows(Old):                       # takes the argument but gives rows of three
+        list_dshow_devices = list_mf_devices = staticmethod(lambda ids_and_link=True: Old.list_dshow_devices())
+        list_devices = staticmethod(lambda raw, ids_and_link=True: Old.list_devices(raw))
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def no_ffmpeg():
+        raise FileNotFoundError("ffmpeg")
+    for core in (Old, OldRows):
+        monkeypatch.setattr(_native, "core", core)
+        monkeypatch.setattr(devices, "_ffmpeg_devices", lambda: "made-up ffmpeg listing")
+        for call in (lambda: list_devices(), lambda: list_devices(backend="msmf"), lambda: resolve_by_name("WN")):
+            with pytest.raises(ControlsUnavailable, match=r"older source .* rebuild"):
+                call()
+        monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)        # enumerating DirectShow directly
+        with pytest.raises(ControlsUnavailable, match=r"older source .* rebuild"):
+            list_devices()
+
+
+# ---------------------------------------------------------------- Linux list: list_devices(backend="v4l2"), made-up sysfs
+# Node names, USB location and values as the camera showed them on Linux (2026-11-25, one mini PC, one camera, not
+# opened): /dev/video0 (index 0) and /dev/video1 (index 1, the metadata node) on the USB device 2-1 (interface
+# 2-1:1.0), idVendor 1d6b, idProduct 0200, bcdDevice 0409, speed 5000.
+GADGET = "Webcam gadget: WN Dual Camera"
+WEEVIA_USB = {"idVendor": "1d6b", "idProduct": "0200", "bcdDevice": "0409", "speed": "5000"}
+ONE_CAMERA = {"video0": (GADGET, 0, "2-1"), "video1": (GADGET, 1, "2-1")}
+
+
+def _sysfs_tree(tmp_path, usb, nodes):
+    """sysfs as Linux lays it out. `usb`: {USB device: {file: value}} (idVendor, idProduct, bcdDevice, speed); `nodes`:
+    {videoN: (name, index, USB device or None)}, videoN/device -> the USB device's interface folder (2-1:1.0 on Linux;
+    ':' is not allowed in a Windows file name, so 2-1_1.0 here). Returns the class folder (/sys/class/video4linux)."""
+    cls = tmp_path / "class"
+    for dev, files in usb.items():
+        (tmp_path / "devices" / dev / f"{dev}_1.0").mkdir(parents=True)
+        for f, v in files.items():
+            (tmp_path / "devices" / dev / f).write_text(v + "\n")
+    for node, (name, index, dev) in nodes.items():
+        (cls / node).mkdir(parents=True)
+        (cls / node / "name").write_text(name + "\n")
+        (cls / node / "index").write_text(f"{index}\n")
+        if dev:
+            _link(tmp_path / "devices" / dev / f"{dev}_1.0", cls / node / "device")
+    return str(cls)
+
+
+def test_v4l2_list_has_the_capture_node_of_one_camera_with_its_usb_ids_and_link_speed(tmp_path):
+    root = _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB}, ONE_CAMERA)
+    assert list_devices(backend="v4l2", _sysfs=root) == [
+        DeviceInfo(0, GADGET, "2-1", vid=0x1D6B, pid=0x0200, bcd_device=0x0409, link_speed="Super")]
+
+
+def test_v4l2_list_has_two_cameras_at_their_usb_locations_in_node_order(tmp_path):
+    root = _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB, "1-4.2": {**WEEVIA_USB, "speed": "480"},
+                                  "1-5": {"idVendor": "636e", "idProduct": "0bda", "bcdDevice": "0007", "speed": "480"}},
+                       {**ONE_CAMERA, "video2": ("Laptop webcam", 0, "1-5"), "video3": ("Laptop webcam", 1, "1-5"),
+                        "video10": (GADGET, 0, "1-4.2"), "video11": (GADGET, 1, "1-4.2")})
+    got = list_devices(backend="v4l2", _sysfs=root)
+    assert [(d.index, d.name, d.usb_location, d.vid, d.link_speed) for d in got] == [
+        (0, GADGET, "2-1", 0x1D6B, "Super"), (2, "Laptop webcam", "1-5", 0x636E, "High"),
+        (10, GADGET, "1-4.2", 0x1D6B, "High")]
+    # the index is the N DeviceConfig(device=N, backend="v4l2") opens (/dev/videoN): the node find_v4l2_node finds there
+    for d in got:
+        assert find_v4l2_node(d.name, usb_location=d.usb_location, _sysfs=root) == f"/dev/video{d.index}"
+
+
+def test_v4l2_values_that_cannot_be_read_are_none(tmp_path):
+    root = _sysfs_tree(tmp_path, {"2-1": {"idVendor": "1d6b", "idProduct": "02x0"}},   # no bcdDevice or speed
+                       {"video0": (GADGET, 0, "2-1"), "video4": ("Dummy video device", 0, None)})   # not on USB
+    (tmp_path / "class" / "video5").mkdir()                 # a node that went away while it was listed: left out
+    assert list_devices(backend="v4l2", _sysfs=root) == [DeviceInfo(0, GADGET, "2-1", vid=0x1D6B),
+                                                         DeviceInfo(4, "Dummy video device")]
+    assert list_devices(backend="v4l2", _sysfs=str(tmp_path / "absent")) == []
+
+
+@pytest.mark.parametrize("speed, word", [("1.5", "Low"), ("12", "Full"), ("480", "High"), ("5000", "Super"),
+                                         ("10000", "Super+"), ("20000", "Super+"), ("53.3", None), ("", None)])
+def test_v4l2_link_speed_has_the_words_of_the_windows_list(tmp_path, speed, word):
+    root = _sysfs_tree(tmp_path, {"2-1": {**WEEVIA_USB, "speed": speed}}, ONE_CAMERA)   # sysfs `speed` is in Mb/s
+    assert list_devices(backend="v4l2", _sysfs=root)[0].link_speed == word
+
+
+def test_the_linux_default_list_is_v4l2_and_the_windows_default_stays_directshow(monkeypatch, tmp_path):
+    from opticmix_vision import devices
+    monkeypatch.setattr(devices, "SYSFS_V4L", _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB}, ONE_CAMERA))
+    monkeypatch.setattr(devices, "_ffmpeg_devices", lambda: pytest.fail("the DirectShow list was read"))
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert [(d.index, d.usb_location) for d in list_devices()] == [(0, "2-1")]
+    _directshow(monkeypatch, TWO_WEEVIA)
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert list_devices() == list_devices(backend="dshow") and len(list_devices()) == 3
+    assert list_devices(backend="v4l2") == []           # off Linux: empty, as backend="msmf" is off Windows
+
+
+def test_finding_the_camera_to_open_on_linux_reads_the_usb_location_only(monkeypatch, tmp_path):
+    # DeviceConfig.weevia_s1() on Linux finds the node with find_v4l2_node: no USB IDs, no link speed, as in 0.0.6
+    from opticmix_vision import devices
+    from opticmix_vision.device import DeviceConfig
+    monkeypatch.setattr(devices, "SYSFS_V4L", _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB}, ONE_CAMERA))
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(devices, "_sysfs_usb_ids", lambda usb: pytest.fail("USB IDs or link speed were read"))
+    assert DeviceConfig.weevia_s1().device == "/dev/video0"
+    assert DeviceConfig.weevia_s1(usb_location="2-1").device == "/dev/video0"
+    with pytest.raises(pytest.fail.Exception):         # list_devices() reads them, through the same function
+        list_devices()

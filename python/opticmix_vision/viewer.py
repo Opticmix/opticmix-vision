@@ -2,6 +2,7 @@
 
     python -m opticmix_vision.viewer                                            # Weevia S1 (found by name, 1600x800 MJPG 90)
     python -m opticmix_vision.viewer --device 1 --layout sbs --lr-order first_is_right --width 1600 --height 800 --fps 90 --fourcc MJPG
+    python -m opticmix_vision.viewer --usb-location "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"   # one of two Weevia S1
     python -m opticmix_vision.viewer --synthetic                                # no hardware
     python -m opticmix_vision.viewer --recording captures/20261124_101500_000123.avi   # play a recording back
     python -m opticmix_vision.viewer --lossless                                 # v records lossless (FFV1 .mkv)
@@ -69,7 +70,7 @@ import numpy as np
 
 
 from . import presets
-from .controls import ControlStateError
+from .controls import DEFAULTS_NOT_WRITTEN, ControlStateError
 from .device import EndOfRecording, StereoFrame
 from .recording import LOSSLESS_CODEC, Recorder, _now, write_capture_info
 
@@ -197,6 +198,10 @@ class ViewerState:
         label = label or (presets.BUILTIN if defaults else Path(path).stem)
         warn, force = "", False
         try:
+            if defaults and not c.writes_defaults:
+                self._say(f"preset {label}: {DEFAULTS_NOT_WRITTEN}")
+                self._preset, self._preset_label, self._preset_force = presets.BUILTIN, label, False
+                return
             if defaults:
                 plan, warn = c.plan_reset(), "the camera's own defaults, auto/manual modes left alone; "
             else:
@@ -233,6 +238,9 @@ class ViewerState:
         self.commit(dev, force=True)                  # a key change still waiting goes first, so the preset's values win
         label = self._preset_label
         try:
+            if self._preset == presets.BUILTIN and not c.writes_defaults:
+                self._say(f"preset {label}: {DEFAULTS_NOT_WRITTEN}")
+                return
             if self._preset == presets.BUILTIN:
                 results, mono, name = c.reset_to_defaults(), (), presets.BUILTIN
             else:
@@ -827,6 +835,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--eye-size", default="320x200", help="synthetic eye size WxH")
     p.add_argument("--constants", type=Path, default=None, help=argparse.SUPPRESS)   # bring-up tool output
     p.add_argument("--device", default=None, help="camera index (or path)")
+    from .device import _USB_LOCATION_HELP
+    p.add_argument("--usb-location", default=None, metavar="LOCATION", help=_USB_LOCATION_HELP)
     p.add_argument("--backend", default=None, choices=("any", "dshow", "msmf"))
     p.add_argument("--layout", default=None, choices=("sbs", "tb", "plane_pack"))
     p.add_argument("--lr-order", default=None, choices=("first_is_left", "first_is_right"))
@@ -843,6 +853,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--saturation-level", type=int, default=255, metavar="N",
                    help="the overlay counts pixel values at N or above as saturated (1-255)")
     return p
+
+
+def _refuse_combined(ap: argparse.ArgumentParser, a: argparse.Namespace) -> None:
+    """--usb-location picks the camera: another way of choosing what to open with it is a command-line error, as in
+    the other tools (also used by viewer_stereo, which shares this parser)."""
+    if a.usb_location is not None and (a.device is not None or a.synthetic or a.recording is not None
+                                       or a.constants is not None):
+        ap.error("--usb-location cannot be combined with --device, --synthetic, --recording or --constants")
 
 
 def _open_source(a: argparse.Namespace) -> Any:
@@ -873,7 +891,7 @@ def _open_source(a: argparse.Namespace) -> Any:
     elif a.device is None:
         # Weevia S1 found by name (in the given --backend's list), measured settings; only the given arguments
         # override them. Its backend is DirectShow (Linux: V4L2) unless --backend says otherwise.
-        cfg = DeviceConfig.weevia_s1(**over)
+        cfg = DeviceConfig.weevia_s1(usb_location=a.usb_location, **over)
     else:
         if "layout" not in over or "lr_order" not in over:
             raise SystemExit("with --device, also give --layout and --lr-order (the viewer does not guess them)")
@@ -886,7 +904,7 @@ def serve(a: argparse.Namespace, run: Callable[[Any], dict[str, Any]]) -> int:
     from .device import DeviceError
     try:
         src = _open_source(a)
-    except DeviceError as exc:
+    except (DeviceError, ValueError) as exc:        # ValueError: an empty --usb-location
         what = "the recording" if getattr(a, "recording", None) is not None else "the camera"
         print(f"[viewer] could not open {what}: {exc}", file=sys.stderr)
         return 2
@@ -910,6 +928,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.reconfigure(errors="replace")   # so a cp949 console does not crash on characters like '—'
     ap = build_parser()
     a = ap.parse_args(argv)
+    _refuse_combined(ap, a)
     if not 1 <= a.saturation_level <= 255:
         ap.error("--saturation-level must be within 1..255")
     preset = None

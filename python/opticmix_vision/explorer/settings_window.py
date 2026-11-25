@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from .. import controls as controls_mod
 from .. import presets
-from ..controls import Controls, ControlsUnavailable, ControlStateError, write_counts
+from ..controls import DEFAULTS_NOT_WRITTEN, Controls, ControlsUnavailable, ControlStateError, write_counts
 from .state import MONO_NOTE, RANGE_NOTE, LOCKS, Row, banner_text, build_rows, locked, reset_lines, value_text
 from .theme import BG, LIME, MONO, MONO_SMALL, ORANGE, PANEL, RED, TEXT, TEXT_DIM, TRACK
 
@@ -280,7 +280,8 @@ class SettingsWindow:
         if self.reset_dialog is not None and self.reset_dialog.winfo_exists():
             self.reset_dialog.destroy()
         plan = c.plan_reset()
-        self.reset_dialog, self.reset_confirm = self._confirm("Reset to defaults", reset_lines(plan), "Reset",
+        lines = reset_lines(plan) if c.writes_defaults else [DEFAULTS_NOT_WRITTEN]
+        self.reset_dialog, self.reset_confirm = self._confirm("Reset to defaults", lines, "Reset",
                                                               self._do_reset, bool(plan))
 
     def _confirm(self, title: str, lines: list[str], ok: str, command: Callable[[], None],

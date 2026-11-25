@@ -32,8 +32,6 @@ mod common;
 use std::io::Write;
 use std::path::Path;
 
-use opticmix_vision::GrayImage;
-
 const USAGE: &str = "usage: save_stereo_pairs [--every N] [--count N] [--out DIR] [--synthetic]";
 
 fn main() -> std::process::ExitCode {
@@ -45,13 +43,6 @@ fn main() -> std::process::ExitCode {
     }
     let out: String = a.value("--out", "captures".to_string());
     common::report(run(a.flag("--synthetic"), every, count, Path::new(&out)))
-}
-
-fn write_pgm(path: &Path, g: &GrayImage) -> std::io::Result<()> {
-    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-    write!(f, "P5\n{} {}\n255\n", g.width, g.height)?;
-    f.write_all(&g.data)?;
-    f.flush()
 }
 
 fn run(
@@ -78,8 +69,8 @@ fn run(
                 format!("left_{:06}.pgm", f.index),
                 format!("right_{:06}.pgm", f.index),
             );
-            write_pgm(&dir.join(&l), &f.left)?;
-            write_pgm(&dir.join(&r), &f.right)?;
+            common::write_pgm(&dir.join(&l), &f.left)?;
+            common::write_pgm(&dir.join(&r), &f.right)?;
             writeln!(csv, "{},{},{l},{r}", f.index, f.host_ns)?;
             saved += 1;
         }

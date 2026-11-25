@@ -9,6 +9,7 @@ whether a file fits the camera in front of it, and compares several files when m
     python -m opticmix_vision.calib show                  # what the installed file holds (--json for a program)
     python -m opticmix_vision.calib check                 # does the installed file fit the connected camera?
     python -m opticmix_vision.calib check --all           # which installed file fits it best?
+    python -m opticmix_vision.calib check --usb-location "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"   # one of two
 """
 from __future__ import annotations
 
@@ -461,8 +462,15 @@ def _check_cmd(a: argparse.Namespace) -> int:
         print("synthetic: generated frames of a generated calibration, not a camera")
         pairs = read_pairs(SyntheticPlaneSource(_synthetic_calibration()), frames=a.frames, every=1)
     else:
-        from .device import Device, DeviceConfig
-        with Device(DeviceConfig.weevia_s1()) as cam:
+        from .device import Device, DeviceConfig, DeviceError
+        try:
+            cfg = DeviceConfig.weevia_s1(usb_location=a.usb_location)
+        except (DeviceError, ValueError) as exc:
+            if a.usb_location is None:
+                raise                                   # not found by name: main's message, exit 1, as before
+            print(f"[calib] could not open the camera: {exc}", file=sys.stderr)   # nothing there, or empty: exit 2
+            return 2
+        with Device(cfg) as cam:
             if not cals:
                 c = cam.calibration           # one installed file; also checks the eye size against the mode
                 cals[c.device.get("serial", "-")], sources[c.device.get("serial", "-")] = c, "installed"
@@ -495,7 +503,11 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--frames", type=_frames_arg, default=10, help=f"frame pairs to use (default 10, at least {MIN_PAIRS})")
     c.add_argument("--pairs-dir", help="check saved left/right PNG pairs in this folder instead of the camera")
     c.add_argument("--synthetic", action="store_true", help="generated frames, no camera")
+    from .device import _USB_LOCATION_HELP
+    c.add_argument("--usb-location", metavar="LOCATION", help=_USB_LOCATION_HELP)
     a = ap.parse_args(argv)
+    if getattr(a, "usb_location", None) is not None and (a.synthetic or a.pairs_dir):
+        ap.error("--usb-location cannot be combined with --synthetic or --pairs-dir")
     if a.cmd == "show" and a.synthetic and a.target:
         ap.error("show --synthetic takes no serial or file")
     for stream in (sys.stdout, sys.stderr):        # a file's meta or path with non-ASCII characters on a cp949 console

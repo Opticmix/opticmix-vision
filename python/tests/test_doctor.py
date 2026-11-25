@@ -275,6 +275,18 @@ def test_linux_reads_video_nodes_and_usb_details_from_sysfs(tmp_path):
     assert any("USB link is High" in f for f in r["findings"])
 
 
+def test_linux_usb_details_are_read_by_the_function_the_device_list_uses(monkeypatch, tmp_path):
+    # devices.list_devices(backend="v4l2") and the doctor read sysfs through one function: one value for each
+    cls = str(_fake_sysfs(tmp_path))
+    listed = [d for d in devices.list_devices(backend="v4l2", _sysfs=cls) if d.usb_location]
+    usb = doctor.collect(_platform="linux", _sysfs=cls)["usb"]["devices"]
+    assert [(u["location"], u["vid"], u["pid"], u["usb_device_revision"], u["link_speed"]) for u in usb] == [
+        (d.usb_location, f"{d.vid:04x}", f"{d.pid:04x}", f"{d.bcd_device:04X}", d.link_speed) for d in listed]
+    monkeypatch.setattr(devices, "_sysfs_usb_ids", lambda usb: (0xABCD, 0x1234, 0x0001, None))
+    usb = doctor.collect(_platform="linux", _sysfs=cls)["usb"]["devices"]
+    assert [(u["vid"], u["pid"], u["usb_device_revision"], u["link_speed"]) for u in usb] ==         [("abcd", "1234", "0001", "unknown")] * 2
+
+
 def test_linux_with_no_video_nodes(tmp_path):
     (tmp_path / "empty").mkdir()
     r = doctor.collect(_platform="linux", _sysfs=str(tmp_path / "empty"))
@@ -757,3 +769,53 @@ def test_issue_form_and_readme_ask_for_the_doctor():
     readme = (sdk / "python" / "README.md").read_text(encoding="utf-8")
     first = readme.split("## When something goes wrong", 1)[1].strip().splitlines()[0]
     assert first.startswith("- **Opening an issue?**") and "python -m opticmix_vision.doctor" in first
+
+
+# ---------------------------------------------------------------- the USB IDs and link speed come from DeviceInfo
+
+WEEVIA_AT = WIN_RECORDS[2]["location_paths"][0]
+
+
+def _listed(monkeypatch, weevia: DeviceInfo):
+    """DirectShow and Media Foundation list the webcam and `weevia`; the device tree is WIN_RECORDS, the hubs HUBS."""
+    monkeypatch.setattr(devices, "list_devices", lambda backend="dshow": [DeviceInfo(0, "Laptop webcam"), weevia])
+    return doctor.collect(_platform="win32", _win_records=WIN_RECORDS, _link=lambda h, p: HUBS[(h, p)])
+
+
+def test_a_listed_device_s_usb_ids_and_link_speed_are_its_device_info_fields(monkeypatch):
+    # the list's DeviceInfo at the Weevia's location (case ignored) says other things than the device tree and the hub
+    # here: the report prints the DeviceInfo fields — one source for both
+    r = _listed(monkeypatch, DeviceInfo(1, "WN Dual Camera", WEEVIA_AT.lower(), vid=0x1D6B, pid=0x0201,
+                                        bcd_device=0x0410, link_speed="Super"))
+    w = [d for d in r["usb"]["devices"] if d["name"] == "WN Dual Camera"]
+    assert w == [{"name": "WN Dual Camera", "vid": "1d6b", "pid": "0201", "usb_device_revision": "0410",
+                  "status": "OK", "location": WEEVIA_AT, "port": "Port_#0002.Hub_#0010", "link_speed": "Super",
+                  "superspeed_capable": True}]               # not a DeviceInfo field: the hub's reply, as before
+    text = doctor.format_text(r)
+    assert "  VID:PID                          1d6b:0201\n" in text
+    assert "  USB device revision (bcdDevice)  0410\n" in text
+    assert "  link speed                       Super (5 Gb/s), device is SuperSpeed-capable\n" in text
+    assert not any("USB link is" in f for f in r["findings"])
+    assert doctor._usb_windows(WIN_RECORDS, lambda h, p: HUBS[(h, p)])[0]["link_speed"] == "Super"   # the webcam
+
+
+def test_a_device_info_field_that_could_not_be_read_keeps_the_doctor_s_own_reading(monkeypatch):
+    # a None field never blanks what the doctor read itself: the report stays what 0.0.6 printed
+    r = _listed(monkeypatch, DeviceInfo(1, "WN Dual Camera", WEEVIA_AT))      # the list read the location only
+    w = [d for d in r["usb"]["devices"] if d["name"] == "WN Dual Camera"][0]
+    assert (w["vid"], w["pid"], w["usb_device_revision"], w["link_speed"]) == ("1d6b", "0200", "0409", "High")
+    text = doctor.format_text(r)
+    assert "  VID:PID                          1d6b:0200\n" in text
+    assert "  link speed                       High (480 Mb/s), device is SuperSpeed-capable\n" in text
+    # only the link speed not read: the IDs from DeviceInfo, the link speed the doctor's own
+    r = _listed(monkeypatch, DeviceInfo(1, "WN Dual Camera", WEEVIA_AT, 0x1D6B, 0x0201, 0x0410, None))
+    w = [d for d in r["usb"]["devices"] if d["name"] == "WN Dual Camera"][0]
+    assert (w["vid"], w["pid"], w["usb_device_revision"], w["link_speed"]) == ("1d6b", "0201", "0410", "High")
+
+
+def test_a_device_the_list_does_not_have_keeps_the_device_tree_s_values(monkeypatch):
+    # a USB location that is not the Weevia's (or none): the doctor reads that device's values itself, as before
+    for other in (DeviceInfo(1, "WN Dual Camera", "PCIROOT(0)#USB(9)", 0x1D6B, 0x0201, 0x0410, "Super"),
+                  DeviceInfo(1, "WN Dual Camera")):
+        w = [d for d in _listed(monkeypatch, other)["usb"]["devices"] if d["name"] == "WN Dual Camera"][0]
+        assert (w["vid"], w["pid"], w["usb_device_revision"], w["link_speed"]) == ("1d6b", "0200", "0409", "High")

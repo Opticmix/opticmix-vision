@@ -44,7 +44,7 @@ def test_using_controls_or_devices_without_the_extension_says_what_to_install():
     r = _run("""
         from opticmix_vision import controls as C, devices
         from opticmix_vision._ctrl_sim import SimBackend
-        for call in (lambda: C.Controls(SimBackend()), lambda: devices.list_devices(_raw=""), C.write_counts):
+        for call in (lambda: C.Controls(SimBackend()), lambda: devices.list_devices(backend="dshow", _raw=""), C.write_counts):
             try:
                 call()
             except C.ControlsUnavailable as exc:

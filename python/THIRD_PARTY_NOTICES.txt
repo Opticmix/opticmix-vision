@@ -1,4 +1,4 @@
-Third-party software in opticmix-vision 0.0.6
+Third-party software in opticmix-vision 0.0.7
 ==============================================================================
 
 The extension opticmix_vision/_core.pyd is compiled from the Rust crates in rust/

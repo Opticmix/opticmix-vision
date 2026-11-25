@@ -229,3 +229,11 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) in the p
 ## Next
 
 [06 · IR illuminator](06-ir-illuminator.md): set the illuminator level once and check it in the image.
+
+## Rust
+
+- `list_controls.py` and `set_controls_once.py`: the Rust examples of the same names, their commands and their
+  `--synthetic` output are under Run it above.
+- `brightness_stats.py`: no Rust example yet.
+- `presets.py`: no Rust example yet. Presets (every control saved to a file and loaded back): Python only for
+  now — `opticmix_vision.presets`.

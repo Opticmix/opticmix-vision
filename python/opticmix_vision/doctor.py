@@ -5,12 +5,18 @@
     python -m opticmix_vision.doctor --json             # the same report as JSON
     python -m opticmix_vision.doctor --output r.json    # written as UTF-8 (`>` in PowerShell 5.1 writes UTF-16)
     python -m opticmix_vision.doctor --synthetic --open # no hardware at all: generated frames, simulated controls
+    python -m opticmix_vision.doctor --open --usb-location "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"   # one of two
 
 Without --open the camera is not opened. The USB details come from the operating system's device list
 (Windows: the device tree through cfgmgr32; Linux: sysfs). On Windows the link speed is asked of the USB hub
 driver the camera is plugged into, as Microsoft's USBView does. On Windows the video devices are printed as
 DirectShow lists them and as Media Foundation lists them (OpenCV's CAP_DSHOW and CAP_MSMF indexes); the two lists
-can be in a different order, and when the Weevia S1's index differs a line says so. Listing opens no device.
+can be in a different order, and when the Weevia S1's index differs a line says so. Listing opens no device. For a
+USB device the DirectShow list has (the same USB location), VID:PID, bcdDevice and the link speed printed are its
+`devices.DeviceInfo` fields (`vid`, `pid`, `bcd_device`, `link_speed`), so the report and `devices.list_devices()`
+show one value; a field DeviceInfo could not read, and a device the list does not have (no extension, not started),
+is read here as before. On Linux sysfs is read by the functions `devices.list_devices(backend="v4l2")` uses, so the
+report and that list show one value too.
 
 With --open the camera is opened as `Device(DeviceConfig.weevia_s1(stall_frames=0))` does: the capture format
 (size, frame rate, pixel format) is set as on every open, and no camera control is written — the report
@@ -58,7 +64,6 @@ NOT_AVAILABLE = {
     "temperature": "not available — no temperature readout is known for this camera",
 }
 _RATE = {"Low": "1.5 Mb/s", "Full": "12 Mb/s", "High": "480 Mb/s", "Super": "5 Gb/s", "Super+": "10 Gb/s or more"}
-_LINUX_SPEED = {"1.5": "Low", "12": "Full", "480": "High", "5000": "Super"}   # sysfs `speed`, Mb/s
 
 
 def _home(p: Any) -> str:
@@ -261,7 +266,12 @@ def _hub_link(hub_id: str, port: int) -> tuple[dict[str, int], int | None] | Non
         k32.CloseHandle(h)
 
 
-def _usb_windows(records: list[dict[str, Any]], link: Callable[[str, int], Any]) -> list[dict[str, Any]]:
+def _usb_windows(records: list[dict[str, Any]], link: Callable[[str, int], Any],
+                 listed: Any = ()) -> list[dict[str, Any]]:
+    """One row per camera-class USB device of the device tree. For a device the video device list has at the same USB
+    location (`listed`, `devices.DeviceInfo`), VID, PID, bcdDevice and the link speed are that DeviceInfo's fields, so
+    the report and `devices.list_devices()` give one value; a field it could not read (None), and any device not
+    listed (or no extension), keeps what is read here from the same device tree and hub."""
     out, links = [], {}
     for r in records:
         m = re.search(r"VID_([0-9A-F]{4})&PID_([0-9A-F]{4})&REV_([0-9A-F]{4})", " ".join(r.get("hardware_ids") or []),
@@ -281,14 +291,21 @@ def _usb_windows(records: list[dict[str, Any]], link: Callable[[str, int], Any])
                 speed, capable = _link_name(ex["speed"], flags)
         problem = int(r.get("problem") or 0)
         paths = r.get("location_paths") or []
-        out.append({
+        row = {
             "name": r.get("name"),
             "vid": m.group(1).lower() if m else None, "pid": m.group(2).lower() if m else None,
             "usb_device_revision": m.group(3).upper() if m else None,
             "status": f"problem code {problem}" if problem else ("OK" if r.get("started") else "not started"),
             "location": paths[0] if paths else None, "port": r.get("location_info"),
             "link_speed": speed, "superspeed_capable": capable,
-        })
+        }
+        d = next((d for d in listed if d.usb_location and paths and d.usb_location.lower() == paths[0].lower()), None)
+        if d is not None:      # a field DeviceInfo could not read keeps the doctor's own value: the report stays 0.0.6's
+            row.update(vid=row["vid"] if d.vid is None else f"{d.vid:04x}",
+                       pid=row["pid"] if d.pid is None else f"{d.pid:04x}",
+                       usb_device_revision=row["usb_device_revision"] if d.bcd_device is None else f"{d.bcd_device:04X}",
+                       link_speed=d.link_speed or speed)
+        out.append(row)
     return out
 
 
@@ -302,7 +319,10 @@ def _read(p: Path) -> str | None:
 
 
 def _linux(root: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(video nodes, their USB devices) from sysfs."""
+    """(video nodes, their USB devices) from sysfs. The USB device and its IDs and link speed are read by the
+    functions `devices.list_devices(backend="v4l2")` fills `DeviceInfo` with, so the report and the list give one
+    value."""
+    from . import devices
     nodes, usb = [], {}
 
     def num(p: Path) -> tuple[int, str]:
@@ -312,18 +332,16 @@ def _linux(root: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     for d in sorted(Path(root).glob("video*"), key=num):
         name, idx = _read(d / "name"), _read(d / "index")
         node = {"path": f"/dev/{d.name}", "name": name, "index": int(idx) if idx and idx.isdigit() else idx}
-        real = Path(os.path.realpath(d / "device"))            # the USB interface; its parent is the USB device
-        udev = next((c for c in [real, *real.parents][:4] if (c / "idVendor").is_file()), None)
+        udev = devices._sysfs_usb_device(d)                     # the USB device above the node's USB interface
         if udev is not None:
             node["usb"] = udev.name
             if udev.name not in usb:
-                mbps = _read(udev / "speed")
-                speed = _LINUX_SPEED.get(mbps or "") or ("Super+" if mbps and mbps.isdigit() and int(mbps) > 5000
-                                                         else "unknown")
-                usb[udev.name] = {"name": name, "vid": _read(udev / "idVendor"), "pid": _read(udev / "idProduct"),
-                                  "usb_device_revision": (_read(udev / "bcdDevice") or "").upper() or None,
+                vid, pid, rev, speed = devices._sysfs_usb_ids(udev)
+                usb[udev.name] = {"name": name, "vid": None if vid is None else f"{vid:04x}",
+                                  "pid": None if pid is None else f"{pid:04x}",
+                                  "usb_device_revision": None if rev is None else f"{rev:04X}",
                                   "status": "OK", "location": udev.name, "port": None,
-                                  "link_speed": speed, "superspeed_capable": None}
+                                  "link_speed": speed or "unknown", "superspeed_capable": None}
         nodes.append(node)
     return nodes, list(usb.values())
 
@@ -346,8 +364,10 @@ def _hardware(synthetic: bool, _win_records: Any, _link: Any, _sysfs: str | None
     elif plat == "win32":
         from . import devices
         video["source"] = "DirectShow, through ffmpeg" if shutil.which("ffmpeg") else "DirectShow"
+        listed: list = []                       # DeviceInfo: the USB section prints their IDs and link speed
         try:
-            video["devices"] = [{"index": d.index, "name": d.name} for d in devices.list_devices()]
+            listed = devices.list_devices(backend="dshow")
+            video["devices"] = [{"index": d.index, "name": d.name} for d in listed]
         except Exception as exc:  # noqa: BLE001
             video["error"] = _err(exc)
         if mf:                    # Media Foundation's list too: listed only, no device is activated
@@ -366,7 +386,7 @@ def _hardware(synthetic: bool, _win_records: Any, _link: Any, _sysfs: str | None
         usb["source"] = "device tree (cfgmgr32)"
         try:
             usb["devices"] = _usb_windows(_win_cameras() if _win_records is None else _win_records,
-                                          _hub_link if _link is None else _link)
+                                          _hub_link if _link is None else _link, listed)
         except Exception as exc:  # noqa: BLE001
             usb["error"] = _err(exc)
     elif plat.startswith("linux"):
@@ -542,8 +562,10 @@ def _findings(r: dict[str, Any]) -> list[str]:
         f.append(f"{n} Weevia S1 are connected. They cannot be told apart by name (no USB serial number): connect one "
                  "at a time, or open one by its USB location (`location` below): "
                  "DeviceConfig.weevia_s1(usb_location=...). A USB location is the port, not a serial number. Picking a "
-                 "camera by USB location has been run without a camera only (made-up device lists); it has not been "
-                 "run with a camera, and not run with two cameras.")
+                 "camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one "
+                 "camera connected, the list showed its USB location, and given that location it opened at 1600x800 "
+                 "MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media "
+                 "Foundation); not run with two cameras.")
     needle = r["weevia_s1"]["name"].lower()
     for d in r["usb"]["devices"]:
         if needle not in (d["name"] or "").lower():         # the same partial match the device count uses
@@ -628,8 +650,9 @@ class _Keep(logging.Handler):
         self.lines.append(f"{record.levelname} {record.name}: {record.getMessage()}")
 
 
-def _usb_summary(synthetic: bool = False) -> str:
-    """One line for a status bar, without opening the camera: VID:PID · REV · link speed · no serial."""
+def _usb_summary(synthetic: bool = False, usb_location: str | None = None) -> str:
+    """One line for a status bar, without opening the camera: VID:PID · REV · link speed · no serial. With
+    `usb_location`, that of the Weevia S1 at that USB location (the explorer's --usb-location), else the first."""
     if synthetic:
         return "synthetic · no serial"
     try:
@@ -637,7 +660,8 @@ def _usb_summary(synthetic: bool = False) -> str:
     except Exception:  # noqa: BLE001 — the explorer must open even when this cannot be read
         return "USB: unknown · no serial"
     needle = h["weevia_s1"]["name"].lower()
-    d = next((d for d in h["usb"]["devices"] if needle in (d["name"] or "").lower()), None)
+    d = next((d for d in h["usb"]["devices"] if needle in (d["name"] or "").lower()
+              and (usb_location is None or (d["location"] or "").lower() == usb_location.lower())), None)
     if d is None:
         return "USB: — · no serial"
     return f"{d['vid']}:{d['pid']} · REV {d['usb_device_revision']} · {d['link_speed']} · no serial"
@@ -717,6 +741,9 @@ def format_text(report: dict[str, Any]) -> str:
     if cam is None:
         L.append("not opened (add --open to measure the mode, the frame rate and read the controls)")
         return "\n".join(L + _log_lines(r)) + "\n"
+    if cam.get("usb_location"):
+        L.append(f"USB location:    {cam['usb_location']} (--usb-location; opened as device {cam['device']})")
+        L.append("advertised modes: not listed with --usb-location (ffmpeg asks by name, which two cameras can share)")
     if cam["advertised_modes"]:
         L.append("advertised modes: " + "; ".join(cam["advertised_modes"]))
     if cam["error"]:
@@ -776,6 +803,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true", help="print the report as JSON")
     ap.add_argument("--seconds", type=float, default=3.0, help="how long --open reads frames (default 3)")
     ap.add_argument("--device", help="with --open: the device index or /dev/videoN instead of finding it by name")
+    from .device import _USB_LOCATION_HELP
+    ap.add_argument("--usb-location", metavar="LOCATION", help=f"with --open: {_USB_LOCATION_HELP}")
     ap.add_argument("--timestamps", metavar="FILE", help="with --open: write each frame's host time to a CSV file")
     ap.add_argument("--backend", choices=("dshow", "msmf", "v4l2"),
                     help="with --open: the OpenCV capture backend (default: the Weevia S1 default for this OS)")
@@ -784,14 +813,26 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.seconds <= 0:
         ap.error("--seconds must be positive")
-    if (a.timestamps or a.device or a.backend) and not a.open:
-        ap.error("--timestamps, --device and --backend need --open")
+    if (a.timestamps or a.device or a.backend or a.usb_location is not None) and not a.open:
+        ap.error("--timestamps, --device, --backend and --usb-location need --open")
+    if a.usb_location is not None and (a.device or a.synthetic):
+        ap.error("--usb-location cannot be combined with --device or --synthetic")
     for stream in (sys.stdout, sys.stderr):                    # names with non-ASCII characters on a cp949 console
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     dev = int(a.device) if a.device and a.device.isdigit() else a.device
+    if a.usb_location is not None:             # found as DeviceConfig.weevia_s1(usb_location=...) finds it, then opened
+        from .device import DeviceConfig, DeviceError
+        kw = {"backend": a.backend} if a.backend else {}
+        try:
+            dev = DeviceConfig.weevia_s1(usb_location=a.usb_location, **kw).device
+        except (DeviceError, ValueError) as exc:  # nothing at that USB location, or an empty one: no report, exit 2
+            print(f"[doctor] could not open the camera: {exc}", file=sys.stderr)
+            return 2
     r = collect(open_camera=a.open, synthetic=a.synthetic, seconds=a.seconds, device=dev, timestamps=a.timestamps,
                 backend=a.backend)
+    if a.usb_location is not None:             # which of two cameras of one name the pasted report is about
+        r["camera"].update(usb_location=a.usb_location, device=dev)
     as_json = a.json or (a.output or "").lower().endswith(".json")
     text = json.dumps(r, indent=2, ensure_ascii=False) + "\n" if as_json else format_text(r)
     if a.output:                   # written here, not through `>`: PowerShell 5.1 redirection writes UTF-16

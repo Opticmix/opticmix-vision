@@ -10,13 +10,15 @@
 //! `MultipleMatches` when both are connected. `DeviceSelector::UsbLocation` opens the one with the name at a USB
 //! location — Windows: the USB device's first location path, as `cargo run --example list_devices` and this example
 //! print it (Media Foundation's list, the one capture opens from); Linux: the USB device's sysfs name, e.g. `1-4.2`
-//! (`readlink /sys/class/video4linux/video0/device` ends in it, `python -m opticmix_vision.doctor` prints it).
+//! (`cargo run --example list_devices` and this example print it from the V4L2 list, `devices::list_v4l2_devices()`;
+//! `python -m opticmix_vision.doctor` prints it).
 //! The controls then find the camera at the same location in DirectShow's list.
 //!
 //! A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the
-//! camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by
-//! USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and
-//! not run with two cameras.
+//! camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB
+//! location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list
+//! showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device
+//! has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 //!
 //! `--synthetic` picks from a made-up list of two Weevia S1 (made-up USB locations; the second one unless
 //! `--usb-location` names another) and reads a generated frame, not measured data.
@@ -32,11 +34,14 @@
 //! one frame: left 800x800, right 800x800
 //! ```
 //!
-//! Camera: not run with the camera. Writes to the camera: none.
+//! Camera: run with one camera once (one PC, 2026-11-25), as said above; not run with two cameras. Writes to the
+//! camera: none.
 
 mod common;
 
-use opticmix_vision::devices::{list_mf_devices, pick_by_usb_location, DeviceInfo};
+#[cfg(not(target_os = "linux"))]
+use opticmix_vision::devices::list_mf_devices;
+use opticmix_vision::devices::{pick_by_usb_location, DeviceInfo};
 use opticmix_vision::spec::WEEVIA_S1_NAME;
 use opticmix_vision::{DeviceConfig, DeviceSelector};
 
@@ -71,7 +76,7 @@ fn run(synthetic: bool, location: Option<String>) -> Result<(), Box<dyn std::err
     let listed = if synthetic {
         made_up()
     } else {
-        list_mf_devices()?
+        capture_list()?
     };
     let weevia: Vec<&DeviceInfo> = listed
         .iter()
@@ -81,13 +86,15 @@ fn run(synthetic: bool, location: Option<String>) -> Result<(), Box<dyn std::err
                 .contains(&WEEVIA_S1_NAME.to_lowercase())
         })
         .collect();
-    if cfg!(windows) || synthetic {
+    if cfg!(windows) || cfg!(target_os = "linux") || synthetic {
         println!(
             "Weevia S1 in the {} list:",
             if synthetic {
                 "made-up"
-            } else {
+            } else if cfg!(windows) {
                 "Media Foundation"
+            } else {
+                "V4L2"
             }
         );
         for d in &weevia {
@@ -106,7 +113,7 @@ fn run(synthetic: bool, location: Option<String>) -> Result<(), Box<dyn std::err
                 if cfg!(windows) {
                     ""
                 } else {
-                    " — on Linux, the USB device's sysfs name (readlink /sys/class/video4linux/video0/device)"
+                    " — on Linux, the USB device's sysfs name (cargo run --example list_devices)"
                 }
             );
             return Ok(());
@@ -136,4 +143,15 @@ fn run(synthetic: bool, location: Option<String>) -> Result<(), Box<dyn std::err
         f.left.width, f.left.height, f.right.width, f.right.height
     );
     Ok(())
+}
+
+/// The list capture opens from: Media Foundation's on Windows, the V4L2 capture nodes on Linux.
+#[cfg(target_os = "linux")]
+fn capture_list() -> opticmix_vision::Result<Vec<DeviceInfo>> {
+    Ok(opticmix_vision::devices::list_v4l2_devices())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn capture_list() -> opticmix_vision::Result<Vec<DeviceInfo>> {
+    list_mf_devices()
 }

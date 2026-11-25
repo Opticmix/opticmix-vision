@@ -12,6 +12,7 @@
     python -m opticmix_vision.presets show NAME|FILE      # what a preset holds — no camera
     python -m opticmix_vision.presets save NAME           # opens the camera and reads every control
     python -m opticmix_vision.presets load NAME|FILE      # opens the camera and writes what differs
+    python -m opticmix_vision.presets load NAME --usb-location "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"   # one of two
 
 Loading writes several controls at once; see README, "Camera controls": write once at startup.
 A preset is checked as a whole before anything is written: a different camera model, a control this camera
@@ -32,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Mapping, NamedTuple
 
 from . import __version__, calib
 from . import controls as _controls
-from .controls import WriteResult, write_counts
+from .controls import DEFAULTS_NOT_WRITTEN, WriteResult, write_counts
 from .device import WEEVIA_S1_NAME
 
 if TYPE_CHECKING:
@@ -213,13 +214,13 @@ def _load(c: Controls, path: str | Path, force: bool, include_mono: bool, timeou
 
 # --- command line ------------------------------------------------------------------------------
 
-def _open(synthetic: bool) -> Any:
-    """The only place the command line opens a camera (save and load)."""
+def _open(synthetic: bool, cfg: Any = None) -> Any:
+    """The only place the command line opens a camera (save and load): `cfg`, else the Weevia S1 found by name."""
     if synthetic:
         from .synthetic import SyntheticStereoSource
         return SyntheticStereoSource()
     from .device import Device, DeviceConfig
-    return Device(DeviceConfig.weevia_s1()).open()
+    return Device(cfg or DeviceConfig.weevia_s1()).open()
 
 
 def _connected_model() -> str | None:
@@ -281,9 +282,20 @@ def main(argv: list[str] | None = None) -> int:
     ld.add_argument("--force", action="store_true", help="load a preset saved from another model")
     ld.add_argument("--include-mono", action="store_true",
                     help="also write controls with no effect on the mono sensor (hue, saturation, white balance)")
+    from .device import _USB_LOCATION_HELP, DeviceConfig, DeviceError
     for p in (s, ld):
         p.add_argument("--synthetic", action="store_true", help="simulated controls instead of a camera")
+        p.add_argument("--usb-location", metavar="LOCATION", help=_USB_LOCATION_HELP)
     a = ap.parse_args(argv)
+    cfg = None
+    if getattr(a, "usb_location", None) is not None:      # save and load: reads and writes go to that camera only
+        if a.synthetic:
+            ap.error("--usb-location cannot be combined with --synthetic")
+        try:
+            cfg = DeviceConfig.weevia_s1(usb_location=a.usb_location)
+        except (DeviceError, ValueError) as exc:          # nothing at that USB location, or an empty one: exit 2
+            print(f"[presets] could not open the camera: {exc}", file=sys.stderr)
+            return 2
     try:
         if a.cmd == "list":
             model = None if a.all else (a.model or _connected_model())
@@ -311,15 +323,18 @@ def main(argv: list[str] | None = None) -> int:
             path = preset_path(a.name)
             if path.exists() and not a.overwrite:
                 raise PresetError(f"{path} exists. Pass --overwrite to replace it.")
-            with _open(a.synthetic) as cam:
+            with _open(a.synthetic, cfg) as cam:
                 n = len(read_preset(cam.controls.save_preset(path, name=a.name, note=a.note))["controls"])
             print(f"saved {n} controls to {path}")
             return 0
         builtin = a.preset == BUILTIN and not Path(a.preset).is_file()
         path = None if builtin else _resolve(a.preset)          # before opening the camera
         mono = a.include_mono
-        with _open(a.synthetic) as cam:
+        with _open(a.synthetic, cfg) as cam:
             c = cam.controls
+            if builtin and not c.writes_defaults:
+                print(DEFAULTS_NOT_WRITTEN, file=sys.stderr)
+                return 1
             if a.dry_run:
                 _print_plan(c.plan_reset(include_mono=mono) if builtin
                             else c.plan_preset(path, force=a.force, include_mono=mono))

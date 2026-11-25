@@ -12,7 +12,7 @@ them by its USB location.
 ## Before you start
 
 - Install the package: `pip install opticmix-vision` (see the [package README](../README.md) for the platforms
-  it installs on; on Linux, which is experimental, the examples have not been run).
+  it installs on; on Linux, which is experimental, `measure_fps.py`, `record_video.py`, `play_recording.py`, `save_stereo_pairs.py`, `list_controls.py` and `open_by_usb_location.py` have been run once with one camera (2026-11-25), and `export_recording.py` with a camera recording once, from source before release; the viewer, the explorer and the others have not).
 - Run the commands from the `python/` folder of the repository — see the [tutorials README](README.md) for
   which version to check out and which `python` to use.
 - Connect the Weevia S1 to a USB 3 port directly. No camera? Every command below marked `--synthetic` runs
@@ -62,7 +62,7 @@ $ cargo run --example list_devices -- --synthetic
   [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
 Weevia S1 ("WN Dual Camera") found: 2
 More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and opening by name stops with MultipleMatches instead of guessing. Open one by the USB location shown above: cargo run --example open_by_usb_location -- --usb-location "<USB location>" (DeviceSelector::UsbLocation).
-A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 The Media Foundation list (--backend msmf) can be in a different order: an index goes only with the backend whose list it came from.
 Capture opens from the Media Foundation list: DeviceSelector::Index(n) is entry n of it (--backend msmf).
 ```
@@ -71,7 +71,8 @@ The Rust crate captures through Media Foundation, so an index you pass as `Devic
 list `--backend msmf` prints, not in the default DirectShow one. Of the Rust examples, `list_devices` and
 `measure_fps` have been run with the camera once (one PC, one camera, 2026-11-24) — `list_devices` with its
 default DirectShow list; `--backend msmf` has been run without a camera only (a made-up list), not with the
-camera. The others have been run without a camera only (`--synthetic`). See the crate README, "Examples".
+camera. `open_by_usb_location`, `record_video` and `play_recording` have been run with the camera once (one PC, one
+camera, 2026-11-25). The others: see the crate README, "Examples".
 
 ## What you should see
 
@@ -85,7 +86,7 @@ $ python examples/list_devices.py --synthetic
   [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
 Weevia S1 ('WN Dual Camera') found: 2
 More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and DeviceConfig.weevia_s1() stops with an error instead of guessing. Open one by the USB location shown above: DeviceConfig.weevia_s1(usb_location="<USB location>") (examples/open_by_usb_location.py).
-A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 The Media Foundation list (--backend msmf) can be in a different order: an index goes only with the backend whose list it came from.
 $ python examples/list_devices.py --synthetic --backend msmf
 3 video device(s) in the Media Foundation list:
@@ -94,7 +95,7 @@ $ python examples/list_devices.py --synthetic --backend msmf
   [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
 Weevia S1 ('WN Dual Camera') found: 2
 More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and DeviceConfig.weevia_s1() stops with an error instead of guessing. Open one by the USB location shown above: DeviceConfig.weevia_s1(usb_location="<USB location>") (examples/open_by_usb_location.py).
-A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 The DirectShow list (--backend dshow) can be in a different order: an index goes only with the backend whose list it came from.
 $ python examples/open_by_usb_location.py --synthetic
 Weevia S1 in the made-up list:
@@ -143,7 +144,7 @@ with cam:
 
 `DeviceInfo.usb_location` is where Windows says the device is plugged in: the USB device's first location
 path, the same string `python -m opticmix_vision.doctor` prints as `location` (on Linux, the USB device's sysfs
-name, e.g. `1-4.2`). A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+name, e.g. `1-4.2`). A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 
 `quickstart.py` opens the camera with `DeviceConfig.weevia_s1()` when you give no `--device`, and reads
 from it:
@@ -169,11 +170,13 @@ with cam:
 - `cam.read()` raises on failure and never returns an empty frame. `f.left` and `f.right` are the two eyes.
 - The camera reports no USB serial number, so finding the camera by name stops when two Weevia S1 match.
   `DeviceConfig.weevia_s1(usb_location=...)` opens the one at that USB location instead. Using two cameras at
-  the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+  the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 - `DeviceConfig.weevia_s1()` looks the name up in the list of the backend it opens with: DirectShow by
   default, Media Foundation with `backend="msmf"`.
 - `list_devices.py` is one of the six examples added in 0.0.4; it has been run without a camera only.
   `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run without a camera only (made-up lists); they have not been run with the camera.
+- Linux: `python examples/list_devices.py` lists the V4L2 capture nodes (`--backend v4l2`, the default there) — the
+  index is the N of `/dev/videoN`, the USB location the USB device's sysfs name (e.g. `2-1`). Run without a camera only (made-up sysfs trees); not run with the camera on Linux.
 
 ## If it does not work
 
@@ -188,7 +191,7 @@ particular:
 
 - **"Weevia S1 not found"** — the message lists the cameras Windows reported.
 - **Two Weevia S1 are connected** — open one by its USB location (`DeviceConfig.weevia_s1(usb_location=...)`,
-  the locations are in `python examples/list_devices.py`), or connect one at a time. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+  the locations are in `python examples/list_devices.py`), or connect one at a time. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 - **"ControlsUnavailable: opticmix_vision._core (the compiled extension) is not installed"** — finding the
   camera by name on Windows needs the compiled extension that ships in the wheel; install the wheel with the same `python` you run the example with
   (`python -m pip install opticmix-vision`).
@@ -201,3 +204,44 @@ particular:
 
 [02 · Live view and frame rate](02-live-view-and-frame-rate.md): watch both eyes and measure the frame rate
 you actually get.
+
+## Rust
+
+The Rust `list_devices` commands and their `--synthetic` output are under Run it above. The other two steps
+without a camera, in a checkout of the repository, from `rust/opticmix-vision`:
+
+```bash
+cargo run --example list_devices -- --synthetic --backend msmf
+cargo run --release --features test-support --example open_by_usb_location -- --synthetic
+```
+
+Output with `--synthetic` (generated frames); with the camera the numbers differ.
+
+```text
+$ cargo run --example list_devices -- --synthetic --backend msmf
+3 video device(s) in the Media Foundation list:
+  [0] Example Laptop Webcam   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)
+  [1] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)
+  [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
+Weevia S1 ("WN Dual Camera") found: 2
+More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and opening by name stops with MultipleMatches instead of guessing. Open one by the USB location shown above: cargo run --example open_by_usb_location -- --usb-location "<USB location>" (DeviceSelector::UsbLocation).
+A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
+The DirectShow list (--backend dshow) can be in a different order: an index goes only with the backend whose list it came from.
+Capture opens from the Media Foundation list: DeviceSelector::Index(n) is entry n of it.
+
+$ cargo run --release --features test-support --example open_by_usb_location -- --synthetic
+Weevia S1 in the made-up list:
+  [0] USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)
+  [2] USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
+picked [2] at USB location PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
+negotiated: 1600x800 MJPG 90.0 fps (synthetic)
+one frame: left 800x800, right 800x800
+```
+
+- `quickstart.py`: no Rust example yet.
+- Rust `--synthetic` uses the crate's test doubles: generated 1600×800 frames paced at 90 per second in
+  software, so the eyes are 800×800 here.
+- `open_by_usb_location` lists each Weevia S1 with its USB location from Media Foundation's list, the one Rust
+  capture opens from. Run with the camera once (one PC, one camera, 2026-11-25): it listed the camera at its USB
+  location, opened it there at 1600x800 MJPG and read one frame; a location no device has was refused. Not run
+  with two cameras.

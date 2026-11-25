@@ -472,6 +472,7 @@ pub struct Controls {
     exposure_units: String,
     supported: Mutex<HashMap<String, bool>>,
     ranges: Mutex<HashMap<String, Option<RawRange>>>,
+    writes_defaults: bool,
 }
 
 impl Controls {
@@ -484,6 +485,7 @@ impl Controls {
     ) -> Result<Controls> {
         let backend_name = backend.name().to_string();
         let exposure_units = backend.exposure_units().to_string();
+        let writes_defaults = backend.writes_defaults();
         let backend_note = [backend.note(), note]
             .iter()
             .filter(|x| !x.is_empty())
@@ -549,6 +551,7 @@ impl Controls {
             exposure_units,
             supported: Mutex::new(HashMap::new()),
             ranges: Mutex::new(HashMap::new()),
+            writes_defaults,
         })
     }
 
@@ -558,6 +561,13 @@ impl Controls {
 
     pub fn backend_note(&self) -> &str {
         &self.backend_note
+    }
+
+    /// False when `reset_to_defaults()` writes nothing and `plan_reset()` is empty whatever the device reports: the
+    /// V4L2 controls on Linux, where control writes have not been run on the camera. The driver's defaults are still
+    /// shown by `describe()`. The same name and meaning as the Python package's `Controls.writes_defaults`.
+    pub fn writes_defaults(&self) -> bool {
+        self.writes_defaults
     }
 
     pub fn closed(&self) -> bool {
@@ -1114,11 +1124,15 @@ impl Controls {
     /// What a reset to defaults would change: (name, current, default) — writes nothing.
     /// Leaves the mode (auto/manual) alone and skips values that are in auto (same as the AMCap Default button).
     /// Controls with no effect on the mono sensor only with include_mono. Controls without a device default are left out.
+    /// Empty on Linux (V4L2, `writes_defaults()` false): the driver's defaults are shown by `describe()`, not written.
     pub fn plan_reset(
         &self,
         include_mono: bool,
     ) -> Result<Vec<(&'static str, UserValue, UserValue)>> {
         let mut plan = Vec::new();
+        if !self.writes_defaults {
+            return Ok(plan);
+        }
         for name in self.names()? {
             let s = spec::spec(name).expect("in table");
             if s.role == Role::Auto || (s.mono && !include_mono) {
@@ -1138,7 +1152,7 @@ impl Controls {
         Ok(plan)
     }
 
-    /// Writes plan_reset(). Does not wait.
+    /// Writes plan_reset(). Does not wait. Writes nothing on Linux (V4L2, `writes_defaults()` false).
     pub fn reset_to_defaults(&self, include_mono: bool) -> Result<Vec<WriteResult>> {
         let plan: Vec<(String, UserValue)> = self
             .plan_reset(include_mono)?
@@ -2037,6 +2051,23 @@ mod reset_tests {
                 ("gain".to_string(), Some(32), None)
             ]
         );
+        c.close();
+    }
+
+    /// Linux (V4L2): the defaults are shown, not written — the Python package's `Controls.writes_defaults` False.
+    #[test]
+    fn a_backend_that_does_not_write_defaults_gets_an_empty_plan_and_no_writes() {
+        let _l = fast();
+        assert!(controls().0.writes_defaults());
+        let (c, be) = with(|b| b.st().defaults_not_written = true);
+        be.st().values.insert("gain".into(), 100);
+        assert!(!c.writes_defaults());
+        assert!(!crate::backend::ReadOnly::new(be.clone()).writes_defaults());
+        assert_eq!(c.describe("gain").unwrap().default, Some(Int(32))); // still shown
+        assert!(c.plan_reset(true).unwrap().is_empty());
+        assert!(c.reset_to_defaults(true).unwrap().is_empty());
+        c.flush(T);
+        assert!(be.writes().is_empty());
         c.close();
     }
 

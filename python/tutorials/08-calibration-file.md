@@ -272,3 +272,10 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) and
 - [API.md](../API.md): every public name of the package.
 - [examples/README.md](../examples/README.md): all the examples in one table.
 - Questions: [Getting help](../README.md#getting-help) in the package README.
+
+## Rust
+
+- `calibration_info.py`: the Rust `calibration_info` example, its command and its `--synthetic` output are under
+  Run it above.
+- `calibration_check.py` and `python -m opticmix_vision.calib` (`add`, `list`, `show`): no Rust example yet. The
+  Rust crate reads files only: install the file with `python -m opticmix_vision.calib add`.

@@ -5,9 +5,15 @@
 //! cameras share the name, by USB location (`DeviceInfo::usb_location`, `pick_by_usb_location`).
 //!
 //! A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the
-//! camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by
-//! USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and
-//! not run with two cameras.
+//! camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB
+//! location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list
+//! showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device
+//! has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
+//!
+//! Each listed device also carries its USB IDs (`vid`, `pid`, `bcd_device`) and link speed (`link_speed`), read from
+//! the device tree and the USB hub driver without opening the device — the values `python -m opticmix_vision.doctor`
+//! prints for it. Linux (`list_v4l2_devices`, feature `capture`): from sysfs. Not read with the camera: only made-up
+//! device lists and sysfs trees have been run.
 
 use std::path::Path;
 use std::process::Command;
@@ -28,13 +34,53 @@ pub struct DeviceInfo {
     /// name, e.g. `1-4.2`. Not a serial number: it changes when the camera is plugged into another port. Not read
     /// with the camera, and not with two cameras: only made-up device lists have been run.
     pub usb_location: Option<String>,
+    /// The USB vendor ID (`idVendor`), e.g. `0x1D6B`. Windows: from the USB device's hardware IDs
+    /// (`USB\VID_1D6B&PID_0200&REV_0409`, `DEVPKEY_Device_HardwareIds`), read from the device tree without opening
+    /// the device — the doctor's `VID:PID`. Linux: sysfs `idVendor` (`list_v4l2_devices`). `None` when it cannot be
+    /// read; other systems do not read it.
+    pub vid: Option<u16>,
+    /// The USB product ID (`idProduct`), e.g. `0x0200`; read as `vid`.
+    pub pid: Option<u16>,
+    /// The USB device revision (`bcdDevice`, binary-coded decimal), e.g. `0x0409`; read as `vid` — the doctor's
+    /// "USB device revision (bcdDevice)". Not a firmware version: how it relates to the firmware version has not
+    /// been verified.
+    pub bcd_device: Option<u16>,
+    /// The speed of the USB link, as the hub driver the device is plugged into reports it for that port (the
+    /// doctor's "link speed", read the way Microsoft's USBView does; the device is not opened): `"Low"` (1.5 Mb/s),
+    /// `"Full"` (12 Mb/s), `"High"` (480 Mb/s), `"Super"` (5 Gb/s) or `"Super+"` (10 Gb/s or more). `None` when it
+    /// cannot be read — the hub cannot be asked, or the hub's port holds another device. Linux: sysfs `speed`
+    /// (`list_v4l2_devices`), the same words. Other systems do not read it.
+    ///
+    /// `vid`, `pid`, `bcd_device` and `link_speed` are read by the lists (`list_devices`, `list_dshow_devices`,
+    /// `list_mf_devices`, Linux `list_v4l2_devices`); opening a camera (`Device`, its controls) reads the USB location
+    /// only, as 0.0.6 did. Not read with the camera — only made-up device lists, hardware IDs, hub replies and sysfs
+    /// trees have been run. The camera reports no USB serial number, no firmware version and no
+    /// temperature, so there are no fields for them.
+    pub link_speed: Option<String>,
 }
 
 impl DeviceInfo {
     /// A device entry, e.g. for a made-up list to pick from (`pick_by_name`, `pick_by_usb_location`).
+    /// `vid`, `pid`, `bcd_device` and `link_speed` are `None`; set them on the entry when a made-up list needs them.
     pub fn new(index: usize, name: impl Into<String>, usb_location: Option<String>) -> DeviceInfo {
-        DeviceInfo { index, name: name.into(), usb_location }
+        DeviceInfo { index, name: name.into(), usb_location, vid: None, pid: None, bcd_device: None, link_speed: None }
     }
+
+    /// An entry of a list, with what the device tree said about its USB device.
+    fn listed(index: usize, name: String, usb: Usb) -> DeviceInfo {
+        let Usb { location, vid, pid, bcd_device, link_speed } = usb;
+        DeviceInfo { index, name, usb_location: location, vid, pid, bcd_device, link_speed }
+    }
+}
+
+/// What the device tree and the hub driver say about the USB device a listed device belongs to.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Usb {
+    location: Option<String>,
+    vid: Option<u16>,
+    pid: Option<u16>,
+    bcd_device: Option<u16>,
+    link_speed: Option<String>,
 }
 
 /// One mode the device reports itself.
@@ -111,65 +157,218 @@ fn usb_instance_id(device_path: &str) -> Option<String> {
         .then(|| format!(r"{bus}\{hw}\{inst}").to_uppercase())
 }
 
-/// The USB location of the device at a DirectShow DevicePath or Media Foundation symbolic link: the first
-/// `DEVPKEY_Device_LocationPaths` entry of its USB device (the parent, for one interface of a composite device —
-/// the same entry `python -m opticmix_vision.doctor` prints as `location`). Reads the device tree (cfgmgr32);
-/// opens no device. None when it is not a present USB device, or off Windows.
-fn usb_location_of_device_path(device_path: &str) -> Option<String> {
+/// What the device tree says about the USB device at a DirectShow DevicePath or Media Foundation symbolic link (the
+/// parent, for one interface of a composite device). `location`: its first `DEVPKEY_Device_LocationPaths` entry — the
+/// same entry `python -m opticmix_vision.doctor` prints as `location`. With `ids_and_link`, also its VID, PID and
+/// bcdDevice (`DEVPKEY_Device_HardwareIds`) and the link speed its hub reports — what the doctor reads. Reads the
+/// device tree (cfgmgr32) and asks the hub driver; opens no device. Nothing when it is not a present USB device, or
+/// off Windows.
+fn usb_of_device_path(device_path: &str, ids_and_link: bool) -> Usb {
     #[cfg(windows)]
     {
-        usb_instance_id(device_path).and_then(|id| unsafe { location_paths::first(&id) })
+        usb_instance_id(device_path).map_or_else(Usb::default, |id| unsafe { device_tree::usb(&id, ids_and_link) })
     }
     #[cfg(not(windows))]
     {
-        let _ = device_path;
-        None
+        let _ = (device_path, ids_and_link);
+        Usb::default()
+    }
+}
+
+/// The length of a USB_NODE_CONNECTION_INFORMATION_EX reply up to `ConnectionStatus` (usbioctl.h, packed):
+/// ConnectionIndex, the 18-byte device descriptor (idVendor at 12, idProduct at 14, bcdDevice at 16),
+/// CurrentConfigurationValue, Speed (at 23), DeviceIsHub, DeviceAddress, NumberOfOpenPipes, ConnectionStatus (at 31).
+#[cfg_attr(not(windows), allow(dead_code))] // used on Windows and in tests
+const EX_LEN: usize = 35;
+/// USB_NODE_CONNECTION_INFORMATION_EX_V2: ConnectionIndex, Length, SupportedUsbProtocols, Flags (all ULONG).
+#[cfg_attr(not(windows), allow(dead_code))] // used on Windows and in tests
+const V2_LEN: usize = 16;
+
+/// The strings of a `DEVPROP_TYPE_STRING_LIST` property (UTF-16, each ended by a NUL), empty ones left out.
+#[cfg_attr(not(windows), allow(dead_code))] // used on Windows and in tests
+fn utf16_list(bytes: &[u8]) -> Vec<String> {
+    let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
+    String::from_utf16_lossy(&units).split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect()
+}
+
+/// (VID, PID, bcdDevice) from a USB device's hardware IDs: the first `VID_xxxx&PID_xxxx&REV_xxxx`, in hex, case
+/// ignored — what the doctor reads (`USB\VID_1D6B&PID_0200&REV_0409` gives `(0x1D6B, 0x0200, 0x0409)`).
+#[cfg_attr(not(windows), allow(dead_code))] // used on Windows and in tests
+fn ids_from_hardware_ids(ids: &[String]) -> Option<(u16, u16, u16)> {
+    let up = ids.join(" ").to_uppercase();
+    let hex = |s: &str| {
+        (s.len() == 4 && s.bytes().all(|b| b.is_ascii_hexdigit())).then(|| u16::from_str_radix(s, 16).ok()).flatten()
+    };
+    up.match_indices("VID_").find_map(|(i, _)| {
+        let s = up.get(i..i + 26)?; // VID_xxxx&PID_xxxx&REV_xxxx
+        (s.get(8..13)? == "&PID_" && s.get(17..22)? == "&REV_").then_some(())?;
+        Some((hex(s.get(4..8)?)?, hex(s.get(13..17)?)?, hex(s.get(22..26)?)?))
+    })
+}
+
+/// The link speed a hub reports for its port, from its EX reply and V2 flags (`None` when that call failed) — read
+/// as the doctor reads it: only when the port holds this very device (connected, the same VID and PID), and the V2
+/// flags win over the EX speed, which can say High for a SuperSpeed link. `None` otherwise.
+#[cfg_attr(not(windows), allow(dead_code))] // used on Windows and in tests
+fn hub_link_speed(ex: &[u8], v2_flags: Option<u32>, vid: u16, pid: u16) -> Option<&'static str> {
+    let ex = ex.get(..EX_LEN)?;
+    let u16_at = |i: usize| u16::from_le_bytes([ex[i], ex[i + 1]]);
+    let connected = u32::from_le_bytes([ex[31], ex[32], ex[33], ex[34]]) == 1;
+    (connected && (u16_at(12), u16_at(14)) == (vid, pid)).then_some(())?;
+    link_name(ex[23], v2_flags)
+}
+
+/// `"Low"`, `"Full"`, `"High"`, `"Super"` or `"Super+"` from the EX reply's Speed (USB_DEVICE_SPEED) and the V2 flags
+/// (bit 0: operating at SuperSpeed or higher, bit 2: at SuperSpeedPlus or higher) — the doctor's names. `None` for a
+/// speed code it does not know.
+#[cfg_attr(not(windows), allow(dead_code))] // used on Windows and in tests
+fn link_name(speed: u8, v2_flags: Option<u32>) -> Option<&'static str> {
+    match v2_flags {
+        Some(f) if f & 0x4 != 0 => Some("Super+"),
+        Some(f) if f & 0x1 != 0 => Some("Super"),
+        _ => ["Low", "Full", "High", "Super"].get(usize::from(speed)).copied(),
     }
 }
 
 #[cfg(windows)]
-mod location_paths {
-    use windows::core::HSTRING;
+mod device_tree {
+    use windows::core::{GUID, HSTRING, PCWSTR};
     use windows::Win32::Devices::DeviceAndDriverInstallation::{
-        CM_Get_DevNode_PropertyW, CM_Get_Parent, CM_Locate_DevNodeW, CM_LOCATE_DEVNODE_NORMAL, CR_SUCCESS,
+        CM_Get_DevNode_PropertyW, CM_Get_Device_IDW, CM_Get_Device_Interface_ListW, CM_Get_Device_Interface_List_SizeW,
+        CM_Get_Parent, CM_Locate_DevNodeW, CM_GET_DEVICE_INTERFACE_LIST_PRESENT, CM_LOCATE_DEVNODE_NORMAL, CR_SUCCESS,
     };
-    use windows::Win32::Devices::Properties::{DEVPKEY_Device_LocationPaths, DEVPROPTYPE, DEVPROP_TYPE_STRING_LIST};
+    use windows::Win32::Devices::Properties::{
+        DEVPKEY_Device_Address, DEVPKEY_Device_HardwareIds, DEVPKEY_Device_LocationPaths, DEVPROPTYPE,
+        DEVPROP_TYPE_STRING_LIST, DEVPROP_TYPE_UINT32,
+    };
+    use windows::Win32::Foundation::{CloseHandle, DEVPROPKEY, GENERIC_WRITE};
+    use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_WRITE, OPEN_EXISTING};
+    use windows::Win32::System::IO::DeviceIoControl;
 
-    /// The first LocationPaths entry of a present device (its parent's when it is an interface, `&MI_`).
-    pub(super) unsafe fn first(instance_id: &str) -> Option<String> {
+    use super::{hub_link_speed, ids_from_hardware_ids, utf16_list, Usb, EX_LEN, V2_LEN};
+
+    /// GUID_DEVINTERFACE_USB_HUB (usbiodef.h).
+    const USB_HUB: GUID = GUID::from_u128(0xf18a0e88_c30c_11d0_8815_00a0c906bed8);
+    const IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX: u32 = 0x220448;
+    const IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2: u32 = 0x22045C;
+
+    /// What the device tree says about a present device's USB device (its parent when it is an interface, `&MI_`).
+    pub(super) unsafe fn usb(instance_id: &str, ids_and_link: bool) -> Usb {
         let mut node = 0u32;
         if CM_Locate_DevNodeW(&mut node, &HSTRING::from(instance_id), CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS {
-            return None; // not present
+            return Usb::default(); // not present
         }
         if instance_id.contains("&MI_") {
             let mut parent = 0u32;
             if CM_Get_Parent(&mut parent, node, 0) != CR_SUCCESS {
-                return None;
+                return Usb::default();
             }
             node = parent;
         }
+        let strings = |key| property(node, key, DEVPROP_TYPE_STRING_LIST).map(|b| utf16_list(&b)).unwrap_or_default();
+        let location = strings(&DEVPKEY_Device_LocationPaths).into_iter().next();
+        if !ids_and_link {
+            return Usb { location, ..Usb::default() };
+        }
+        let Some((vid, pid, bcd_device)) = ids_from_hardware_ids(&strings(&DEVPKEY_Device_HardwareIds)) else {
+            return Usb { location, ..Usb::default() };
+        };
+        let link_speed = hub_reply(node).and_then(|(ex, flags)| hub_link_speed(&ex, flags, vid, pid));
+        Usb {
+            location,
+            vid: Some(vid),
+            pid: Some(pid),
+            bcd_device: Some(bcd_device),
+            link_speed: link_speed.map(str::to_string),
+        }
+    }
+
+    /// A property of a device node: its bytes, when it has the type `want`.
+    unsafe fn property(node: u32, key: &DEVPROPKEY, want: DEVPROPTYPE) -> Option<Vec<u8>> {
         let (mut ty, mut size) = (DEVPROPTYPE(0), 0u32);
         // The first call only reports the size (CR_BUFFER_SMALL).
-        let _ = CM_Get_DevNode_PropertyW(node, &DEVPKEY_Device_LocationPaths, &mut ty, None, &mut size, 0);
-        if size < 2 {
+        let _ = CM_Get_DevNode_PropertyW(node, key, &mut ty, None, &mut size, 0);
+        if size == 0 {
             return None;
         }
-        // A REG_MULTI_SZ-style list of UTF-16 strings; size is in bytes.
-        let mut buf = vec![0u16; (size as usize).div_ceil(2)];
-        if CM_Get_DevNode_PropertyW(
-            node,
-            &DEVPKEY_Device_LocationPaths,
-            &mut ty,
-            Some(buf.as_mut_ptr().cast()),
-            &mut size,
-            0,
-        ) != CR_SUCCESS
-            || ty != DEVPROP_TYPE_STRING_LIST
+        let mut buf = vec![0u8; size as usize];
+        let ok = CM_Get_DevNode_PropertyW(node, key, &mut ty, Some(buf.as_mut_ptr()), &mut size, 0) == CR_SUCCESS;
+        buf.truncate(size as usize);
+        (ok && ty == want).then_some(buf)
+    }
+
+    /// (EX reply, V2 flags or `None`) for the hub port the USB device `node` is plugged into, as the hub driver
+    /// reports it: IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX(_V2) on the hub, as USBView and the doctor ask. The
+    /// device itself is not opened. `None` when the hub cannot be asked.
+    unsafe fn hub_reply(node: u32) -> Option<(Vec<u8>, Option<u32>)> {
+        let port: [u8; 4] = property(node, &DEVPKEY_Device_Address, DEVPROP_TYPE_UINT32)?.get(..4)?.try_into().ok()?;
+        let mut hub = 0u32;
+        let mut hub_id = [0u16; 512];
+        if CM_Get_Parent(&mut hub, node, 0) != CR_SUCCESS || CM_Get_Device_IDW(hub, &mut hub_id, 0) != CR_SUCCESS {
+            return None;
+        }
+        let hub_id = PCWSTR(hub_id.as_ptr());
+        let mut n = 0u32;
+        if CM_Get_Device_Interface_List_SizeW(&mut n, &USB_HUB, hub_id, CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
+            != CR_SUCCESS
+            || n < 2
         {
             return None;
         }
-        let n = (size as usize / 2).min(buf.len());
-        String::from_utf16_lossy(&buf[..n]).split('\0').find(|s| !s.is_empty()).map(str::to_string)
+        let mut paths = vec![0u16; n as usize];
+        if CM_Get_Device_Interface_ListW(&USB_HUB, hub_id, &mut paths, CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
+            != CR_SUCCESS
+        {
+            return None;
+        }
+        // The first path; GENERIC_WRITE with FILE_SHARE_WRITE, as USBView opens a hub.
+        let file = CreateFileW(
+            PCWSTR(paths.as_ptr()),
+            GENERIC_WRITE.0,
+            FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+        .ok()?;
+        let mut got = 0u32;
+        let mut ex = [0u8; 512];
+        ex[..4].copy_from_slice(&port);
+        let reply = DeviceIoControl(
+            file,
+            IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX,
+            Some(ex.as_ptr().cast()),
+            ex.len() as u32,
+            Some(ex.as_mut_ptr().cast()),
+            ex.len() as u32,
+            Some(&mut got),
+            None,
+        )
+        .ok()
+        .filter(|_| got as usize >= EX_LEN)
+        .map(|_| {
+            // Asks about USB 1.1, 2.0 and 3.0 (SupportedUsbProtocols 0x7).
+            let mut v2 = [0u8; V2_LEN];
+            v2[..4].copy_from_slice(&port);
+            v2[4..8].copy_from_slice(&(V2_LEN as u32).to_le_bytes());
+            v2[8..12].copy_from_slice(&7u32.to_le_bytes());
+            let flags = DeviceIoControl(
+                file,
+                IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2,
+                Some(v2.as_ptr().cast()),
+                V2_LEN as u32,
+                Some(v2.as_mut_ptr().cast()),
+                V2_LEN as u32,
+                Some(&mut got),
+                None,
+            )
+            .ok()
+            .map(|_| u32::from_le_bytes([v2[12], v2[13], v2[14], v2[15]]));
+            (ex[..EX_LEN].to_vec(), flags)
+        });
+        let _ = CloseHandle(file);
+        reply
     }
 }
 
@@ -185,10 +384,77 @@ pub(crate) fn v4l2_usb_location(node: &Path) -> Option<String> {
 /// looks) that has an `idVendor` file — that folder's name.
 #[cfg_attr(not(all(feature = "capture", target_os = "linux")), allow(dead_code))] // used on Linux and in tests
 fn usb_device_above(dir: &Path) -> Option<String> {
-    dir.ancestors()
-        .take(4)
-        .find(|d| d.join("idVendor").is_file())
-        .and_then(|d| d.file_name()?.to_str().map(str::to_string))
+    usb_device_dir(dir)?.file_name()?.to_str().map(str::to_string)
+}
+
+/// The folder `usb_device_above` names.
+#[cfg_attr(not(all(feature = "capture", target_os = "linux")), allow(dead_code))] // used on Linux and in tests
+fn usb_device_dir(dir: &Path) -> Option<&Path> {
+    dir.ancestors().take(4).find(|d| d.join("idVendor").is_file())
+}
+
+/// Linux: one entry per V4L2 video capture node, in `/dev/videoN` order — the values Python's
+/// `devices.list_devices(backend="v4l2")` and the doctor give. `index` is the N (`DeviceSelector::Index(n)` opens
+/// `/dev/videoN`), `name` the node's sysfs name; `usb_location` is its USB device's sysfs name (e.g. `2-1`), and `vid`,
+/// `pid`, `bcd_device` and `link_speed` are that device's `idVendor`, `idProduct`, `bcdDevice` and `speed` (Mb/s: 1.5
+/// `"Low"`, 12 `"Full"`, 480 `"High"`, 5000 `"Super"`, more than 5000 `"Super+"`); `None` for what cannot be read. The
+/// capture node is the one whose sysfs `index` is 0, as Python's `find_v4l2_node` picks it (a UVC camera's metadata
+/// node has 1). Reads sysfs only; opens no device. Run without a camera only (made-up sysfs trees); not run with the
+/// camera on Linux.
+#[cfg(all(feature = "capture", target_os = "linux"))]
+pub fn list_v4l2_devices() -> Vec<DeviceInfo> {
+    v4l2_devices_in(Path::new("/sys/class/video4linux"))
+}
+
+/// `list_v4l2_devices` over the class folder `class` (`/sys/class/video4linux`).
+#[cfg_attr(not(all(feature = "capture", target_os = "linux")), allow(dead_code))] // used on Linux and in tests
+fn v4l2_devices_in(class: &Path) -> Vec<DeviceInfo> {
+    let read = |p: &Path| std::fs::read_to_string(p).ok().map(|s| s.trim().to_string());
+    let mut nodes: Vec<(usize, std::path::PathBuf)> = std::fs::read_dir(class)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| Some((e.file_name().to_str()?.strip_prefix("video")?.parse().ok()?, e.path())))
+                .collect()
+        })
+        .unwrap_or_default();
+    nodes.sort();
+    nodes
+        .into_iter()
+        .filter_map(|(n, dir)| {
+            let (name, index) = (read(&dir.join("name"))?, read(&dir.join("index"))?); // gone while listed: left out
+            (index == "0").then(|| {
+                let dev = std::fs::canonicalize(dir.join("device")).ok();
+                let usb = dev.as_deref().and_then(usb_device_dir).map_or_else(Usb::default, sysfs_usb);
+                DeviceInfo::listed(n, name, usb)
+            })
+        })
+        .collect()
+}
+
+/// What sysfs says about a USB device folder: its name (the USB location), `idVendor`, `idProduct`, `bcdDevice` (hex)
+/// and `speed` named as the Windows lists name a link — read as the Python doctor reads them.
+#[cfg_attr(not(all(feature = "capture", target_os = "linux")), allow(dead_code))] // used on Linux and in tests
+fn sysfs_usb(dir: &Path) -> Usb {
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).map(|s| s.trim().to_string()).unwrap_or_default();
+    let hex = |f: &str| u16::from_str_radix(&read(f), 16).ok();
+    let speed = read("speed");
+    let link_speed = match speed.as_str() {
+        "1.5" => Some("Low"),
+        "12" => Some("Full"),
+        "480" => Some("High"),
+        "5000" => Some("Super"),
+        s if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && s.parse::<u64>().is_ok_and(|n| n > 5000) => {
+            Some("Super+")
+        }
+        _ => None,
+    };
+    Usb {
+        location: dir.file_name().and_then(|n| n.to_str()).map(str::to_string),
+        vid: hex("idVendor"),
+        pid: hex("idProduct"),
+        bcd_device: hex("bcdDevice"),
+        link_speed: link_speed.map(str::to_string),
+    }
 }
 
 fn ffmpeg_stderr(args: &[&str]) -> std::io::Result<String> {
@@ -196,42 +462,58 @@ fn ffmpeg_stderr(args: &[&str]) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
-/// DeviceInfo for each device of an ffmpeg listing, its USB location found from the DevicePath by `locate`.
-fn from_listing(text: &str, locate: impl Fn(&str) -> Option<String>) -> Vec<DeviceInfo> {
+/// DeviceInfo for each device of an ffmpeg listing, what the device tree says about it read from the DevicePath by
+/// `read`.
+fn from_listing(text: &str, read: impl Fn(&str) -> Usb) -> Vec<DeviceInfo> {
     parse_video_devices(text)
         .into_iter()
         .enumerate()
-        .map(|(index, (name, path))| DeviceInfo { index, name, usb_location: path.as_deref().and_then(&locate) })
+        .map(|(index, (name, path))| DeviceInfo::listed(index, name, path.as_deref().map_or_else(Usb::default, &read)))
         .collect()
 }
 
 /// DirectShow's video input devices, enumerated directly (no ffmpeg), in the order OpenCV's `CAP_DSHOW` counts
-/// device indexes (devices that fail to bind are counted too), each with its USB location. Binds to no device
-/// (read only). Empty list off Windows. The USB location: not read with the camera, and not with two cameras.
+/// device indexes (devices that fail to bind are counted too), each with its USB location, IDs and link speed. Binds
+/// to no device (read only). Empty list off Windows. The USB location: not read with the camera, and not with two
+/// cameras. The IDs and the link speed: not read with the camera.
 pub fn list_dshow_devices() -> Result<Vec<DeviceInfo>> {
+    list_dshow_devices_with(true)
+}
+
+/// `list_dshow_devices`; without `ids_and_link` only the USB location is read, as in 0.0.6 — no hardware IDs and no
+/// hub query: all that finding a camera to open needs (this crate's controls, the Python package's open path). For
+/// the Python extension; not part of the documented API.
+#[doc(hidden)]
+pub fn list_dshow_devices_with(ids_and_link: bool) -> Result<Vec<DeviceInfo>> {
     Ok(crate::dshow::enumerate_video_device_paths()?
         .into_iter()
         .enumerate()
-        .map(|(index, (name, path))| DeviceInfo {
-            index,
-            name: name.unwrap_or_default(),
-            usb_location: path.as_deref().and_then(usb_location_of_device_path),
+        .map(|(index, (name, path))| {
+            let usb = path.as_deref().map_or_else(Usb::default, |p| usb_of_device_path(p, ids_and_link));
+            DeviceInfo::listed(index, name.unwrap_or_default(), usb)
         })
         .collect())
 }
 
-/// Video devices in DirectShow enumeration order, each with its USB location. Laptop webcams are included — the
-/// user has to pick among them. Without `raw` this runs ffmpeg; without ffmpeg (most customer PCs) it enumerates
+/// Video devices in DirectShow enumeration order, each with its USB location, IDs and link speed. Laptop webcams are
+/// included — the user has to pick among them. Without `raw` this runs ffmpeg; without ffmpeg (most customer PCs) it enumerates
 /// DirectShow directly (`list_dshow_devices`; a failure there is an empty list — it shows as "not found").
 pub fn list_devices(raw: Option<&str>) -> Vec<DeviceInfo> {
+    list_devices_with(raw, true)
+}
+
+/// `list_devices`; without `ids_and_link` only the USB location is read (as `list_dshow_devices_with`). For the
+/// Python extension; not part of the documented API.
+#[doc(hidden)]
+pub fn list_devices_with(raw: Option<&str>, ids_and_link: bool) -> Vec<DeviceInfo> {
     let text = match raw {
         Some(r) => r.to_string(),
         None => match ffmpeg_stderr(&["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"]) {
             Ok(r) => r,
-            Err(_) => return list_dshow_devices().unwrap_or_default(),
+            Err(_) => return list_dshow_devices_with(ids_and_link).unwrap_or_default(),
         },
     };
-    from_listing(&text, usb_location_of_device_path)
+    from_listing(&text, |p| usb_of_device_path(p, ids_and_link))
 }
 
 /// Picks one device by partial name match (case-insensitive). Does not guess when it is ambiguous.
@@ -276,8 +558,9 @@ pub fn pick_by_name(needle: &str, devices: &[DeviceInfo]) -> Result<DeviceInfo> 
 /// (ignoring case) — how to choose between cameras that share a name. An empty or blank `usb_location` is
 /// `InvalidValue`. A USB location is not a serial number: it names the port the camera is plugged into, and it
 /// changes when the camera is plugged into another port. Using two cameras at the same time is not supported.
-/// Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run
-/// with a camera, and not run with two cameras.
+/// Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera
+/// connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame;
+/// a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 pub fn pick_by_usb_location(needle: &str, usb_location: &str, devices: &[DeviceInfo]) -> Result<DeviceInfo> {
     if usb_location.trim().is_empty() {
         return Err(SdkError::InvalidValue(EMPTY_USB_LOCATION.into()));
@@ -391,27 +674,32 @@ pub fn list_modes(name: &str, raw: Option<&str>) -> Vec<Mode> {
 /// lookup makes (a camera plugged in between this call and opening can shift it).
 /// Activates no device (read only). Empty list on non-Windows.
 pub fn enumerate_mf_video_devices() -> Result<Vec<String>> {
-    Ok(list_mf_devices()?.into_iter().map(|d| d.name).collect())
+    Ok(list_mf_devices_with(false)?.into_iter().map(|d| d.name).collect())
 }
 
-/// The same Media Foundation list as `enumerate_mf_video_devices`, each entry with its index and USB location
-/// (from the source's symbolic link). An index here is the one `DeviceSelector::Index` takes. Activates no device
-/// (read only). Empty list on non-Windows. The USB location: not read with the camera, and not with two cameras.
+/// The same Media Foundation list as `enumerate_mf_video_devices`, each entry with its index, USB location, IDs and
+/// link speed (from the source's symbolic link). An index here is the one `DeviceSelector::Index` takes. Activates no
+/// device (read only). Empty list on non-Windows. The USB location: not read with the camera, and not with two
+/// cameras. The IDs and the link speed: not read with the camera.
 pub fn list_mf_devices() -> Result<Vec<DeviceInfo>> {
+    list_mf_devices_with(true)
+}
+
+/// `list_mf_devices`; without `ids_and_link` only the USB location is read (as `list_dshow_devices_with`). For the
+/// Python extension; not part of the documented API.
+#[doc(hidden)]
+pub fn list_mf_devices_with(ids_and_link: bool) -> Result<Vec<DeviceInfo>> {
     #[cfg(windows)]
     {
         let _com = crate::dshow::com::ComInit::mta()?;
         // The activation objects are released at the end of this statement, before CoUninitialize (`_com`),
         // for the same reason as in the DirectShow enumeration.
-        let list = unsafe { mf_enum::sources()? }
-            .into_iter()
-            .enumerate()
-            .map(|(index, (_, name, usb_location))| DeviceInfo { index, name, usb_location })
-            .collect();
+        let list = unsafe { mf_enum::sources(ids_and_link)? }.into_iter().map(|(_, d)| d).collect();
         Ok(list)
     }
     #[cfg(not(windows))]
     {
+        let _ = ids_and_link;
         Ok(Vec::new())
     }
 }
@@ -441,9 +729,10 @@ pub(crate) mod mf_enum {
             .clone()
     }
 
-    /// Every video capture source with its friendly name ("" when it has none) and USB location (from its symbolic
-    /// link), in `MFEnumDeviceSources` order. COM must be initialized on this thread. Activates nothing.
-    pub(crate) unsafe fn sources() -> Result<Vec<(IMFActivate, String, Option<String>)>> {
+    /// Every video capture source with its entry of the list: index, friendly name ("" when it has none) and what
+    /// the device tree says about it (from its symbolic link; without `ids_and_link` the USB location only), in
+    /// `MFEnumDeviceSources` order. COM must be initialized on this thread. Activates nothing.
+    pub(crate) unsafe fn sources(ids_and_link: bool) -> Result<Vec<(IMFActivate, super::DeviceInfo)>> {
         mf_startup()?;
         let mut attrs: Option<IMFAttributes> = None;
         MFCreateAttributes(&mut attrs, 1).map_err(|e| dev_err("MFCreateAttributes", e))?;
@@ -464,11 +753,12 @@ pub(crate) mod mf_enum {
         CoTaskMemFree(Some(pp as _));
         Ok(list
             .into_iter()
-            .map(|a| {
+            .enumerate()
+            .map(|(index, a)| {
                 let n = string(&a, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME).unwrap_or_default();
                 let link = string(&a, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK).ok();
-                let usb_location = link.as_deref().and_then(super::usb_location_of_device_path);
-                (a, n, usb_location)
+                let usb = link.as_deref().map_or_else(super::Usb::default, |l| super::usb_of_device_path(l, ids_and_link));
+                (a, super::DeviceInfo::listed(index, n, usb))
             })
             .collect())
     }
@@ -532,11 +822,7 @@ dummy: Immediate exit requested
 "#;
 
     fn d(index: usize, name: &str) -> DeviceInfo {
-        DeviceInfo {
-            index,
-            name: name.into(),
-            usb_location: None,
-        }
+        DeviceInfo::new(index, name, None)
     }
 
     fn m(fourcc: &str, width: u32, height: u32, max_fps: f64) -> Mode {
@@ -677,11 +963,12 @@ dummy: Immediate exit requested
     }
 
     fn at(index: usize, name: &str, usb_location: Option<&str>) -> DeviceInfo {
-        DeviceInfo {
-            index,
-            name: name.into(),
-            usb_location: usb_location.map(str::to_string),
-        }
+        DeviceInfo::new(index, name, usb_location.map(str::to_string))
+    }
+
+    /// The same made-up device tree, read for the USB location only.
+    fn fake_tree(path: &str) -> Usb {
+        Usb { location: fake_locate(path), ..Usb::default() }
     }
 
     #[test]
@@ -700,7 +987,7 @@ dummy: Immediate exit requested
     #[test]
     fn each_listed_device_carries_the_usb_location_of_its_alternative_name() {
         assert_eq!(
-            from_listing(TWO_WEEVIA, fake_locate),
+            from_listing(TWO_WEEVIA, fake_tree),
             [
                 at(0, "WN Dual Camera", Some(LOC1)),
                 at(1, "Example Webcam", None),
@@ -711,7 +998,7 @@ dummy: Immediate exit requested
 
     #[test]
     fn picking_by_usb_location_tells_two_cameras_of_one_name_apart() {
-        let list = from_listing(TWO_WEEVIA, fake_locate);
+        let list = from_listing(TWO_WEEVIA, fake_tree);
         assert_eq!(pick_by_usb_location("wn dual", LOC2, &list).unwrap(), at(2, "WN Dual Camera", Some(LOC2)));
         // the location is compared ignoring case
         assert_eq!(pick_by_usb_location("WN Dual Camera", &LOC1.to_lowercase(), &list).unwrap().index, 0);
@@ -719,7 +1006,7 @@ dummy: Immediate exit requested
 
     #[test]
     fn two_cameras_of_one_name_point_to_their_usb_locations() {
-        match pick_by_name("wn dual", &from_listing(TWO_WEEVIA, fake_locate)) {
+        match pick_by_name("wn dual", &from_listing(TWO_WEEVIA, fake_tree)) {
             Err(SdkError::MultipleMatches(m)) => assert_eq!(
                 m,
                 "2 cameras match 'wn dual' — they cannot be told apart by name (no USB serial number). Unplug all \
@@ -732,7 +1019,7 @@ dummy: Immediate exit requested
 
     #[test]
     fn no_camera_at_the_usb_location_lists_names_and_locations() {
-        let list = from_listing(TWO_WEEVIA, fake_locate);
+        let list = from_listing(TWO_WEEVIA, fake_tree);
         match pick_by_usb_location("wn dual", "PCIROOT(0)#USB(9)", &list) {
             Err(SdkError::NoMatch(m)) => assert_eq!(
                 m,
@@ -791,6 +1078,115 @@ dummy: Immediate exit requested
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    // ---- Linux list: made-up sysfs trees only — nothing is enumerated ------------------------------------------
+
+    /// Node names, USB location and values as the camera showed them on Linux (2026-11-25, one mini PC, one camera,
+    /// not opened): /dev/video0 (index 0) and /dev/video1 (index 1, the metadata node) on the USB device 2-1.
+    const GADGET: &str = "Webcam gadget: WN Dual Camera";
+    const WEEVIA_USB: [(&str, &str); 4] =
+        [("idVendor", "1d6b"), ("idProduct", "0200"), ("bcdDevice", "0409"), ("speed", "5000")];
+
+    /// `dir/name/link` -> `dir/target`: a symbolic link on Linux, a junction on Windows (no privilege needed).
+    fn link(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            let made = Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
+    }
+
+    /// sysfs as Linux lays it out, in a new folder: `usb` = (USB device, its files), `nodes` = (videoN, name, index,
+    /// USB device); videoN/device -> the USB device's interface folder (2-1:1.0 on Linux; ':' is not allowed in a
+    /// Windows file name, so 2-1_1.0 here). Returns (the folder, its class folder /sys/class/video4linux).
+    type Node<'a> = (&'a str, &'a str, &'a str, Option<&'a str>);
+
+    fn sysfs_tree(
+        tag: &str,
+        usb: &[(&str, &[(&str, &str)])],
+        nodes: &[Node],
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("ov_v4l2_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (dev, files) in usb {
+            std::fs::create_dir_all(root.join("devices").join(dev).join(format!("{dev}_1.0"))).unwrap();
+            for (f, v) in *files {
+                std::fs::write(root.join("devices").join(dev).join(f), format!("{v}\n")).unwrap();
+            }
+        }
+        let class = root.join("class");
+        for (node, name, index, dev) in nodes {
+            std::fs::create_dir_all(class.join(node)).unwrap();
+            std::fs::write(class.join(node).join("name"), format!("{name}\n")).unwrap();
+            std::fs::write(class.join(node).join("index"), format!("{index}\n")).unwrap();
+            if let Some(dev) = dev {
+                link(&root.join("devices").join(dev).join(format!("{dev}_1.0")), &class.join(node).join("device"));
+            }
+        }
+        (root, class)
+    }
+
+    fn listed(index: usize, name: &str, location: &str, ids: (u16, u16, u16), link: Option<&str>) -> DeviceInfo {
+        let mut d = at(index, name, Some(location));
+        (d.vid, d.pid, d.bcd_device, d.link_speed) = (Some(ids.0), Some(ids.1), Some(ids.2), link.map(str::to_string));
+        d
+    }
+
+    #[test]
+    fn the_v4l2_list_has_the_capture_node_of_each_camera_with_its_usb_ids_and_link_speed() {
+        let usb_2 = [("idVendor", "1d6b"), ("idProduct", "0200"), ("bcdDevice", "0409"), ("speed", "480")];
+        let (root, class) = sysfs_tree(
+            "list",
+            &[("2-1", &WEEVIA_USB), ("1-4.2", &usb_2), ("1-5", &[("idVendor", "636e")])],
+            &[
+                ("video0", GADGET, "0", Some("2-1")),
+                ("video1", GADGET, "1", Some("2-1")),
+                ("video10", GADGET, "0", Some("1-4.2")),
+                ("video11", GADGET, "1", Some("1-4.2")),
+                ("video2", "Laptop webcam", "0", Some("1-5")),
+                ("video4", "Dummy video device", "0", None),
+            ],
+        );
+        std::fs::create_dir_all(class.join("video5")).unwrap(); // a node that went away while it was listed
+        let mut webcam = at(2, "Laptop webcam", Some("1-5"));
+        webcam.vid = Some(0x636E); // the rest could not be read
+        assert_eq!(
+            v4l2_devices_in(&class),
+            [
+                listed(0, GADGET, "2-1", (0x1D6B, 0x0200, 0x0409), Some("Super")),
+                webcam,
+                at(4, "Dummy video device", None),
+                listed(10, GADGET, "1-4.2", (0x1D6B, 0x0200, 0x0409), Some("High")),
+            ]
+        );
+        assert!(v4l2_devices_in(&root.join("absent")).is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// sysfs `speed` (Mb/s) gets the words of the Windows lists — the Python doctor's table.
+    #[test]
+    fn the_v4l2_link_speed_has_the_words_of_the_windows_lists() {
+        let root = std::env::temp_dir().join(format!("ov_v4l2_speed_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for (speed, want) in [
+            ("1.5", Some("Low")),
+            ("12", Some("Full")),
+            ("480", Some("High")),
+            ("5000", Some("Super")),
+            ("10000", Some("Super+")),
+            ("20000", Some("Super+")),
+            ("53.3", None),
+            ("", None),
+        ] {
+            std::fs::write(root.join("speed"), format!("{speed}\n")).unwrap();
+            assert_eq!(sysfs_usb(&root).link_speed.as_deref(), want, "speed {speed:?}");
+        }
+        std::fs::remove_file(root.join("speed")).unwrap();
+        assert_eq!(sysfs_usb(&root).link_speed, None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn parses_a_captured_listing() {
         let names: Vec<_> = list_devices(Some(REAL_LISTING))
@@ -805,5 +1201,120 @@ dummy: Immediate exit requested
             .map(|d| d.name)
             .collect();
         assert_eq!(names, ["A"]);
+    }
+
+    // ---- USB IDs and link speed: made-up hardware IDs and hub replies only — nothing is enumerated --------------
+
+    fn hw(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The hardware IDs of the doctor's tests (a Weevia S1's composite USB device, a laptop webcam).
+    #[test]
+    fn the_usb_ids_are_read_from_the_hardware_ids() {
+        let weevia = hw(&[r"USB\VID_1D6B&PID_0200&REV_0409&MI_00", r"USB\VID_1D6B&PID_0200&REV_0409"]);
+        assert_eq!(ids_from_hardware_ids(&weevia), Some((0x1D6B, 0x0200, 0x0409)));
+        assert_eq!(ids_from_hardware_ids(&hw(&[r"usb\vid_636e&pid_0bda&rev_0007"])), Some((0x636E, 0x0BDA, 0x0007)));
+        // an ID with all three is found when an earlier one has no revision
+        let later = hw(&[r"USB\VID_1D6B&PID_0200", r"USB\VID_1D6B&PID_0200&REV_0409"]);
+        assert_eq!(ids_from_hardware_ids(&later), Some((0x1D6B, 0x0200, 0x0409)));
+        // no revision, not hex, too short, nothing: not read
+        assert_eq!(ids_from_hardware_ids(&hw(&[r"USB\VID_1D6B&PID_0200"])), None);
+        assert_eq!(ids_from_hardware_ids(&hw(&[r"USB\VID_1D6B&PID_02G0&REV_0409"])), None);
+        assert_eq!(ids_from_hardware_ids(&hw(&[r"USB\VID_1D6B&PID_0200&REV_04"])), None);
+        assert_eq!(ids_from_hardware_ids(&[]), None);
+    }
+
+    #[test]
+    fn a_string_list_property_is_split_at_its_nuls() {
+        let bytes: Vec<u8> = "A\0BC\0\0".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(utf16_list(&bytes), ["A", "BC"]);
+        assert!(utf16_list(&[]).is_empty());
+    }
+
+    /// A USB_NODE_CONNECTION_INFORMATION_EX reply laid out as the doctor's tests lay it out (`_ex_reply`).
+    fn ex_reply(vid: u16, pid: u16, speed: u8, status: u32) -> Vec<u8> {
+        let mut b = vec![0u8; 64];
+        b[0..4].copy_from_slice(&2u32.to_le_bytes());
+        (b[4], b[5]) = (18, 1);
+        b[6..8].copy_from_slice(&0x0320u16.to_le_bytes());
+        b[12..14].copy_from_slice(&vid.to_le_bytes());
+        b[14..16].copy_from_slice(&pid.to_le_bytes());
+        b[16..18].copy_from_slice(&0x0409u16.to_le_bytes());
+        (b[22], b[23], b[24]) = (1, speed, 0);
+        b[25..27].copy_from_slice(&7u16.to_le_bytes());
+        b[27..31].copy_from_slice(&3u32.to_le_bytes());
+        b[31..35].copy_from_slice(&status.to_le_bytes());
+        b
+    }
+
+    /// The doctor's `test_link_name` table: the same speeds and flags give the same names (its "unknown" is `None`).
+    #[test]
+    fn link_speed_names_are_the_doctors() {
+        for (speed, flags, want) in [
+            (0, None, Some("Low")),
+            (1, None, Some("Full")),
+            (2, None, Some("High")),
+            (3, None, Some("Super")),
+            (2, Some(0b0000), Some("High")),
+            (2, Some(0b0010), Some("High")),
+            (2, Some(0b0011), Some("Super")),
+            (3, Some(0b1111), Some("Super+")),
+            (9, None, None),
+        ] {
+            assert_eq!(link_name(speed, flags), want, "speed {speed}, flags {flags:?}");
+        }
+    }
+
+    #[test]
+    fn a_hub_reply_for_another_device_or_an_empty_port_is_not_used() {
+        let speed = |vid, status, flags| hub_link_speed(&ex_reply(vid, 0x0200, 2, status), flags, 0x1D6B, 0x0200);
+        assert_eq!(speed(0x1D6B, 1, Some(0b10)), Some("High"));
+        assert_eq!(speed(0x1D6B, 1, Some(0b11)), Some("Super")); // the V2 flags win over the EX speed
+        assert_eq!(speed(0x05E3, 1, Some(0b10)), None); // the port holds another device
+        assert_eq!(speed(0x1D6B, 0, Some(0b10)), None); // no device connected
+        let short = &ex_reply(0x1D6B, 0x0200, 2, 1)[..EX_LEN - 1];
+        assert_eq!(hub_link_speed(short, None, 0x1D6B, 0x0200), None);
+    }
+
+    #[test]
+    fn a_new_entry_has_no_usb_ids_or_link_speed() {
+        let d = DeviceInfo::new(0, "WN Dual Camera", Some(LOC1.into()));
+        assert_eq!((d.vid, d.pid, d.bcd_device, d.link_speed), (None, None, None, None));
+    }
+
+    #[test]
+    fn each_listed_device_carries_the_usb_ids_and_link_speed_read_with_it() {
+        // a made-up device tree: the first Weevia S1 read in full, the second's hub could not be asked
+        let tree = |path: &str| {
+            let full = |link: Option<&str>| Usb {
+                location: fake_locate(path),
+                vid: Some(0x1D6B),
+                pid: Some(0x0200),
+                bcd_device: Some(0x0409),
+                link_speed: link.map(str::to_string),
+            };
+            match fake_locate(path).as_deref() {
+                Some(LOC1) => full(Some("Super")),
+                Some(LOC2) => full(None),
+                _ => Usb::default(),
+            }
+        };
+        let with = |mut d: DeviceInfo, link: Option<&str>| {
+            (d.vid, d.pid, d.bcd_device, d.link_speed) = (Some(0x1D6B), Some(0x0200), Some(0x0409), link.map(str::to_string));
+            d
+        };
+        let list = from_listing(TWO_WEEVIA, tree);
+        assert_eq!(
+            list,
+            [
+                with(at(0, "WN Dual Camera", Some(LOC1)), Some("Super")),
+                at(1, "Example Webcam", None),
+                with(at(2, "WN Dual Camera", Some(LOC2)), None)
+            ]
+        );
+        // picking hands back the whole entry
+        assert_eq!(pick_by_usb_location("wn dual", LOC1, &list).unwrap(), list[0]);
+        assert_eq!(pick_by_name("webcam", &list).unwrap(), list[1]);
     }
 }

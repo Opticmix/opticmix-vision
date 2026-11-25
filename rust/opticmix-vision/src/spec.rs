@@ -206,6 +206,27 @@ pub fn ks_id(key: &str) -> Option<(Iface, i32)> {
     KEYS.iter().find(|k| k.0 == key).map(|k| (k.1, k.2))
 }
 
+/// Linux: the standard V4L2 control ID of each key (linux/videodev2.h). The Rust V4L2 controls (`v4l2_ctrl`) use them, and so
+/// does the Python package's range read on Linux (`_core.V4L2_CID`). Checked against the kernel header in `v4l2_ctrl`'s tests.
+pub const V4L2_CID: [(&str, u32); 12] = [
+    ("brightness", 0x0098_0900),
+    ("contrast", 0x0098_0901),
+    ("saturation", 0x0098_0902),
+    ("hue", 0x0098_0903),
+    ("gamma", 0x0098_0910),
+    ("gain", 0x0098_0913),
+    ("power_line_frequency", 0x0098_0918),
+    ("white_balance", 0x0098_091a), // WHITE_BALANCE_TEMPERATURE
+    ("sharpness", 0x0098_091b),
+    ("backlight_compensation", 0x0098_091c),
+    ("exposure", 0x009a_0902), // EXPOSURE_ABSOLUTE (100 µs)
+    ("auto_exposure_priority", 0x009a_0903),
+];
+
+/// `VIDIOC_QUERYCTRL` = `_IOWR('V', 36, struct v4l2_queryctrl)`, a 68-byte struct — the Python package's range read on Linux
+/// (`_core.V4L2_VIDIOC_QUERYCTRL`). Checked against the `v4l` crate's value in `v4l2_ctrl`'s tests.
+pub const V4L2_VIDIOC_QUERYCTRL: u32 = 0xC044_5624;
+
 /// Keys where the auto/manual flags have a meaning.
 pub const AUTO_CAPABLE: [&str; 2] = ["exposure", "white_balance"];
 

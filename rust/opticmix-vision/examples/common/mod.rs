@@ -2,10 +2,12 @@
 //! `--synthetic`, a stand-in that needs no camera (generated frames and simulated controls with made-up ranges).
 #![allow(dead_code)] // each example uses part of this file
 
+use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 use std::str::FromStr;
 
-use opticmix_vision::{Device, DeviceConfig, NegotiatedMode, Result, SdkError};
+use opticmix_vision::{Device, DeviceConfig, GrayImage, NegotiatedMode, Result, SdkError};
 
 /// The options after `--` in `cargo run --example <name> -- <options>`.
 pub struct Args {
@@ -93,6 +95,15 @@ pub fn mode_line(m: &NegotiatedMode) -> String {
         "{}x{} {} {:.1} fps ({})",
         m.width, m.height, m.fourcc, m.fps, m.backend_name
     )
+}
+
+/// One eye as 8-bit gray PGM (binary "P5"), so the examples need no image crate; GIMP, ImageMagick and OpenCV
+/// (`cv2.imread`) open it. For PNG, encode `g.data` with an image crate.
+pub fn write_pgm(path: &Path, g: &GrayImage) -> std::io::Result<()> {
+    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    write!(f, "P5\n{} {}\n255\n", g.width, g.height)?;
+    f.write_all(&g.data)?;
+    f.flush()
 }
 
 /// The Weevia S1, found by name — or, with `synthetic`, generated frames (not measured data).

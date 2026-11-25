@@ -20,7 +20,8 @@
 //! ```
 //!
 //! Camera: the same calls (open, then read every control while streaming) were run on Windows on one
-//! camera in an internal check; this file has not been run with the camera yet.
+//! camera in an internal check; on Windows this file has not been run with the camera yet; on Linux it read the
+//! controls once (one PC, one camera, 2026-11-25, crate 0.0.6).
 //! Writes to the camera: none — the last line prints this process's control-write count to show it.
 
 mod common;

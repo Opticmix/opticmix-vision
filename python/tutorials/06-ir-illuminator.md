@@ -86,3 +86,25 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) and
 ## Next
 
 [07 · Robust capture](07-robust-capture.md): keep processing off the read loop, and recover when an eye stops.
+
+## Rust
+
+The Rust crate has `led_level`. In a checkout of the repository, from
+`rust/opticmix-vision`, without a camera:
+
+```bash
+cargo run --release --features test-support --example led_level -- --synthetic
+```
+
+Output with `--synthetic` (generated frames); with the camera the numbers differ.
+
+```text
+$ cargo run --release --features test-support --example led_level -- --synthetic
+illuminator: 32 -> requested 96, written, readback 96
+left  eye: mean  173.8 ->  173.8   pixels changed by >10:   0.0 %
+right eye: mean  103.4 ->  103.4   pixels changed by >10:   0.0 %
+```
+
+- With `--synthetic` the generated image does not respond to the level at all, so the pixels do not change
+  here.
+- With the camera: not run yet. Writing through this crate has not been run on the camera.

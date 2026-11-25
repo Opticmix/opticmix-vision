@@ -112,6 +112,14 @@ if _native.available() and WEEVIA_S1_NAME != _native.core().WEEVIA_S1_NAME:   # 
     raise ImportError(f"WEEVIA_S1_NAME {WEEVIA_S1_NAME!r} != core {_native.core().WEEVIA_S1_NAME!r}")
 WEEVIA_S1 = {"layout": "sbs", "lr_order": "first_is_right", "backend": "dshow",
             "width": 1600, "height": 800, "fps": 90.0, "fourcc": "MJPG"}
+# The --usb-location help of the tools that open the camera (viewer, explorer, doctor, presets, calib check): each
+# passes it to DeviceConfig.weevia_s1(usb_location=...).
+_USB_LOCATION_HELP = ("open the Weevia S1 plugged in at this USB location, to choose between two that share a name "
+                      "(DeviceConfig.weevia_s1(usb_location=...)); Windows: as examples/list_devices.py or python -m "
+                      "opticmix_vision.doctor (location) prints it; "
+                      "Linux: the USB device's sysfs name, e.g. 1-4.2; no Weevia S1 there, or an empty one: exit code "
+                      "2. Not a serial number: it changes when the camera is plugged into another port. Picking by USB "
+                      "location: run without a camera only (made-up device lists)")
 
 
 class DeviceError(RuntimeError):
@@ -193,7 +201,7 @@ class DeviceConfig:
 
         Windows: DirectShow lists the cameras. Linux: the `/dev/videoN` capture node whose name contains
         'WN Dual Camera' in `/sys/class/video4linux`, and `backend` defaults to "v4l2".
-        Linux name lookup: implemented, not yet run on the camera.
+        Linux name lookup: run with the camera once (one PC, one camera, 2026-11-25).
 
         Windows with backend="msmf": the index comes from Media Foundation's list (`devices.list_devices(backend=
         "msmf")`), the list OpenCV's CAP_MSMF counts in. With backend="any", OpenCV tries its backends in priority
@@ -205,9 +213,10 @@ class DeviceConfig:
         usb_location` as `examples/list_devices.py` prints it; Linux: the USB device's sysfs name, e.g. `1-4.2`;
         an empty or blank one is `ValueError`).
         A USB location is not a serial number: it names the port the camera is plugged into, and it changes when
-        the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a
-        camera by USB location has been run without a camera only (made-up device lists); it has not been run with
-        a camera, and not run with two cameras.
+        the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera
+        by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected,
+        the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a
+        location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
         """
         from . import devices
         linux = sys.platform.startswith("linux")
@@ -755,7 +764,11 @@ class Device:
             except ControlsUnavailable as exc:
                 reason = f"native DirectShow controls unavailable: {exc}"
                 log.warning("%s — falling back to OpenCV", reason)
-        return Controls(OpenCVBackend(self._cap, self._flavor(), reason=reason, model=self._usb_model()))
+        node = None   # Linux V4L2: the device node, so the fallback can read ranges and defaults (VIDIOC_QUERYCTRL)
+        if not self._injected and sys.platform.startswith("linux") and self._flavor() == "v4l2":
+            d = self.config.device
+            node = f"/dev/video{d}" if isinstance(d, int) else str(d)
+        return Controls(OpenCVBackend(self._cap, self._flavor(), reason=reason, model=self._usb_model(), node=node))
 
     def _usb_model(self) -> str | None:
         """WEEVIA_S1_NAME when the opened device has that USB name (Linux: sysfs; Windows: the DirectShow list, or

@@ -28,8 +28,9 @@
 //! read 91 frames; late 0, estimated missed 0
 //! ```
 //!
-//! Camera: does not open one. Run on recordings of generated frames only; not run on a recording made with the
-//! camera.
+//! Camera: does not open one. It played back a recording `record_video` made with the camera once (one PC, one
+//! camera, 2026-11-25): 881 frames, as Python's `play_recording.py` did. On Linux once (one PC, one camera,
+//! 2026-11-25).
 
 mod common;
 

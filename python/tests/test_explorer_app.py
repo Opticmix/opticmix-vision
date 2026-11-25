@@ -97,6 +97,21 @@ def test_reset_dialog_shows_the_plan_or_says_there_is_nothing_to_do(app):
 
 
 
+
+def test_reset_dialog_on_linux_says_the_defaults_are_shown_not_written(app):
+    from opticmix_vision.controls import DEFAULTS_NOT_WRITTEN
+    s = _open(app)
+    c = app.source.controls
+    c._writes_defaults = False                                       # what the OpenCV path on Linux (V4L2) sets
+    try:
+        s._open_reset()
+        texts = [w.cget("text") for w in s.reset_dialog.winfo_children() if isinstance(w, tk.Label)]
+        assert texts == [DEFAULTS_NOT_WRITTEN]
+        assert str(s.reset_confirm.cget("state")) == "disabled"
+        s.reset_dialog.destroy()
+    finally:
+        c._writes_defaults = True
+
 def test_a_value_the_camera_did_not_keep_is_shown_and_the_slider_snaps_back(app):
     """2026-09-24: 게인 8 을 드라이버가 받았는데 카메라는 0 을 지켰다 — 창이 그걸 말해야 한다."""
     s = _open(app)

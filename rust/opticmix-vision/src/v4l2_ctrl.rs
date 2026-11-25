@@ -1,4 +1,4 @@
-//! Linux controls (not yet run on the camera) — standard V4L2 controls only (`v4l`'s `control`/`set_control` = VIDIOC_QUERY_EXT_CTRL·
+//! Linux controls (reading run with the camera once, 2026-11-25; writing not run) — standard V4L2 controls only (`v4l`'s `control`/`set_control` = VIDIOC_QUERY_EXT_CTRL·
 //! VIDIOC_G_EXT_CTRLS·VIDIOC_S_EXT_CTRLS, standard control IDs). The exposure unit is "100us", the same as Python OpenCV V4L2.
 
 use std::collections::HashMap;
@@ -9,22 +9,8 @@ use v4l::Device as VDev;
 
 use crate::backend::{Backend, RawRange};
 use crate::error::{Result, SdkError};
-use crate::spec::is_auto_capable;
+use crate::spec::{is_auto_capable, V4L2_CID as CID};
 
-const CID: [(&str, u32); 12] = [
-    ("brightness", 0x0098_0900),
-    ("contrast", 0x0098_0901),
-    ("saturation", 0x0098_0902),
-    ("hue", 0x0098_0903),
-    ("gamma", 0x0098_0910),
-    ("gain", 0x0098_0913),
-    ("power_line_frequency", 0x0098_0918),
-    ("white_balance", 0x0098_091a), // WHITE_BALANCE_TEMPERATURE
-    ("sharpness", 0x0098_091b),
-    ("backlight_compensation", 0x0098_091c),
-    ("exposure", 0x009a_0902), // EXPOSURE_ABSOLUTE (100 µs)
-    ("auto_exposure_priority", 0x009a_0903),
-];
 const CID_AUTO_WHITE_BALANCE: u32 = 0x0098_090c;
 const CID_EXPOSURE_AUTO: u32 = 0x009a_0901;
 const EXPOSURE_MANUAL: i64 = 1;
@@ -151,6 +137,10 @@ impl Backend for V4l2Controls {
         self.dev = None;
         Ok(())
     }
+    /// Control writes on Linux have not been run on the camera: the driver's defaults are shown (`query`), not written.
+    fn writes_defaults(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +180,29 @@ mod tests {
         assert_eq!(CID_EXPOSURE_AUTO, k::V4L2_CID_EXPOSURE_AUTO);
         assert_eq!(EXPOSURE_MANUAL, k::v4l2_exposure_auto_type_V4L2_EXPOSURE_MANUAL as i64);
         assert_eq!(EXPOSURE_APERTURE_PRIORITY, k::v4l2_exposure_auto_type_V4L2_EXPOSURE_APERTURE_PRIORITY as i64);
+        use v4l::v4l2::vidioc::{_IOC_TYPE, VIDIOC_QUERYCTRL};
+        assert_eq!(VIDIOC_QUERYCTRL, crate::spec::V4L2_VIDIOC_QUERYCTRL as _IOC_TYPE);
+        assert_eq!(std::mem::size_of::<k::v4l2_queryctrl>(), 68);
+    }
+
+    /// The driver's default is reported (describe), but reset_to_defaults writes nothing on Linux.
+    #[test]
+    fn the_driver_default_is_shown_not_written() {
+        let id = cid("gain").unwrap();
+        let mut c = V4l2Controls::new(PathBuf::from("/dev/null"), String::new());
+        c.descs.insert(id, Description {
+            id,
+            typ: Type::Integer,
+            name: "Gain".into(),
+            minimum: 0,
+            maximum: 100,
+            step: 1,
+            default: 32,
+            flags: v4l::control::Flags::empty(),
+            items: None,
+        });
+        assert_eq!(c.query("gain").unwrap().unwrap().default, Some(32));
+        assert!(!c.writes_defaults());
     }
 
     #[test]

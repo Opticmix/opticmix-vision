@@ -369,3 +369,20 @@ def test_cli_list_shows_the_connected_model_by_default(cam, store, capsys, monke
     assert presets.main(["list", "--model", "synthetic"]) == 0 and names() == ["mine"]
     monkeypatch.setattr(presets, "_connected_model", lambda: None)
     assert presets.main(["list"]) == 0 and names() == ["cam", "mine"]
+
+
+def test_cli_load_defaults_on_linux_says_the_defaults_are_not_written(store, capsys, monkeypatch):
+    import contextlib
+    from opticmix_vision.controls import DEFAULTS_NOT_WRITTEN
+    real = presets._open
+
+    @contextlib.contextmanager
+    def linux_like(synthetic, cfg=None):
+        with real(synthetic, cfg) as cam:
+            cam.controls._writes_defaults = False                    # what the OpenCV path on Linux (V4L2) sets
+            yield cam
+    monkeypatch.setattr(presets, "_open", linux_like)
+    for args in (["load", "defaults", "--synthetic", "--dry-run"], ["load", "defaults", "--synthetic"]):
+        assert presets.main(args) == 1
+        captured = capsys.readouterr()
+        assert DEFAULTS_NOT_WRITTEN in captured.err and "nothing differs" not in captured.out

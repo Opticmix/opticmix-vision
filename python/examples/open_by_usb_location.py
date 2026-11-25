@@ -9,12 +9,14 @@ Two Weevia S1 have the same name (the camera reports no USB serial number), so D
 with an error when both are connected. DeviceConfig.weevia_s1(usb_location=...) opens the one with the name at a
 USB location — Windows: the USB device's first location path, as examples/list_devices.py and this example print
 it (DirectShow's list, the one DeviceConfig.weevia_s1() opens from); Linux: the USB device's sysfs name, e.g.
-1-4.2 (python -m opticmix_vision.doctor prints it as "location").
+1-4.2 (python -m opticmix_vision.doctor prints it as "location"; without --usb-location this example lists it from
+V4L2's list, devices.list_devices()).
 
 A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the
 camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB
-location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run
-with two cameras.
+location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed
+its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was
+refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 
 --synthetic picks from a made-up list of two Weevia S1 (made-up USB locations; the second one unless
 --usb-location names another) and reads a generated frame, not measured data.
@@ -49,11 +51,11 @@ def main() -> int:
     ap.add_argument("--synthetic", action="store_true", help="a made-up list of two Weevia S1 and generated frames")
     a = ap.parse_args()
 
-    windows = sys.platform == "win32"
-    listed = SYNTHETIC_LIST if a.synthetic else (list_devices() if windows else [])
+    windows, linux = sys.platform == "win32", sys.platform.startswith("linux")
+    listed = SYNTHETIC_LIST if a.synthetic else (list_devices() if windows or linux else [])  # Linux: V4L2's list
     weevia = [d for d in listed if WEEVIA_S1_NAME.lower() in d.name.lower()]
-    if a.synthetic or windows:
-        print(f"Weevia S1 in the {'made-up' if a.synthetic else 'DirectShow'} list:")
+    if a.synthetic or windows or linux:
+        print(f"Weevia S1 in the {'made-up' if a.synthetic else 'DirectShow' if windows else 'V4L2'} list:")
         for d in weevia:
             print(f"  [{d.index}] USB location: {d.usb_location or 'not known'}")
     location = a.usb_location

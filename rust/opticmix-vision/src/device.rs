@@ -143,7 +143,8 @@ impl Device {
     /// A frame's `index` is its number in the file, `host_ns` and the driver fields are the times recorded in the
     /// CSV (see `recording`). The config is the recording's: side by side, left eye first, the recorded mode,
     /// no stall check. `playback()` seeks, loops and paces. A recording has no controls (`controls()` gives
-    /// `SdkError::Unavailable`). Errors: `SdkError::Recording` (see `Playback::open`). Run without a camera only.
+    /// `SdkError::Unavailable`). Errors: `SdkError::Recording` (see `Playback::open`). Run with a camera recording
+    /// once (one PC, one camera, 2026-11-25: 881 frames, as Python read them).
     pub fn open_recording(path: impl AsRef<std::path::Path>) -> Result<Device> {
         let p = crate::recording::Playback::open(path)?;
         let m = p.mode();

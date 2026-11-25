@@ -22,7 +22,7 @@ def test_devices_are_listed_without_ffmpeg(monkeypatch):
         raise FileNotFoundError("ffmpeg")
     monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
     monkeypatch.setattr(devices, "_native_devices", lambda: ["Example Front Webcam", "WN Dual Camera"])
-    assert devices.list_devices() == [devices.DeviceInfo(0, "Example Front Webcam"),
+    assert devices.list_devices(backend="dshow") == [devices.DeviceInfo(0, "Example Front Webcam"),
                                       devices.DeviceInfo(1, "WN Dual Camera")]
     assert devices.resolve_by_name("WN Dual Camera").index == 1
 
@@ -30,7 +30,7 @@ def test_devices_are_listed_without_ffmpeg(monkeypatch):
 def test_ffmpeg_still_wins_when_present(monkeypatch):
     monkeypatch.setattr(devices, "_ffmpeg_devices", lambda: '[dshow @ 0] "WN Dual Camera" (video)\n')
     monkeypatch.setattr(devices, "_native_devices", lambda: pytest.fail("native enumeration not needed"))
-    assert devices.list_devices() == [devices.DeviceInfo(0, "WN Dual Camera")]
+    assert devices.list_devices(backend="dshow") == [devices.DeviceInfo(0, "WN Dual Camera")]
 
 
 # ---------------------------------------------------------------- one place for the measured Weevia S1 settings
@@ -294,6 +294,7 @@ def test_explorer_opens_the_weevia_s1_with_the_measured_eye_order(monkeypatch):
     fake.synthetic = False
     fake.state = explorer.ExplorerState()
     fake.state.select_device(devices.DeviceInfo(1, "WN Dual Camera"))
+    fake._devices = [fake.state.device]                  # the device list the window holds (one camera)
     fake.state.set_modes([explorer.KNOWN_MODE])
     fake.state.select_mode(explorer.KNOWN_MODE)
     fake._open_source()

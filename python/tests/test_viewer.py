@@ -1516,8 +1516,21 @@ def test_backend_without_device_goes_to_the_weevia_s1_lookup(monkeypatch):
 
     def opened(*argv):
         return viewer._open_source(viewer.build_parser().parse_args(list(argv)))
-    assert opened("--backend", "msmf") == "cfg" and got == [{"backend": "msmf"}]
-    assert opened() == "cfg" and got[-1] == {}                      # not given: weevia_s1's own (DirectShow)
+    assert opened("--backend", "msmf") == "cfg" and got == [{"backend": "msmf", "usb_location": None}]
+    assert opened() == "cfg" and got[-1] == {"usb_location": None}                     # not given: weevia_s1's own (DirectShow)
     assert opened("--device", "0", "--layout", "sbs", "--lr-order", "first_is_right").backend == "dshow"
     assert opened("--device", "0", "--layout", "sbs", "--lr-order", "first_is_right",
                   "--backend", "msmf").backend == "msmf"
+
+
+def test_p_and_P_on_linux_say_the_camera_defaults_are_shown_not_written(store):
+    from opticmix_vision.controls import DEFAULTS_NOT_WRITTEN
+    src = SyntheticStereoSource(eye_size=(64, 32))
+    st = ViewerState()
+    src.controls._writes_defaults = False                            # what the OpenCV path on Linux (V4L2) sets
+    w0 = len(src._sim.writes)
+    st.handle_key(ord("p"), src)                                     # no saved presets: the defaults
+    assert st.messages[-1] == f"preset defaults: {DEFAULTS_NOT_WRITTEN}"
+    st.handle_key(ord("P"), src)
+    assert st.messages[-1] == f"preset defaults: {DEFAULTS_NOT_WRITTEN}"
+    assert len(src._sim.writes) == w0

@@ -1,6 +1,6 @@
 [package]
 name = "opticmix-vision"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2021"
 rust-version = "1.88"
 description = "Rust API for the Weevia S1 stereo-IR camera (preview): device lookup, MJPG capture, stereo split, camera controls, the installed calibration file"
@@ -36,9 +36,11 @@ jpeg-encoder = "0.6"
 
 # Pinned to the version and features the build was checked with. MediaFoundation is always on: the device list
 # (devices::enumerate_mf_video_devices) needs it without `capture`; capture through it (mf.rs) needs `capture`.
-# Devices_*: the USB location of a listed device (devices.rs, cfgmgr32 DEVPKEY_Device_LocationPaths), read only.
+# Devices_*: the USB location, IDs and bcdDevice of a listed device (devices.rs, cfgmgr32 DEVPKEY_Device_LocationPaths
+# and HardwareIds), read only. Security, Storage_FileSystem, System_IO: asking the USB hub driver for the link speed
+# (CreateFileW on the hub, DeviceIoControl IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX(_V2)), as the doctor does.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_DirectShow", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Ole", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties"] }
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Media_DirectShow", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_Ole", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 # Linux capture (v4l2.rs) and controls (v4l2_ctrl.rs), enabled by `capture`. v4l2-sys-mit 0.3.0 (default features of v4l)
 # runs bindgen on linux/videodev2.h at build time: a Linux build needs libclang and kernel headers
@@ -85,6 +87,10 @@ required-features = ["capture"]
 
 [[example]]
 name = "open_by_usb_location"
+required-features = ["capture"]
+
+[[example]]
+name = "export_recording"
 required-features = ["capture"]
 
 # docs.rs (https://docs.rs/about/metadata): Windows is the main platform, so it is the landing page; Linux is built too.

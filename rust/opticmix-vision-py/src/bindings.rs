@@ -309,33 +309,44 @@ fn enumerate_mf_video_devices(py: Python<'_>) -> PyResult<Vec<String>> {
         .map_err(|e| to_py(py, e))
 }
 
-/// (index, name, usb_location) of a device list — the Python side builds DeviceInfo from it.
-type DeviceRow = (usize, String, Option<String>);
+/// (index, name, usb_location, vid, pid, bcd_device, link_speed) of a device list — the Python side builds DeviceInfo
+/// from it, its fields in this order.
+type DeviceRow = (usize, String, Option<String>, Option<u16>, Option<u16>, Option<u16>, Option<String>);
+
+fn row(d: devices::DeviceInfo) -> DeviceRow {
+    (d.index, d.name, d.usb_location, d.vid, d.pid, d.bcd_device, d.link_speed)
+}
 
 fn rows(list: Vec<devices::DeviceInfo>) -> Vec<DeviceRow> {
-    list.into_iter()
-        .map(|d| (d.index, d.name, d.usb_location))
-        .collect()
+    list.into_iter().map(row).collect()
 }
 
 fn infos(list: Vec<DeviceRow>) -> Vec<devices::DeviceInfo> {
     list.into_iter()
-        .map(|(index, name, usb_location)| devices::DeviceInfo::new(index, name, usb_location))
+        .map(|(index, name, usb_location, vid, pid, bcd_device, link_speed)| {
+            let mut d = devices::DeviceInfo::new(index, name, usb_location);
+            (d.vid, d.pid, d.bcd_device, d.link_speed) = (vid, pid, bcd_device, link_speed);
+            d
+        })
         .collect()
 }
 
-/// The Media Foundation list with each source's USB location (from its symbolic link). Activates no device.
+/// The Media Foundation list with each source's USB location, IDs and link speed (from its symbolic link); with
+/// `ids_and_link=False` the USB location only, as in 0.0.6 (the open path). Activates no device.
 #[pyfunction]
-fn list_mf_devices(py: Python<'_>) -> PyResult<Vec<DeviceRow>> {
-    py.detach(devices::list_mf_devices)
+#[pyo3(signature = (ids_and_link=true))]
+fn list_mf_devices(py: Python<'_>, ids_and_link: bool) -> PyResult<Vec<DeviceRow>> {
+    py.detach(|| devices::list_mf_devices_with(ids_and_link))
         .map(rows)
         .map_err(|e| to_py(py, e))
 }
 
-/// DirectShow's video devices, enumerated directly (no ffmpeg), with their USB locations. Binds to no device.
+/// DirectShow's video devices, enumerated directly (no ffmpeg), with their USB locations, IDs and link speeds; with
+/// `ids_and_link=False` the USB locations only, as in 0.0.6 (the open path). Binds to no device.
 #[pyfunction]
-fn list_dshow_devices(py: Python<'_>) -> PyResult<Vec<DeviceRow>> {
-    py.detach(devices::list_dshow_devices)
+#[pyo3(signature = (ids_and_link=true))]
+fn list_dshow_devices(py: Python<'_>, ids_and_link: bool) -> PyResult<Vec<DeviceRow>> {
+    py.detach(|| devices::list_dshow_devices_with(ids_and_link))
         .map(rows)
         .map_err(|e| to_py(py, e))
 }
@@ -362,10 +373,11 @@ fn choose(
     dshow::choose(&names, index as usize, &exp).map_err(|e| to_py(py, e))
 }
 
+/// `ids_and_link=False`: the USB locations only, as in 0.0.6 (the open path).
 #[pyfunction]
-#[pyo3(signature = (raw=None))]
-fn list_devices(py: Python<'_>, raw: Option<String>) -> Vec<DeviceRow> {
-    rows(py.detach(|| devices::list_devices(raw.as_deref())))
+#[pyo3(signature = (raw=None, ids_and_link=true))]
+fn list_devices(py: Python<'_>, raw: Option<String>, ids_and_link: bool) -> Vec<DeviceRow> {
+    rows(py.detach(|| devices::list_devices_with(raw.as_deref(), ids_and_link)))
 }
 
 #[pyfunction]
@@ -395,14 +407,14 @@ type RangeTuple = (i64, i64, i64, Option<i64>, bool);
 /// One plan_reset() line: (name, current, default).
 type PlanRow<'py> = (String, Bound<'py, PyAny>, Bound<'py, PyAny>);
 
-/// Picks one by name from an existing (index, name, usb_location) list → (index, name, usb_location).
+/// Picks one by name from an existing list of device rows → that row.
 #[pyfunction]
 fn pick_by_name(py: Python<'_>, needle: &str, devices: Vec<DeviceRow>) -> PyResult<DeviceRow> {
     let d = devices::pick_by_name(needle, &infos(devices)).map_err(|e| to_py(py, e))?;
-    Ok((d.index, d.name, d.usb_location))
+    Ok(row(d))
 }
 
-/// Picks one by name and USB location from an existing (index, name, usb_location) list.
+/// Picks one by name and USB location from an existing list of device rows → that row.
 #[pyfunction]
 fn pick_by_usb_location(
     py: Python<'_>,
@@ -412,7 +424,7 @@ fn pick_by_usb_location(
 ) -> PyResult<DeviceRow> {
     let d = devices::pick_by_usb_location(needle, usb_location, &infos(devices))
         .map_err(|e| to_py(py, e))?;
-    Ok((d.index, d.name, d.usb_location))
+    Ok(row(d))
 }
 
 // ---- DirectShow 백엔드 -------------------------------------------------------------------------
@@ -886,6 +898,14 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         }
         d
     })?;
+    m.add("V4L2_CID", {
+        let d = PyDict::new(m.py());
+        for (k, id) in spec::V4L2_CID {
+            d.set_item(k, id)?;
+        }
+        d
+    })?;
+    m.add("V4L2_VIDIOC_QUERYCTRL", spec::V4L2_VIDIOC_QUERYCTRL)?;
     m.add("WRITE_LOG_ENV", guard::WRITE_LOG_ENV)?;
     m.add_function(wrap_pyfunction!(controls_table, m)?)?;
     m.add_function(wrap_pyfunction!(to_device, m)?)?;

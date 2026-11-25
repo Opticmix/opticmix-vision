@@ -121,3 +121,33 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) in the p
 ## Next
 
 [08 · Calibration file](08-calibration-file.md): install the calibration file for your camera and read it.
+
+## Rust
+
+The Rust crate has `threaded_capture` and `handle_stall`. In a checkout of the repository, from
+`rust/opticmix-vision`, without a camera:
+
+```bash
+cargo run --release --features test-support --example threaded_capture -- --synthetic --frames 60
+cargo run --release --features test-support --example handle_stall -- --synthetic --frames 200 --wait 0
+```
+
+Output with `--synthetic` (generated frames); with the camera the numbers differ.
+
+```text
+$ cargo run --release --features test-support --example threaded_capture -- --synthetic --frames 60
+negotiated: 1600x800 MJPG 90.0 fps (synthetic)
+processed 60 frames, skipped 50 (frames read while the previous one was still being processed)
+reader thread: late_frames 0, estimated_missed_frames 0, actual_fps 90.0 (frames the reader itself got late or not at all)
+
+$ cargo run --release --features test-support --example handle_stall -- --synthetic --frames 200 --wait 0
+Camera error after 99 frames: The right eye has sent the same image for 90 frames in a row: its stream has stopped. Re-insert the USB cable: unplug it and plug it back in (it sometimes takes two tries). stall_frames=0 in DeviceConfig turns this check off.
+Camera closed. If an eye stopped or the camera is gone, re-insert the USB cable now: unplug it and plug it back in. Reopening in 0 s (reopen 1 of 3).
+read 200 frames, 1 reopen(s)
+```
+
+- `threaded_capture` moves the `Device` into a reader thread (`Device` is `Send`). Beside the processed and
+  skipped frames it prints the reader's `Device` statistics, returned when its thread is joined.
+- `handle_stall` prints its first line to stderr, as the Python example does.
+- With the camera: `threaded_capture` — same calls run on Windows on one camera in an internal check of this
+  crate (not the statistics line); the example itself not yet. `handle_stall`: not run yet.

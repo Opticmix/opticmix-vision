@@ -17,7 +17,8 @@
 //! The field names and their meaning are the Python package's, so each reads the other's recordings: a
 //! recording made here plays in Python (`Device(DeviceConfig.recording(path))`), and a Python MJPG `.avi`
 //! plays here (`Device::open_recording`). Checked on files written from generated frames, with opencv-python
-//! 4.14 on Windows on the Python side; not run with the camera.
+//! 4.14 on Windows on the Python side. Run with the camera once (one PC, one camera, 2026-11-25): a 10 s
+//! recording of 881 frames, which Rust and Python played back as 881 frames.
 //!
 //! What this crate does not do that the Python package does: lossless recording (FFV1 `.mkv` — neither written
 //! nor played here), logging control changes (`note_control`), listing the installed calibration files (the JSON
@@ -944,7 +945,9 @@ fn read_csv(path: &Path) -> Result<Option<(Vec<u64>, Vec<DriverCell>)>> {
 /// These are the Python package's `Playback` controls (`pause`/`resume`, `status`), under Rust names.
 /// Without the CSV, frame times are frame number / the file's frame rate. Without the JSON, `info()` is `None`
 /// and the mode is the AVI header's. When the CSV and the video hold different numbers of frames (a recording
-/// that was not closed, a cut-off file), the smaller number is played. Run without a camera only.
+/// that was not closed, a cut-off file), the smaller number is played. Played a recording made with the camera once
+/// (one PC, one camera, 2026-11-25: 881 frames, as Python read them); seeking, looping, pacing and pausing: generated
+/// recordings only.
 pub struct Playback {
     path: PathBuf,
     name: String,
