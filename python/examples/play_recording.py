@@ -18,8 +18,9 @@ estimates twice: over the whole recording (`cam.playback`) and over the frames r
 recorded frame times. A compressed (MJPG) recording does not
 have the camera's pixel values; the lossless file (record_video.py --lossless) keeps the pixel values the SDK
 delivered (generated frames only; not run with the camera).
-Seek, speed and loop have been run on generated frames only; not run with the camera.
-Run once on a recording made with the camera (443 MJPG frames; one PC, one camera, 2026-11-24).
+Reading a recording back, seeking (--start-seconds) and looping (--loop): verified with the published 0.0.7
+wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only.
+The --speed factor: not verified.
 
 Needs: opencv-python (installed with opticmix-vision).
 Writes to the camera: no camera is opened.
@@ -97,7 +98,8 @@ def main() -> int:
     print(f"read {n} frames from {a.video}")
     print(f"whole recording: late {whole[0]}, estimated missed {whole[1]} (from the recorded frame times)")
     if last is not None:
-        print(f"frames read {first.index}..{last.index}: late {late}, estimated missed {missed}")
+        print(f"over the {n} frames read (first frame {first.index}, last frame {last.index}): "
+              f"late {late}, estimated missed {missed}")
     return 0
 
 

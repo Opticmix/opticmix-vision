@@ -12,9 +12,13 @@ the whole process.
 'Save preset…' writes every readable control to a JSON file (reads only); 'Load preset…' lists the presets saved
 from this camera's model (or another file), shows what would change and how many writes that is, and writes only
 after 'Load' (one set_many, like 'Reset to defaults…'). A preset from another model offers 'Load anyway'.
+Linux: read only — camera control writes there are not verified and not supported. Every row shows its value, range
+and default but is disabled, 'Reset to defaults…' and 'Load preset…' are disabled, the banner says why, and the three
+calls that write (set, reset_to_defaults, load_preset) are not made. 'Save preset…' (reads only) stays.
 """
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from tkinter import filedialog
 from typing import Any, Callable
@@ -102,14 +106,15 @@ class SettingsWindow:
             for b in (self.reset_button, self.save_preset_button, self.load_preset_button):
                 b.configure(state="disabled")
             return
-        text = banner_text(self.controls.backend_name, self.controls.backend_note)
+        text = banner_text(self.controls.backend_name, self.controls.backend_note, self.read_only)
         if text:
             self.banner.configure(text=text)
             self.banner.pack(fill="x", after=self.top.winfo_children()[0])
         else:
             self.banner.pack_forget()
-        for b in (self.reset_button, self.save_preset_button, self.load_preset_button):
-            b.configure(state="normal")
+        for b in (self.reset_button, self.load_preset_button):
+            b.configure(state="disabled" if self.read_only else "normal")
+        self.save_preset_button.configure(state="normal")
         main, mono = build_rows(infos)
         self.mono_names = {r.name for r in mono}
         for row in main:
@@ -144,6 +149,8 @@ class SettingsWindow:
         else:
             var = tk.StringVar(value=value_text(row.name, cur))
             w = tk.Label(f, text=RANGE_NOTE, bg=BG, fg=TEXT_DIM, font=MONO_SMALL)
+        if self.read_only and row.widget != "readonly":
+            w.configure(state="disabled")
         w.pack(side="left", padx=8)
         value = tk.Label(f, text="" if row.widget == "menu" else value_text(row.name, cur), bg=BG, fg=LIME,
                          font=MONO, width=6, anchor="e")
@@ -187,7 +194,7 @@ class SettingsWindow:
 
     def _apply(self, name: str) -> None:
         c = self.controls
-        if c is None or name not in self.vars:
+        if c is None or self.read_only or name not in self.vars:
             return
         value = self.vars[name].get()
         self._show_value(name, value)
@@ -213,11 +220,11 @@ class SettingsWindow:
             w = self.widgets.get(target)
             if w is None or not isinstance(w, tk.Scale):
                 continue
-            w.configure(state="disabled" if target in off else "normal",
+            w.configure(state="disabled" if target in off or self.read_only else "normal",
                         troughcolor=BG if target in off else TRACK)          # a locked slider hides its track
             if target == "exposure":
-                self._status(target, "switch AUTO EXPOSURE to manual to set exposure" if target in off else "",
-                             TEXT_DIM)
+                self._status(target, "switch AUTO EXPOSURE to manual to set exposure"
+                             if target in off and not self.read_only else "", TEXT_DIM)
 
     def _status(self, name: str, text: str, color: str) -> None:
         label = self.status_labels.get(name)
@@ -311,7 +318,7 @@ class SettingsWindow:
 
     def _do_reset(self) -> None:
         c = self.controls
-        if c is not None:
+        if c is not None and not self.read_only:
             self._show_queued(c.reset_to_defaults())
         if self.reset_dialog is not None:
             self.reset_dialog.destroy()
@@ -388,7 +395,7 @@ class SettingsWindow:
         c = self.controls
         if self.preset_dialog is not None:
             self.preset_dialog.destroy()
-        if c is None:
+        if c is None or self.read_only:
             return
         try:
             r = c.load_preset(path, force=force, timeout=0)   # does not wait: the poll shows each result under its row
@@ -401,6 +408,11 @@ class SettingsWindow:
                                     fg=TEXT_DIM)
 
     # ---- window ----------------------------------------------------------------------------------
+    @property
+    def read_only(self) -> bool:
+        """Linux: camera control writes are not verified and not supported there — shown, not written."""
+        return sys.platform.startswith("linux")
+
     def focus(self) -> None:
         self.top.lift()
         self.top.focus_force()

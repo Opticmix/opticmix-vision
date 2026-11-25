@@ -6,6 +6,7 @@ Usage:
   python examples/list_devices.py --backend v4l2              # Linux: the V4L2 capture nodes (the default there)
   python examples/list_devices.py --synthetic                 # no camera: a made-up list with two Weevia S1
   python examples/list_devices.py --synthetic --backend msmf  # no camera: the same made-up devices, another order
+  python examples/list_devices.py --synthetic --backend v4l2  # no camera: the same made-up devices as V4L2 lists them
   python examples/list_devices.py --verbose                   # also each device's USB IDs and link speed
 
 Prints every video device in the order of one capture backend's list — laptop webcams included — and marks the
@@ -35,8 +36,9 @@ relates to the firmware version has not been verified), a temperature.
 Linux (--backend v4l2, the default there): the video capture nodes in /sys/class/video4linux, as
 DeviceConfig.weevia_s1() looks them up (a UVC camera's metadata node is left out). The index is the N of
 /dev/videoN, which cv2.VideoCapture(index, cv2.CAP_V4L2) opens; the USB location is the USB device's sysfs name
-(e.g. 2-1), and --verbose reads the IDs and link speed from sysfs, as the doctor does. --synthetic has made-up
-DirectShow and Media Foundation lists only, so --synthetic --backend v4l2 stops with exit code 2.
+(e.g. 2-1), and --verbose reads the IDs and link speed from sysfs, as the doctor does. --backend v4l2 off Linux
+says where the lists are instead of printing an empty one. --synthetic --backend v4l2 gives the same made-up
+devices as V4L2 lists them (made-up /dev/videoN numbers and sysfs names).
 
 examples/list_devices.py --backend msmf, the USB locations, --verbose and the doctor's Media Foundation list have
 been run without a camera only (made-up lists); they have not been run with the camera. --backend v4l2: run without
@@ -66,6 +68,10 @@ SYNTHETIC_LIST = [(WEEVIA_S1_NAME, "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)", 0x1
                   (WEEVIA_S1_NAME, "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)", 0x1D6B, 0x0200, 0x0409, "High")]
 # The same made-up video devices as Media Foundation might list them: in another order.
 SYNTHETIC_MF_ORDER = [1, 0, 2]
+# ... and as V4L2 lists them: /dev/videoN (a UVC camera's metadata node, the odd numbers here, left out), the name
+# and USB location as sysfs gives them.
+SYNTHETIC_V4L2 = [(0, "Webcam gadget: WN Dual Camera", "2-1"), (2, "Example Laptop Webcam", "1-5"),
+                  (4, "Webcam gadget: WN Dual Camera", "1-4.2")]
 LIST_NAME = {"dshow": "DirectShow", "msmf": "Media Foundation", "v4l2": "V4L2"}
 USB_LOCATION_NOTE = ("A USB location is not a serial number: it names the port the camera is plugged into, and it "
                      "changes when the camera is plugged into another port. Using two cameras at the same time is not "
@@ -91,10 +97,15 @@ def main() -> int:
     a = ap.parse_args()
     if a.backend is None:
         a.backend = "v4l2" if sys.platform.startswith("linux") and not a.synthetic else "dshow"
-    if a.synthetic and a.backend == "v4l2":
-        ap.error("--synthetic has made-up DirectShow and Media Foundation lists only, not a V4L2 one")
+    if a.backend == "v4l2" and not a.synthetic and not sys.platform.startswith("linux"):
+        print("The V4L2 list is Linux's. On Windows: the DirectShow list (the default) or --backend msmf (Media "
+              "Foundation's).")
+        return 0
 
-    if a.synthetic:
+    if a.synthetic and a.backend == "v4l2":
+        devices = [DeviceInfo(i, name, at, *SYNTHETIC_LIST[j][2:])
+                   for j, (i, name, at) in enumerate(SYNTHETIC_V4L2)]
+    elif a.synthetic:
         order = SYNTHETIC_MF_ORDER if a.backend == "msmf" else range(len(SYNTHETIC_LIST))
         devices = [DeviceInfo(i, *SYNTHETIC_LIST[j]) for i, j in enumerate(order)]
     else:

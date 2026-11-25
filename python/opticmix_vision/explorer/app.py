@@ -81,15 +81,21 @@ def _label(d: DeviceInfo, listed: list[DeviceInfo]) -> str:
     return f"{d.name} · {d.usb_location}" if d.usb_location and _twins(d, listed) > 1 else d.name
 
 
+def _backend() -> str:
+    """The backend the explorer lists and opens with: V4L2 on Linux, DirectShow elsewhere (list_devices()'s default)."""
+    return "v4l2" if sys.platform.startswith("linux") else "dshow"
+
+
 # ffmpeg is asked for the modes by name (and opens the device it finds by that name).
-NOT_BY_NAME = ("Mode list not read: ffmpeg asks by name, which two cameras can share — opening 1600×800 MJPG, the mode "
-               "verified on the Weevia S1")
+NOT_BY_NAME = ("Mode list not read: ffmpeg asks by name, which two cameras can share — opening 1600×800 MJPG")
+NOT_ON_LINUX = ("Mode list not read on Linux (the explorer reads it through ffmpeg's DirectShow list) — opening "
+                "1600×800 MJPG")
 USB_LOCATION_HELP = ("open the Weevia S1 plugged in at this USB location, to choose between two that share a name "
                      "(DeviceConfig.weevia_s1(usb_location=...)); as examples/list_devices.py or python -m "
-                     "opticmix_vision.doctor (location) prints it; no Weevia S1 there, or an empty one: exit code 2. "
-                     "Windows only: the explorer lists no cameras on Linux. Not a serial number: it changes when the "
-                     "camera is plugged into another port. Picking by USB location: run without a camera only "
-                     "(made-up device lists)")
+                     "opticmix_vision.doctor (location) prints it; on Linux the USB device's sysfs name, e.g. 1-4.2; "
+                     "no Weevia S1 there, or an empty one: exit code 2. Not a serial number: it changes when the "
+                     "camera is plugged into another port. This option: run without a camera only (made-up device "
+                     "lists); not run with a camera, and not run with two cameras")
 
 
 class ExplorerApp:
@@ -242,13 +248,14 @@ class ExplorerApp:
         if self.synthetic:
             self._devices = [DeviceInfo(index=0, name="(synthetic)")]
         else:
-            self._devices = list_devices(backend="dshow")   # the list of the backend it opens with (below)
+            self._devices = list_devices(backend=_backend())   # the list of the backend it opens with (below)
             if self.usb_location is not None:     # the one DeviceConfig.weevia_s1(usb_location=...) finds
                 try:
                     at = DeviceConfig.weevia_s1(usb_location=self.usb_location).device
                 except (DeviceError, ValueError) as exc:
                     at, missing = None, str(exc)
-                self._devices = [d for d in self._devices if d.index == at]
+                # an index on Windows; on Linux the node /dev/videoN, whose N is the V4L2 list's index
+                self._devices = [d for d in self._devices if at in (d.index, f"/dev/video{d.index}")]
         labels = [_label(d, self._devices) for d in self._devices]
         self.device_combo["values"] = labels
         if not self._devices:
@@ -262,6 +269,9 @@ class ExplorerApp:
         self.state.select_device(chosen)
         if self.synthetic:
             self.state.set_modes([KNOWN_MODE])
+        elif _backend() == "v4l2":
+            self.state.set_modes([KNOWN_MODE])                    # V4L2's formats are not listed (yet)
+            self.state.mode_note = NOT_ON_LINUX
         elif self.usb_location is not None or _twins(chosen, self._devices) > 1:
             self.state.set_modes([KNOWN_MODE])                    # asking by name could reach the other camera
             self.state.mode_note = NOT_BY_NAME
@@ -282,17 +292,18 @@ class ExplorerApp:
             from ..synthetic import SyntheticStereoSource
             self.source = SyntheticStereoSource()
             return self.source
-        mode, dev = self.state.mode, self.state.device
+        mode, dev, backend = self.state.mode, self.state.device, _backend()
         if dev.usb_location:   # found again where it is plugged in, at every open: the list's order can change
-            index = resolve_by_name(dev.name, usb_location=dev.usb_location).index   # not there: nothing is opened
+            # not there: nothing is opened
+            index = resolve_by_name(dev.name, usb_location=dev.usb_location, backend=backend).index
         elif _twins(dev, self._devices) > 1:
             raise DeviceError(f"{_twins(dev, self._devices)} cameras are named {dev.name!r} and their USB locations "
                               "could not be read: they cannot be told apart (no USB serial number). Connect one at a "
                               "time.")
         else:
             index = dev.index
-        cfg = DeviceConfig(layout=WEEVIA_S1["layout"], lr_order=WEEVIA_S1["lr_order"], backend="dshow",
-                           device=index,
+        cfg = DeviceConfig(layout=WEEVIA_S1["layout"], lr_order=WEEVIA_S1["lr_order"], backend=backend,
+                           device=index,                  # Linux: N of /dev/videoN
                            width=mode.width, height=mode.height,
                            fps=mode.max_fps, fourcc=mode.fourcc)
         # No control values are written on open; on this camera writing itself is risky. The screen shows the values
@@ -423,10 +434,6 @@ def main(argv=None) -> int:
     if a.usb_location is not None:
         if a.synthetic:
             ap.error("--usb-location cannot be combined with --synthetic")
-        if sys.platform.startswith("linux"):
-            print("[explorer] could not open the camera: --usb-location: the explorer lists cameras on Windows only "
-                  "(on Linux: python -m opticmix_vision.viewer --usb-location)", file=sys.stderr)
-            return 2
         try:                                   # before the window opens: nothing there is exit code 2
             DeviceConfig.weevia_s1(usb_location=a.usb_location)
         except (DeviceError, ValueError) as exc:

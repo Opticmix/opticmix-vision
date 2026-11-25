@@ -173,7 +173,7 @@ with cam:
   the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 - `DeviceConfig.weevia_s1()` looks the name up in the list of the backend it opens with: DirectShow by
   default, Media Foundation with `backend="msmf"`.
-- `list_devices.py` is one of the six examples added in 0.0.4; it has been run without a camera only.
+- `list_devices.py` is one of the six examples added in 0.0.4; its DirectShow list has been run with the camera once (one PC, one camera, 2026-11-25, with the 0.0.6 code): with one camera connected, the list showed its USB location.
   `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run without a camera only (made-up lists); they have not been run with the camera.
 - Linux: `python examples/list_devices.py` lists the V4L2 capture nodes (`--backend v4l2`, the default there) — the
   index is the N of `/dev/videoN`, the USB location the USB device's sysfs name (e.g. `2-1`). Run without a camera only (made-up sysfs trees); not run with the camera on Linux.
@@ -184,7 +184,7 @@ First run `python -m opticmix_vision.doctor`: it prints the OS, Python and SDK v
 the camera's USB details and the installed calibration, without opening the camera — paste its output into
 an issue. On Windows it prints both device lists, DirectShow's and Media Foundation's, and a line when the
 Weevia S1's index differs between them. `python -m opticmix_vision.doctor --open` also opens the camera and adds the mode, frame timing and
-every control's value, read only. `doctor --open` has been run with the camera once (one PC, one camera, 2026-11-24); without `--open` the doctor has been run without a camera only (generated frames and fake device lists).
+every control's value, read only. `doctor --open` (its report includes everything the doctor prints without `--open`): verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only; not verified on Linux.
 
 See [When something goes wrong](../README.md#when-something-goes-wrong) in the package README, in
 particular:
@@ -207,12 +207,13 @@ you actually get.
 
 ## Rust
 
-The Rust `list_devices` commands and their `--synthetic` output are under Run it above. The other two steps
+The Rust `list_devices` commands and their `--synthetic` output are under Run it above. The other steps
 without a camera, in a checkout of the repository, from `rust/opticmix-vision`:
 
 ```bash
 cargo run --example list_devices -- --synthetic --backend msmf
 cargo run --release --features test-support --example open_by_usb_location -- --synthetic
+cargo run --release --features test-support --example quickstart -- --synthetic
 ```
 
 Output with `--synthetic` (generated frames); with the camera the numbers differ.
@@ -236,12 +237,25 @@ Weevia S1 in the made-up list:
 picked [2] at USB location PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
 negotiated: 1600x800 MJPG 90.0 fps (synthetic)
 one frame: left 800x800, right 800x800
+
+$ cargo run --release --features test-support --example quickstart -- --synthetic
+negotiated: 1600x800 MJPG 90.0 fps (synthetic)
+100 frames in 1.103 s -> 90.7 fps (host-measured)
+saved left/right_000099.pgm
 ```
 
-- `quickstart.py`: no Rust example yet.
+- `quickstart` does the steps of `quickstart.py` without its window (a window needs a GUI crate, which the
+  crate does not depend on): it finds the camera by name and opens it, prints the negotiated mode, reads 100
+  frames and prints the rate they came at (as `quickstart.py --no-window` does), saves the last frame's two eyes
+  as `left_000099.pgm` and `right_000099.pgm` (what the `s` key saves, as 8-bit gray PGM), and closes the
+  camera. Run without a camera only (generated frames); not run with the camera.
 - Rust `--synthetic` uses the crate's test doubles: generated 1600×800 frames paced at 90 per second in
   software, so the eyes are 800×800 here.
 - `open_by_usb_location` lists each Weevia S1 with its USB location from Media Foundation's list, the one Rust
   capture opens from. Run with the camera once (one PC, one camera, 2026-11-25): it listed the camera at its USB
   location, opened it there at 1600x800 MJPG and read one frame; a location no device has was refused. Not run
   with two cameras.
+- Linux: `cargo run --example list_devices` lists the V4L2 capture nodes (`devices::list_v4l2_devices()`;
+  `--backend v4l2`, the default there), and `DeviceSelector::Index(n)` opens the `/dev/videoN` it shows; with
+  `--synthetic --backend v4l2` it lists made-up V4L2 devices. Its tests use made-up sysfs trees; not run with the
+  camera on Linux.

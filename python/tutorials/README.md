@@ -18,14 +18,14 @@ commands, what you should see, how the code works, what to do if it does not wor
 | 8 | [Calibration file](08-calibration-file.md) | install your camera's calibration file, print it, and check in numbers whether it fits the camera | `calibration_info.py`, `calibration_check.py` | `calibration_check.py` only; `--synthetic` needs no camera and no file | none |
 
 The commands run from the `python/` folder of the repository, where `examples/` is. Check out the tag of the
-version you installed (`python -m pip show opticmix-vision`, then for example `git checkout v0.0.7`) and use
+version you installed (`python -m pip show opticmix-vision`, then for example `git checkout v0.0.8`) and use
 the same `python` you ran `pip install` with: the examples load the package from this folder and the compiled
 extension from the installed wheel, so both must be the same version. With `--synthetic` an
 example uses generated frames and simulated controls with made-up ranges: it shows that the code runs, and its
 frame rate, ranges and brightness say nothing about the camera. Of the six examples added in 0.0.4,
-`play_recording.py` has been run with the camera once (one PC, one camera, 2026-11-24): it read back the 443 frames of an MJPG recording of the camera. `list_devices.py`, `threaded_capture.py`, `brightness_stats.py`,
+`play_recording.py`, reading a recording back, seeking and looping: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only; the `--speed` factor: not verified. `threaded_capture.py`, `brightness_stats.py`,
 `handle_stall.py` and `calibration_info.py` have been run without a camera only, and so have `presets.py` and
-`calibration_check.py`, added in 0.0.5. Platform: Windows; on Linux (experimental) `measure_fps.py`, `record_video.py`, `play_recording.py`, `save_stereo_pairs.py`, `list_controls.py` and `open_by_usb_location.py` have been run once with one camera (2026-11-25), and `export_recording.py` with a camera recording once, from source before release; the viewer, the explorer and the others have not.
+`calibration_check.py`, added in 0.0.5; `list_devices.py`: its DirectShow list has been run with the camera once (one PC, one camera, 2026-11-25, with the 0.0.6 code): with one camera connected, the list showed its USB location. Platform: Windows; on Linux (experimental) `measure_fps.py`, `record_video.py`, `play_recording.py`, `save_stereo_pairs.py`, `list_controls.py` and `open_by_usb_location.py` have been run once with one camera (2026-11-25), and `export_recording.py` with a camera recording once, from source before release; the viewer, the explorer and the others have not.
 
 Tutorials 01, 02, 05 and 08 also show the Rust version of their examples (`cargo run --example …` in
 `rust/opticmix-vision`), run without a camera only — except `list_devices` and `measure_fps`, run with the camera once (one PC, one camera, 2026-11-24), and `open_by_usb_location`, run with the camera once (one PC, one camera, 2026-11-25).
@@ -60,4 +60,4 @@ The two windows that come with the package, the viewer and the explorer, are des
    timing, stalled eyes and every control's value, read only.
 3. See [When something goes wrong](../README.md#when-something-goes-wrong) in the package README.
 
-`doctor --open` has been run with the camera once (one PC, one camera, 2026-11-24); without `--open` the doctor has been run without a camera only (generated frames and fake device lists).
+`doctor --open` (its report includes everything the doctor prints without `--open`): verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only; not verified on Linux.

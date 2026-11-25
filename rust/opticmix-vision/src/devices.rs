@@ -498,6 +498,8 @@ pub fn list_dshow_devices_with(ids_and_link: bool) -> Result<Vec<DeviceInfo>> {
 /// Video devices in DirectShow enumeration order, each with its USB location, IDs and link speed. Laptop webcams are
 /// included — the user has to pick among them. Without `raw` this runs ffmpeg; without ffmpeg (most customer PCs) it enumerates
 /// DirectShow directly (`list_dshow_devices`; a failure there is an empty list — it shows as "not found").
+/// Windows' list (empty elsewhere): on Linux the cameras are in `list_v4l2_devices()` (feature `capture`), the list Python's
+/// `devices.list_devices()` gives there.
 pub fn list_devices(raw: Option<&str>) -> Vec<DeviceInfo> {
     list_devices_with(raw, true)
 }

@@ -41,8 +41,9 @@ fn main() -> opticmix_vision::Result<()> {
 
 ## Examples
 
-Thirteen programs in `examples/`, each the Rust version of the Python example of the same name. In a checkout
-of the repository, run them from `rust/opticmix-vision`:
+Seventeen programs in `examples/`, each the Rust version of the Python example of the same name
+(`capture_dataset`: of `capture_dataset_npz.py`). In a checkout of the repository, run them from
+`rust/opticmix-vision`:
 
 ```sh
 cargo run --example list_devices
@@ -58,8 +59,12 @@ the camera sends them.
 | `list_devices` | Lists the video devices Windows reports and how many are a Weevia S1 (on Linux, from 0.0.7, the V4L2 capture nodes: `devices::list_v4l2_devices()`): DirectShow's list (where the controls look), or with `-- --backend msmf` Media Foundation's (the list capture opens from, which `DeviceSelector::Index` counts in); `-- --verbose` adds one line each for a device's `vid`, `pid`, `bcd_device` and `link_speed` | none, does not open it | `-- --synthetic` (a made-up list; with `--backend msmf`, the same devices in another order) | DirectShow list: run with the camera once (one PC, one camera, 2026-11-24). `--backend msmf` and `--verbose`: run without a camera only (a made-up list); not run with the camera. Linux: not run with the camera |
 | `open_by_usb_location` | Lists each Weevia S1 with its USB location (Media Foundation's list; on Linux, from 0.0.7, the V4L2 list); `-- --usb-location "<location>"` opens the one there with `DeviceSelector::UsbLocation` and reads one frame — how to open one of two cameras that share a name | none | `--features test-support -- --synthetic` (a made-up list of two) | run with the camera once (one PC, one camera, 2026-11-25): it listed the camera at its USB location, opened it there at 1600x800 MJPG and read one frame; a location no device has was refused. Not run with two cameras |
 | `measure_fps` | Opens the camera, prints the negotiated mode, times N frames: interval mean/min/max, late intervals, repeated images, skipped MJPG samples, the `Device` statistics (late, estimated missed, actual fps); where the driver gives them, the same for the driver time stamps, how far each frame trails the earliest (host minus driver time) and frames missing between driver sequence numbers | none | `--features test-support -- --synthetic` | run with the camera once (one PC, one camera, 2026-11-24); its `Device::repeated_frames` line came later: run with the camera once (one PC, one camera, 2026-11-25, Media Foundation, 450 frames): 0, the same as the `measure_fps` example's own per-eye counts (left 0, right 0). A count above 0: generated frames only |
-| `save_stereo_pairs` | Saves every Nth left/right pair as 8-bit PGM, with `pairs.csv` (frame index, host time, file names) | none | `--features test-support -- --synthetic` | not run yet |
+| `quickstart` | The steps of `quickstart.py` without its window (a window needs a GUI crate): opens the camera by name, prints the negotiated mode, reads 100 frames and prints the rate they came at, saves the last frame's two eyes as 8-bit PGM, closes the camera | none | `--features test-support -- --synthetic` | run without a camera only (generated frames); not run with the camera |
+| `save_stereo_pairs` | Saves every Nth left/right pair as 8-bit PGM, with `pairs.csv` (frame index, host time, file names) and `capture_info.json` (`write_capture_info`, from 0.0.8) | none (reads every control for the JSON) | `--features test-support -- --synthetic` | not run yet |
+| `capture_dataset` | `capture_dataset_npz.py` without the `.npz` (that needs a zip crate): keeps N frames in memory, then writes left/right 8-bit PGM pairs, `pairs.csv` and `capture_info.json` (`write_capture_info`, with the frame count, eye size and late / estimated missed frames under `pgm_pairs`) into a new or empty folder | none (reads every control for the JSON) | `--features test-support -- --synthetic` | run without a camera only (generated frames); not run with the camera |
+| `brightness_stats` | Per-eye mean, min, max and share of saturated pixels for N frames into a CSV with the columns of `brightness_stats.py`, and its summary | none | `--features test-support -- --synthetic` | run without a camera only (generated frames); not run with the camera |
 | `list_controls` | Prints every control: current value, range, step, default, units, how far its effect is verified | none — prints the write count | `--features test-support -- --synthetic` | same calls run on Windows on one camera¹; on Linux this file read the controls once (one PC, one camera, 2026-11-25) |
+| `presets` | The steps of `presets.py` that do not write: saves every control to a preset file (`Controls::save_preset`), `-- --plan FILE` prints what loading it would change and what it would leave alone (`Controls::plan_preset`, as `presets.py --load FILE --dry-run`), `-- --list` lists the preset folder. The Python package's files and folder; a preset that does not fit stops with its message. Applying a preset to the camera: Python only (`presets load`) | none — prints the write count | `--features test-support -- --synthetic` | run without a camera only (simulated controls, preset files written by the Python package); not run with the camera |
 | `set_controls_once` | Sets manual exposure and gain in one `set_many` at startup, waits, prints the status, the read-back value and whether the camera kept it | one `set_many` call | `--features test-support -- --synthetic` | not run yet |
 | `threaded_capture` | Moves the `Device` to a reader thread; the main thread processes the latest frame and counts the skipped ones; the reader's late / estimated missed frames and actual fps come back when its thread is joined | none | `--features test-support -- --synthetic` | same calls run on Windows on one camera¹ (not the statistics line) |
 | `led_level` | Sets the IR illuminator level once at startup and compares the image before and after (mean, share of pixels changed) | one write (none if already at that level) | `--features test-support -- --synthetic` | not run yet |
@@ -92,6 +97,9 @@ The camera sends no clock of its own that this crate reads, so none of these is 
 Whether a driver time marks the exposure or the arrival of the frame is not known; the gap between the
 driver time and `host_ns` has not been measured.
 
+`host_now_ns()` gives the time now on the `host_ns` clock, to compare a frame's `host_ns` with other events of
+the same process (for example, how long ago the frame was read). Run without a camera only.
+
 Counts and rates on `Device`, each for a different thing:
 
 | Method | Counts |
@@ -121,7 +129,7 @@ reports); not run with the camera.
 | | Windows | Linux |
 |---|---|---|
 | Capture | Media Foundation | V4L2 — run with the camera once (one PC, one camera, 2026-11-25: measure_fps, record_video, play_recording) |
-| Controls | DirectShow | V4L2 — reading run with the camera once (list_controls, 2026-11-25); writing not run. `reset_to_defaults()` writes nothing and `plan_reset()` is empty: the driver's defaults are shown by `describe()`, not written (`Controls::writes_defaults()` is `false`; 0.0.6 wrote them) |
+| Controls | DirectShow | V4L2 — reading run with the camera once (list_controls, 2026-11-25); writing not run. `reset_to_defaults()` writes nothing and `plan_reset()` is empty: the driver's defaults are shown by `describe()`, not written (`Controls::writes_defaults()` is `false`; 0.0.6 wrote them); not run with the camera on Linux |
 | Which list an index belongs to (`DeviceSelector::Index`) | Media Foundation's, as `cargo run --example list_devices -- --backend msmf` prints it — not the default DirectShow list, which can be in a different order (seen once on one PC, with Python's `list_devices(backend="msmf")` — not with this example) | `/dev/videoN` |
 | A USB location (`DeviceInfo::usb_location`, `DeviceSelector::UsbLocation`) | The USB device's first `DEVPKEY_Device_LocationPaths` entry, read through cfgmgr32 from the Media Foundation symbolic link (capture) and the DirectShow DevicePath (controls, `list_devices`) — the doctor's `location` | The USB device's sysfs name, e.g. `1-4.2` (`/sys/class/video4linux/videoN/device`) |
 | USB IDs and link speed (`DeviceInfo::vid`, `pid`, `bcd_device`, `link_speed`) | Read by `list_devices()`, `list_dshow_devices()` and `list_mf_devices()` from the USB device's hardware IDs and from the USB hub driver, without opening the device — the doctor's VID:PID, bcdDevice and link speed; `cargo run --example list_devices -- --verbose` prints them. `bcd_device` is the USB device revision, not a firmware version. Run without a camera only (made-up lists); not run with the camera | Read by `list_v4l2_devices()` (feature `capture`; one entry per capture node, the index the N of `/dev/videoN`) from sysfs: `idVendor`, `idProduct`, `bcdDevice` and `speed`, as the doctor reads them, without opening the device. Run without a camera only (made-up sysfs trees); not run with the camera on Linux |
@@ -148,7 +156,15 @@ Requirements:
   Windows once, through Python's list_devices(backend="msmf"), which calls it (one PC, one camera,
   2026-11-24); not run from Rust directly — `cargo run --example list_devices -- --backend msmf` prints it, and
   that has been run without a camera only (a made-up list, which does not call it).
-- Presets (every control saved to a file and loaded back): Python only for now — `opticmix_vision.presets`.
+- Presets (module `presets`, from 0.0.8): `Controls::save_preset` saves every control to a preset file,
+  `presets::read_preset` / `list_presets` read the files and the preset folder (`store_dir()`, beside the calibration
+  folder), and `Controls::plan_preset` checks a preset against the camera and gives what loading it would change,
+  leave out (a value whose mode the preset puts in auto; controls with no effect on the mono sensor) or find already
+  set — the Python package's file format, folder and messages (`SdkError::Preset`, `SdkError::PresetModel`), so
+  each reads the other's files. `Controls::model()` is the model presets record. Applying a preset to the camera is
+  not in the Rust crate yet (Python: `presets load`). Run without a camera only (simulated controls, preset files
+  written by the Python package); not run with the camera.
+- No window: the examples print and write files. `live_preview.py` has no Rust example: it needs a window library.
 
 ## Recording and playback
 
@@ -183,6 +199,11 @@ loop {
   `<name>.csv` (`frame,host_ns,driver_ns,driver_clock`) and `<name>.json` (the mode, the camera's layout and
   left/right order, control values at the start and end, crate version, frame count, late / missed frame
   estimates). The field names and their meaning are Python's.
+- `capture_info(&mut device)` gives the top of that JSON for any capture — mode, camera, control values, crate
+  version, time — and `write_capture_info(path, &mut device, extra)` writes it with fields of your own, as the
+  Python package's `capture_info` and `write_capture_info` do (the same field names; a test compares them with the
+  Python function's). The `save_stereo_pairs` and `capture_dataset` examples write it as `capture_info.json`. Run
+  without a camera only (generated frames); not run with the camera.
 - Rust writes and plays MJPG `.avi` only. Lossless FFV1 (`.mkv`) and logging control changes (`note_control`)
   are Python only. The calibration file list in the JSON is `null` here.
 - `write()` encodes the two decoded eyes to JPEG again, as Python does: pixel values change a little.

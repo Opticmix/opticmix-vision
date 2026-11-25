@@ -1,15 +1,16 @@
 """--usb-location in the viewer, the explorer, the doctor, presets and calib check: two made-up Weevia S1 that share
 a name.
 
-Nothing is enumerated and no camera is opened: the DirectShow list is made up, and OpenCV's VideoCapture and the
-native DirectShow control backend are stand-ins that record the device index they are given. The stream and the
-controls must both be the unit at the USB location asked for — a preset must never be written to the other one.
-No window is opened: the explorer's two methods are called without Tk.
+Nothing is enumerated and no camera is opened: the DirectShow list (on 'Linux', the sysfs tree) is made up, and
+OpenCV's VideoCapture and the native DirectShow control backend are stand-ins that record the device index they are
+given. The stream and the controls must both be the unit at the USB location asked for — a preset must never be
+written to the other one. No window is opened: the explorer's methods are called without Tk.
 """
 from __future__ import annotations
 
 import json
 import sys
+import types
 from types import SimpleNamespace
 
 import numpy as np
@@ -199,8 +200,14 @@ def test_viewer_on_linux_opens_the_v4l2_node_at_the_usb_location(two_units, tmp_
 def _explorer():
     try:   # as test_explorer_app: a Python with _tkinter but no Tk library raises ImportError
         from opticmix_vision.explorer import app
-    except ImportError as exc:
-        pytest.skip(f"no Tk: {exc}")
+    except ImportError:
+        # No Tk here (the Linux release check has none, as a robot PC may not). These tests make no widget, so empty
+        # stand-ins for tkinter and the two submodules the explorer imports are enough to import it; a widget made
+        # by mistake fails (AttributeError), it does not pass. Nothing else here imports tkinter.
+        tk = types.ModuleType("tkinter")
+        tk.ttk, tk.filedialog = types.ModuleType("tkinter.ttk"), types.ModuleType("tkinter.filedialog")
+        sys.modules.update({"tkinter": tk, "tkinter.ttk": tk.ttk, "tkinter.filedialog": tk.filedialog})
+        from opticmix_vision.explorer import app
     return app
 
 
@@ -308,28 +315,187 @@ def test_explorer_without_a_location_tells_two_cameras_of_one_name_apart(two_uni
     assert streams == [0] and len(units) == 1, "nothing may be opened"
 
 
-def test_explorer_refuses_a_usb_location_on_linux(two_units, capsys, monkeypatch):
-    app = _explorer()
-    monkeypatch.setattr(app, "ExplorerApp", lambda **kw: pytest.fail("the window was opened"))
+# ---------------------------------------------------------------- explorer on Linux (no window, made-up sysfs trees)
+# 0.0.7 listed DirectShow's devices there (none) and refused --usb-location (exit code 2). The list is now V4L2's, the
+# camera is opened with backend="v4l2" at /dev/videoN by its number, found again by its sysfs USB location at every
+# open, and the Settings window writes nothing.
+
+def _on_linux(monkeypatch, root):
+    """'Linux' with the made-up sysfs tree `root`, for the device list, the lookup by location and the doctor. Build
+    the tree before (its links are junctions on Windows). V4L2 ranges are not asked of any node."""
+    from opticmix_vision import _ctrl_opencv
+    monkeypatch.setattr(devices, "SYSFS_V4L", root)
+    monkeypatch.setattr(doctor, "SYSFS_V4L", root)
+    monkeypatch.setattr(_ctrl_opencv, "v4l2_ranges", lambda node, keys, **kw: {})
     monkeypatch.setattr(sys, "platform", "linux")
-    _refuses(two_units, capsys, app.main, ["--usb-location", "1-4.2"], "lists cameras on Windows only")
 
 
-def test_explorer_lists_the_directshow_list_it_opens_with_also_on_linux(monkeypatch, tmp_path):
-    # the explorer opens with backend="dshow" and finds a camera again in that list: a V4L2 index or sysfs location
-    # names nothing there. So on Linux it lists no cameras, as in 0.0.6, although list_devices() now lists them there
+def _no_ffmpeg_modes(monkeypatch, app):
+    monkeypatch.setattr(app, "list_modes", lambda name: pytest.fail("the mode list was asked of ffmpeg"))
+
+
+def test_explorer_on_linux_lists_and_opens_the_v4l2_capture_node(two_units, monkeypatch, tmp_path):
     app = _explorer()
-    from test_devices import ONE_CAMERA, WEEVIA_USB, _sysfs_tree
-
-    def no_ffmpeg():
-        raise FileNotFoundError("ffmpeg")
-    monkeypatch.setattr(devices, "SYSFS_V4L", _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB}, ONE_CAMERA))
-    monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
-    monkeypatch.setattr(sys, "platform", "linux")
-    assert len(devices.list_devices()) == 1
+    from opticmix_vision.explorer.state import KNOWN_MODE
+    from test_devices import GADGET, ONE_CAMERA, WEEVIA_USB, _sysfs_tree
+    streams, units = two_units
+    _no_ffmpeg_modes(monkeypatch, app)
+    _on_linux(monkeypatch, _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB}, ONE_CAMERA))
     w = _window(app.ExplorerApp)
     w._rescan()
-    assert w._devices == [] and w.message_var.get().startswith("No camera found")
+    assert w._devices == devices.list_devices() == [DeviceInfo(0, GADGET, "2-1", 0x1D6B, 0x0200, 0x0409, "Super")]
+    assert w.device_combo["values"] == [GADGET] and w.state.device == w._devices[0]
+    assert w.state.modes == [KNOWN_MODE] and w.message_var.get() == app.NOT_ON_LINUX
+    dev = w._open_source()
+    try:
+        assert (dev.config.backend, dev.config.device) == ("v4l2", 0)
+    finally:
+        dev.__exit__(None, None, None)
+    assert streams == [(0, "V4L2")] and units == []          # /dev/video0 by its number; no DirectShow controls
+
+
+def test_explorer_on_linux_tells_two_cameras_apart_and_finds_the_chosen_one_again_by_location(two_units, monkeypatch,
+                                                                                               tmp_path):
+    app = _explorer()
+    from test_devices import TWO_ON_LINUX, _sysfs_usb
+    streams, units = two_units
+    _no_ffmpeg_modes(monkeypatch, app)
+    # later: the unit at 1-2 unplugged, so the one at 1-4.2 is /dev/video0; gone: the unit at 1-4.2 unplugged
+    later = _sysfs_usb(tmp_path / "later", {"video0": ("WN Dual Camera", 0, "1-4.2"),
+                                            "video1": ("WN Dual Camera", 1, "1-4.2")})
+    gone = _sysfs_usb(tmp_path / "gone", {"video0": ("WN Dual Camera", 0, "1-2"),
+                                          "video1": ("WN Dual Camera", 1, "1-2")})
+    _on_linux(monkeypatch, _sysfs_usb(tmp_path, TWO_ON_LINUX))
+    w = _window(app.ExplorerApp)
+    w._rescan()
+    labels = list(w.device_combo["values"])
+    assert labels == ["WN Dual Camera · 1-2", "WN Dual Camera · 1-4.2", "Laptop webcam"]
+    assert w.state.device.index == 0 and w.message_var.get() == app.NOT_ON_LINUX
+    w.device_var.set(labels[1])                          # the unit at 1-4.2 chosen in the list
+    w._on_device()
+    assert w.state.device == DeviceInfo(2, "WN Dual Camera", "1-4.2", 0x1D6B)
+    w._open_source().__exit__(None, None, None)
+    monkeypatch.setattr(devices, "SYSFS_V4L", later)
+    w._open_source().__exit__(None, None, None)
+    assert streams == [(2, "V4L2"), (0, "V4L2")] and units == []     # found again at its location, at every open
+    monkeypatch.setattr(devices, "SYSFS_V4L", gone)
+    with pytest.raises(LookupError, match="No camera matches 'WN Dual Camera' at USB location '1-4.2'"):
+        w._open_source()
+    assert len(streams) == 2, "nothing may be opened"
+
+
+def test_explorer_takes_a_usb_location_on_linux(two_units, monkeypatch, tmp_path):
+    app = _explorer()
+    from test_devices import TWO_ON_LINUX, _sysfs_usb
+    streams, units = two_units
+    made, real = [], app.ExplorerApp
+    _no_ffmpeg_modes(monkeypatch, app)
+    _on_linux(monkeypatch, _sysfs_usb(tmp_path, TWO_ON_LINUX))
+    monkeypatch.setattr(app, "ExplorerApp", lambda **kw: made.append(kw) or SimpleNamespace(run=lambda: 0))
+    assert app.main(["--usb-location", "1-4.2"]) == 0 and made == [{"synthetic": False, "usb_location": "1-4.2"}]
+    w = _window(real, "1-4.2")
+    w._rescan()                                          # the device list holds the unit at 1-4.2 only
+    assert w._devices == [DeviceInfo(2, "WN Dual Camera", "1-4.2", 0x1D6B)]
+    assert w.device_combo["values"] == ["WN Dual Camera"] and w.message_var.get() == app.NOT_ON_LINUX
+    w._open_source().__exit__(None, None, None)
+    assert streams == [(2, "V4L2")] and units == []
+    w.usb_location = "1-5"                               # the webcam's location: no Weevia S1 there
+    w._rescan()
+    assert w._devices == [] and "No video capture node matches 'WN Dual Camera' at USB location '1-5'" in \
+        w.message_var.get()
+
+
+@pytest.mark.parametrize("argv, says", [
+    (["--usb-location", "1-5"], "No video capture node matches 'WN Dual Camera' at USB location '1-5'"),
+    (BLANK, "usb_location is empty"),
+])
+def test_explorer_on_linux_refuses_before_the_window_opens(two_units, capsys, monkeypatch, tmp_path, argv, says):
+    app = _explorer()
+    from test_devices import TWO_ON_LINUX, _sysfs_usb
+    _on_linux(monkeypatch, _sysfs_usb(tmp_path, TWO_ON_LINUX))
+    monkeypatch.setattr(app, "ExplorerApp", lambda **kw: pytest.fail("the window was opened"))
+    _refuses(two_units, capsys, app.main, argv, says)
+
+
+def _settings(controls):
+    """A Settings window with no Tk: its own write methods run; it has the gain row's value and no widget."""
+    from opticmix_vision.explorer.settings_window import SettingsWindow
+    s = SettingsWindow.__new__(SettingsWindow)
+    s.__dict__.update(controls=controls, vars={"gain": _Var()}, widgets={}, value_labels={}, status_labels={},
+                      mono_names=set(), _tickets={}, reset_dialog=None, preset_dialog=None,
+                      preset_label=SimpleNamespace(configure=lambda **kw: None))
+    return s
+
+
+def _write_every_way(s, preset):
+    """What the Settings window writes with: a slider, checkbox or list (_apply -> Controls.set), Reset to defaults
+    (_do_reset -> reset_to_defaults) and Load preset (_do_load_preset -> load_preset; Load anyway is the same with
+    force). The buttons that open them are disabled on Linux; these are what they call."""
+    c = s.controls
+    s.vars["gain"].set((c.get("gain") or 0) + 20)
+    for write in (lambda: s._apply("gain"), s._do_reset, lambda: s._do_load_preset(str(preset))):
+        write()
+        c.flush(timeout=5)                               # each plan reads the value the step before wrote
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_the_settings_window_writes_nothing_to_the_camera_on_linux(monkeypatch, tmp_path, platform):
+    # the simulated controls record every write. The same calls write three times on Windows and not at all on Linux,
+    # so it is the explorer's Linux guard that stops them (these controls would write their defaults on Linux too)
+    _explorer()
+    be = _Unit()
+    c = Controls(be, guard=False)
+    try:
+        preset = _preset(tmp_path / "p.json", gain=100)
+        monkeypatch.setattr(sys, "platform", platform)
+        _write_every_way(_settings(c), preset)
+    finally:
+        c.close()
+    assert [w[0] for w in be.writes] == (["gain"] * 3 if platform == "win32" else [])
+
+
+def test_on_linux_no_explorer_path_writes_to_the_camera_it_opened(two_units, monkeypatch, tmp_path):
+    # the camera the explorer opens on Linux (OpenCV's V4L2 controls, whose writes are VideoCapture.set calls): after
+    # the open, every Settings window write path is taken and the capture is never set
+    app = _explorer()
+    from test_devices import ONE_CAMERA, WEEVIA_USB, _sysfs_tree
+    _no_ffmpeg_modes(monkeypatch, app)
+    _on_linux(monkeypatch, _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB}, ONE_CAMERA))
+    w = _window(app.ExplorerApp)
+    w._rescan()
+    dev = w._open_source()
+    try:
+        c = w._current_controls()
+        assert c.backend_name == "opencv-v4l2" and not c.writes_defaults
+        preset = tmp_path / "cam.json"
+        c.save_preset(preset)                            # reads only
+        doc = json.loads(preset.read_text(encoding="utf-8"))
+        doc["controls"]["gain"]["value"] = 40
+        preset.write_text(json.dumps(doc), encoding="utf-8")
+        sets = []
+        real = dev._cap.set
+        monkeypatch.setattr(dev._cap, "set", lambda pid, value: sets.append((pid, value)) or real(pid, value))
+        _write_every_way(_settings(c), preset)
+    finally:
+        dev.__exit__(None, None, None)
+    assert sets == []
+
+
+def test_explorer_usb_line_on_linux_is_the_device_lists_values_of_the_unit_at_the_usb_location(monkeypatch, tmp_path):
+    # the line over the device list (VID:PID, revision, link speed), as the explorer asks for it: two units at different
+    # link speeds; the doctor's function, which reads sysfs as list_devices() does
+    from test_devices import GADGET, WEEVIA_USB, _sysfs_tree
+    root = _sysfs_tree(tmp_path, {"2-1": WEEVIA_USB, "1-4.2": {**WEEVIA_USB, "speed": "480"}},
+                       {"video0": (GADGET, 0, "2-1"), "video1": (GADGET, 1, "2-1"),
+                        "video2": (GADGET, 0, "1-4.2"), "video3": (GADGET, 1, "1-4.2")})
+    _on_linux(monkeypatch, root)
+    listed = {d.usb_location: d for d in devices.list_devices()}
+
+    def line(d):
+        return f"{d.vid:04x}:{d.pid:04x} · REV {d.bcd_device:04X} · {d.link_speed} · no serial"
+    assert doctor._usb_summary(usb_location="1-4.2") == line(listed["1-4.2"]) ==         "1d6b:0200 · REV 0409 · High · no serial"
+    assert doctor._usb_summary() == line(listed["2-1"]) == "1d6b:0200 · REV 0409 · Super · no serial"   # the first
+    assert doctor._usb_summary(usb_location="1-5") == "USB: — · no serial"
 
 
 @pytest.mark.parametrize("argv, says", [

@@ -30,6 +30,9 @@
 //! `calib` reads the calibration file installed for your camera (`calib::resolve()`, `Device::calibration()`), by
 //! the rules of the Python package's `opticmix_vision.calib`.
 //!
+//! `presets` saves every control to a preset file, reads and checks presets and gives what loading one would change
+//! on this camera, in the Python package's format and folder; applying a preset to the camera is not in the crate yet.
+//!
 //! The Python package `opticmix_vision` calls these controls through its PyO3 extension
 //! (`opticmix_vision._core`) — the control logic lives here only.
 
@@ -49,6 +52,7 @@ pub mod dshow;
 pub mod error;
 pub mod guard;
 pub mod led;
+pub mod presets;
 #[cfg(feature = "capture")]
 pub mod recording;
 #[cfg(all(feature = "capture", windows))]
@@ -68,11 +72,11 @@ pub use capture::{DriverClock, DriverTimeSource, SampleInfo};
 pub use config::{CaptureApi, DeviceConfig, DeviceSelector, NegotiatedMode};
 pub use convert::UserValue;
 #[cfg(feature = "capture")]
-pub use device::{Device, StereoFrame, MAX_UNDECODABLE_IN_A_ROW};
+pub use device::{host_now_ns, Device, StereoFrame, MAX_UNDECODABLE_IN_A_ROW};
 pub use error::{Result, SdkError};
 pub use led::LedControl;
 #[cfg(feature = "capture")]
-pub use recording::{Playback, PlaybackStatus, Recorder};
+pub use recording::{capture_info, write_capture_info, Playback, PlaybackStatus, Recorder};
 pub use stereo::{split_stereo, GrayImage, Layout, LrOrder};
 /// The JSON crate of `calib::StereoCalibration::meta` (a `serde_json::Value`), re-exported so you need not add it.
 pub use serde_json;

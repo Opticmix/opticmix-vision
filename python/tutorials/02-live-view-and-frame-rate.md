@@ -170,4 +170,4 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) in the p
 
 - `measure_fps.py`: the Rust `measure_fps` example, its commands and its `--synthetic` output are under Run it
   above.
-- `live_preview.py`: no Rust example yet.
+- `live_preview.py`: no Rust example: needs a window library.

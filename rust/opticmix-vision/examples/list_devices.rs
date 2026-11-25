@@ -3,8 +3,10 @@
 //! ```text
 //! cargo run --example list_devices                                  # DirectShow's list (the default; Linux: V4L2's)
 //! cargo run --example list_devices -- --backend msmf                # Media Foundation's list
+//! cargo run --example list_devices -- --backend v4l2                # Linux: the V4L2 capture nodes (the default there)
 //! cargo run --example list_devices -- --synthetic                   # no camera: a made-up list with two Weevia S1
 //! cargo run --example list_devices -- --synthetic --backend msmf    # no camera: the same made-up devices, another order
+//! cargo run --example list_devices -- --synthetic --backend v4l2    # no camera: the same made-up devices as V4L2 lists them
 //! cargo run --example list_devices -- --verbose                     # also each device's USB IDs and link speed
 //! ```
 //!
@@ -34,12 +36,14 @@
 //! Not reported by the camera: a USB serial number, a firmware version (`bcd_device` is the USB device revision; how
 //! it relates to the firmware version has not been verified), a temperature.
 //!
-//! Linux (with the default `capture` feature, without `--backend msmf`): the video capture nodes in
+//! Linux (`--backend v4l2`, the default there; with the default `capture` feature): the video capture nodes in
 //! /sys/class/video4linux, from `devices::list_v4l2_devices()` (a UVC camera's metadata node is left out); the index
 //! is the N of /dev/videoN, which `DeviceSelector::Index(n)` opens, the USB location the USB device's sysfs name
 //! (e.g. 2-1), and `--verbose` reads the IDs and link speed from sysfs, as the doctor does. Run without a camera only
-//! (made-up sysfs trees, in the function's tests); not run with the camera on Linux. Other systems, and Linux without
-//! `capture`: the example says this listing is not there and exits. `--synthetic` works everywhere.
+//! (made-up sysfs trees, in the function's tests); not run with the camera on Linux. A list another system does not
+//! have (DirectShow and Media Foundation off Windows; V4L2 off Linux, or on Linux without `capture`): the example
+//! says where the lists are and exits. `--synthetic` works everywhere; with `--backend v4l2` it gives the same
+//! made-up devices as V4L2 lists them (made-up /dev/videoN numbers and sysfs names).
 //!
 //! Output with `--synthetic` (a made-up list, made-up USB locations):
 //!
@@ -58,7 +62,7 @@
 use opticmix_vision::devices::{list_devices, list_mf_devices, DeviceInfo};
 use opticmix_vision::spec::WEEVIA_S1_NAME;
 
-const USAGE: &str = "usage: list_devices [--synthetic] [--backend dshow|msmf] [--verbose]";
+const USAGE: &str = "usage: list_devices [--synthetic] [--backend dshow|msmf|v4l2] [--verbose]";
 const USB_LOCATION_NOTE: &str = "A USB location is not a serial number: it names the port the camera is plugged \
     into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not \
     supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): \
@@ -69,7 +73,7 @@ const NOT_REPORTED: &str = "Not reported by the camera: a USB serial number, a f
     device revision; how it relates to the firmware version has not been verified), a temperature.";
 
 fn main() {
-    let (mut synthetic, mut msmf, mut verbose) = (false, false, false);
+    let (mut synthetic, mut backend, mut verbose) = (false, None, false);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut it = args.iter().map(String::as_str);
     while let Some(arg) = it.next() {
@@ -77,33 +81,48 @@ fn main() {
             "--synthetic" => synthetic = true,
             "--verbose" => verbose = true,
             "--backend" => match it.next() {
-                Some("msmf") => msmf = true,
-                Some("dshow") => msmf = false,
+                Some(b @ ("dshow" | "msmf" | "v4l2")) => backend = Some(b),
                 other => usage_error(&format!("--backend {}", other.unwrap_or(""))),
             },
             other => usage_error(other),
         }
     }
-    let v4l2 = if synthetic || msmf { None } else { v4l2_devices() };
-    if !synthetic && !cfg!(windows) && v4l2.is_none() {
+    // the default: V4L2's list on Linux with `capture`, DirectShow's elsewhere and with --synthetic (as in Python)
+    let backend = backend.unwrap_or(if LINUX_LIST && !synthetic { "v4l2" } else { "dshow" });
+    let (msmf, linux) = (backend == "msmf", backend == "v4l2");
+    let v4l2 = if synthetic || !linux { None } else { v4l2_devices() };
+    if !synthetic && linux && v4l2.is_none() {
+        println!(
+            "The V4L2 list is Linux's. On Windows: the DirectShow list (the default, where this crate's controls find \
+             the camera) or --backend msmf (the one capture opens from)."
+        );
+        return;
+    }
+    if !synthetic && !linux && !cfg!(windows) {
         println!(
             "The DirectShow and Media Foundation lists are Windows'. On Linux this example lists the V4L2 capture \
-             nodes without --backend msmf, built with the capture feature (the default); or v4l2-ctl \
+             nodes (--backend v4l2, the default there), built with the capture feature (the default); or v4l2-ctl \
              --list-devices (package v4l-utils). DeviceConfig::weevia_s1() finds the camera by its V4L2 card name, \
              {WEEVIA_S1_NAME:?}."
         );
         return;
     }
-    let linux = v4l2.is_some();
     let devices: Vec<DeviceInfo> = if let Some(listed) = v4l2 {
         listed
     } else if synthetic {
         // A made-up device list with made-up USB locations, IDs and link speeds — not read from any computer; the
-        // webcam's IDs and link speed are left unread. Media Foundation might list the same devices in another order.
+        // webcam's IDs and link speed are left unread. Media Foundation might list the same devices in another order;
+        // V4L2 lists them by /dev/videoN (a UVC camera's metadata node, the odd numbers here, left out), named and
+        // located as sysfs names them.
         let made_up = [
             (WEEVIA_S1_NAME, "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)", Some("Super")),
             ("Example Laptop Webcam", "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)", None),
             (WEEVIA_S1_NAME, "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)", Some("High")),
+        ];
+        let made_up_v4l2 = [
+            ("Webcam gadget: WN Dual Camera", "2-1"),
+            ("Example Laptop Webcam", "1-5"),
+            ("Webcam gadget: WN Dual Camera", "1-4.2"),
         ];
         let order = if msmf { [1, 0, 2] } else { [0, 1, 2] };
         order
@@ -111,6 +130,11 @@ fn main() {
             .enumerate()
             .map(|(index, &i)| {
                 let (name, location, link) = made_up[i];
+                let (index, name, location) = if linux {
+                    (2 * index, made_up_v4l2[i].0, made_up_v4l2[i].1)
+                } else {
+                    (index, name, location)
+                };
                 let mut d = DeviceInfo::new(index, name, Some(location.to_string()));
                 if let Some(link) = link {
                     (d.vid, d.pid, d.bcd_device, d.link_speed) =
@@ -189,6 +213,9 @@ fn main() {
         if msmf { "" } else { " (--backend msmf)" }
     );
 }
+
+/// Whether this build lists the V4L2 capture nodes (Linux with `capture`).
+const LINUX_LIST: bool = cfg!(all(feature = "capture", target_os = "linux"));
 
 /// Linux with `capture`: the V4L2 capture nodes. `None` elsewhere (the listing is not there).
 #[cfg(all(feature = "capture", target_os = "linux"))]

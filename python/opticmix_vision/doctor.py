@@ -31,9 +31,9 @@ What this camera does not report is printed as such: it has no USB serial number
 firmware version (the USB device revision, bcdDevice, is shown instead; how it relates to the firmware version
 has not been verified), and no known temperature readout.
 
---open has been run with the camera once (one PC, one camera, 2026-11-24); without --open, --json and Linux:
-run without a camera only
-(generated frames, fake Windows and Linux device lists).
+--open (DirectShow, the default backend; its report includes everything the doctor prints without --open):
+verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB
+re-insertions, read-only. Not verified on Linux.
 """
 from __future__ import annotations
 

@@ -16,8 +16,10 @@ to a preset file that you load back in one call.
   camera**: on the units we have tested, a control write has occasionally been followed by one eye's stream
   stopping until the USB cable was re-inserted. **Write once at startup.**
 - Camera controls run in the compiled extension that ships in the wheel (`pip install opticmix-vision`).
-- The controls were measured with the earlier Python implementation; the Rust implementation (since 0.0.3)
-  has not yet been verified against the camera.
+- Reading the controls, with the ranges and defaults the camera reports: verified with the published 0.0.7 wheel
+  on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only. Writing them
+  was measured with the earlier Python implementation; with the Rust implementation (since 0.0.3) writes have
+  not yet been verified against the camera.
 - Run the commands from the `python/` folder of the repository — see the [tutorials README](README.md) for
   which version to check out and which `python` to use.
 
@@ -232,8 +234,42 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) in the p
 
 ## Rust
 
+The Rust crate also has `brightness_stats` and `presets`. In a checkout of the repository, from
+`rust/opticmix-vision`, without a camera:
+
+```bash
+cargo run --release --features test-support --example brightness_stats -- --synthetic
+cargo run --release --features test-support --example presets -- --synthetic
+cargo run --release --features test-support --example presets -- --synthetic --plan my_preset.json
+cargo run --release --example presets -- --list            # the preset folder; opens no camera
+```
+
+Output with `--synthetic` (generated frames); with the camera the numbers differ.
+
+```text
+$ cargo run --release --features test-support --example brightness_stats -- --synthetic
+negotiated: 1600x800 MJPG 90.0 fps (synthetic)
+90 frames -> brightness.csv
+left : mean 173.8 (frames 172.9..174.7)  min 0  max 255  saturated 0.326 % of pixels
+right: mean 103.4 (frames 99.4..107.4)  min 0  max 207  saturated 0.000 % of pixels
+
+$ cargo run --release --features test-support --example presets -- --synthetic
+saved 14 controls (synthetic) to my_preset.json
+control writes by this process: 0
+
+$ cargo run --release --features test-support --example presets -- --synthetic --plan my_preset.json
+the camera already has every value in the preset
+control writes by this process: 0
+```
+
 - `list_controls.py` and `set_controls_once.py`: the Rust examples of the same names, their commands and their
   `--synthetic` output are under Run it above.
-- `brightness_stats.py`: no Rust example yet.
-- `presets.py`: no Rust example yet. Presets (every control saved to a file and loaded back): Python only for
-  now — `opticmix_vision.presets`.
+- `brightness_stats`: the Rust version of `brightness_stats.py` — the same columns
+  (`index,host_ns,left_mean,left_min,left_max,left_saturated,right_…`) and summary. With `--synthetic` the
+  generated image's brightness says nothing about the camera. Run without a camera only (generated frames); not run with the camera.
+- `presets`: the steps of `presets.py` that do not write — every control saved to a preset file
+  (`Controls::save_preset`) and what loading a preset would change (`Controls::plan_preset`, as `--load FILE
+  --dry-run`), with `--list` for the preset folder. It reads the preset files the Python package saves, and the
+  Python package reads the ones it saves; a preset that does not fit stops with the Python package's message.
+  Applying a preset to the camera is not in the Rust crate yet (Python: `presets load`). Run without a camera only
+  (simulated controls, preset files written by the Python package); not run with the camera.

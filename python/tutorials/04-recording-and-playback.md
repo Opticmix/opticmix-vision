@@ -16,9 +16,9 @@ write a recording's frames out as PNG pairs.
 - Run the commands from the `python/` folder of the repository — see the [tutorials README](README.md) for
   which version to check out and which `python` to use. The recordings are written into the folder you
   run them from.
-- `record_video.py` (MJPG, 5 s) has been run with the camera once (one PC, one camera, 2026-11-24): it wrote
-  443 frames with the CSV and JSON (estimated missed 22), and `play_recording.py` read the 443 frames back.
-  Lossless recording's pixel values, and playback with seeking, speed and looping: generated frames only
+- Recording (`record_video.py`), and playback with seeking and looping (`play_recording.py`): verified with the
+  published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions,
+  read-only (the files were written and read back with the same frame count — not that both eyes showed the scene in every recording: see "One eye goes black or stops moving"); the `--speed` factor: not verified. Lossless recording's pixel values: generated frames only
   (`record_video.py --synthetic`); not run with the camera. `--queue-frames` (encoding on a thread, as the
   viewer's `v` does): run on generated frames only; not run with the camera.
 - The Rust crate writes and plays the same MJPG `.avi` recordings (`cargo run --release --example record_video`,
@@ -66,7 +66,7 @@ recorded mode: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'bac
 96 frames, 1.00 s, codec MJPG, compressed True
 read 96 frames from recording.avi
 whole recording: late 0, estimated missed 0 (from the recorded frame times)
-frames read 0..95: late 0, estimated missed 0
+over the 96 frames read (first frame 0, last frame 95): late 0, estimated missed 0
 
 $ python examples/play_recording.py recording.avi --headless --start-seconds 0.5 --speed 2
 recorded mode: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
@@ -74,14 +74,14 @@ recorded mode: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'bac
 start at frame 50
 read 46 frames from recording.avi
 whole recording: late 0, estimated missed 0 (from the recorded frame times)
-frames read 50..95: late 0, estimated missed 0
+over the 46 frames read (first frame 50, last frame 95): late 0, estimated missed 0
 
 $ python examples/play_recording.py recording.avi --headless --loop --frames 150
 recorded mode: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
 96 frames, 1.00 s, codec MJPG, compressed True
 read 150 frames from recording.avi
 whole recording: late 0, estimated missed 0 (from the recorded frame times)
-frames read 0..53: late 0, estimated missed 0
+over the 150 frames read (first frame 0, last frame 53): late 0, estimated missed 0
 
 $ python examples/record_video.py --synthetic --seconds 1 --lossless --out lossless.mkv
 negotiated: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
@@ -92,7 +92,7 @@ recorded mode: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'bac
 95 frames, 1.00 s, codec FFV1, compressed False
 read 95 frames from lossless.mkv
 whole recording: late 0, estimated missed 0 (from the recorded frame times)
-frames read 0..94: late 0, estimated missed 0
+over the 95 frames read (first frame 0, last frame 94): late 0, estimated missed 0
 ```
 
 - `record_video.py` writes three files with the same name: `recording.avi` (grayscale, left eye in the left
@@ -114,7 +114,8 @@ frames read 0..94: late 0, estimated missed 0
 - `recorded mode:` is the mode the recording was made in (from the JSON), not the mode of the file.
 - `--start-seconds 0.5` starts at the first frame recorded at or after 0.5 s; `--speed 2` plays at the
   recorded pace, twice as fast. `--loop` starts again at frame 0 after the last frame, so 150 frames are read
-  from a 92-frame file; `frames read` gives the numbers of the first and the last frame read.
+  from a 96-frame file; the last line's late and missed counts are over those 150 frames, and it gives the
+  numbers of the first and the last frame read.
 - `compressed True` (MJPG): the pixel values differ from what the camera sent. `compressed False` (FFV1):
   the file keeps the pixel values the SDK delivered (generated frames only; not run with the camera).
 

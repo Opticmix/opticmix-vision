@@ -1,6 +1,6 @@
 # opticmix-vision API reference
 
-Reference for the public Python API of `opticmix_vision` 0.0.7. It lists every
+Reference for the public Python API of `opticmix_vision` 0.0.8. It lists every
 public name, with its signature as `inspect.signature` reports it. What has been
 run against the camera, and on which platform, is stated in [README.md](README.md)
 and not repeated here.
@@ -38,7 +38,7 @@ works. `opticmix_vision.__all__`:
 
 | Name | Defined in |
 |---|---|
-| `__version__` | package — the version string, `"0.0.7"` |
+| `__version__` | package — the version string, `"0.0.8"` |
 | `Device`, `DeviceConfig`, `DeviceError`, `EndOfRecording`, `NegotiatedMode`, `StereoFrame`, `split_stereo`, `LAYOUTS`, `LR_ORDERS` | [`opticmix_vision.device`](#opticmix_visiondevice) |
 | `LedControl`, `LedControlUnavailable`, `DEFAULT_LED_PROP` | [`opticmix_vision.led`](#opticmix_visionled) |
 | `Controls`, `ControlInfo`, `WriteResult`, `ControlsUnavailable`, `ControlStateError`, `CONTROLS`, `write_counts`, `reset_write_counts` | [`opticmix_vision.controls`](#opticmix_visioncontrols) |
@@ -186,7 +186,7 @@ is the time the frame was read back, unless `playback.recorded_time` is set (the
 is the time recorded in the CSV). A compressed (MJPG) recording does not have the
 camera's pixel values; the lossless (FFV1) file keeps the pixel values the SDK
 delivered (generated frames only; not run with the camera).
-`Recorder` (MJPG) and reading a recording back have been run with the camera once (one PC, one camera, 2026-11-24: 443 frames recorded and read back). Seeking, speed, looping and pausing: generated frames only; not run with the camera. The Rust crate (`opticmix-vision`: `Recorder`, `Device::open_recording`) writes and plays the same MJPG `.avi` files, CSV and JSON; it neither writes nor plays FFV1, and its recordings name a checked V4L2 clock `v4l2_monotonic` in the CSV. Rust recording and playback: generated frames only; not run with the camera.
+Recording with `Recorder` and reading a recording back, seeking and looping: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only (the files were written and read back with the same frame count — not that both eyes showed the scene in every recording: see "One eye goes black or stops moving"). The speed factor (`set_speed`): not verified; pausing: generated frames only; not run with the camera. The Rust crate (`opticmix-vision`: `Recorder`, `Device::open_recording`) writes and plays the same MJPG `.avi` files, CSV and JSON; it neither writes nor plays FFV1, and its recordings name a checked V4L2 clock `v4l2_monotonic` in the CSV. Rust recording and playback: generated frames only; not run with the camera.
 
 Raises `DeviceError` when the file does not exist.
 
@@ -238,7 +238,7 @@ One stereo frame (frozen dataclass).
 | Field | Meaning |
 |---|---|
 | `left`, `right` | (h, w) `uint8` images of the left and right eye. With `split_stereo`, these can be views into the raw frame |
-| `host_ns` | host monotonic clock (`time.perf_counter_ns()`) taken right after the frame was read. It is not a device timestamp |
+| `host_ns` | host monotonic clock (`time.perf_counter_ns()`) taken right after the frame was read. It is not a device timestamp. `time.perf_counter_ns()` gives now on the same clock (the Rust crate's `host_ns` is another clock: its `host_now_ns()`, from 0.0.8) |
 | `index` | frame number counted by this `Device`, from 0 (from a recording: the frame's number in the file). It is not a device counter |
 | `driver_ns` | the operating system capture driver's time stamp for the frame, in ns, as OpenCV passes it on in `CAP_PROP_POS_MSEC` (OpenCV 4.13 sources: `cap_msmf.cpp`, `cap_v4l.cpp`), converted back to whole driver units. `None` with DirectShow — OpenCV returns -1 there, and DirectShow is the Weevia S1 default on Windows (`DeviceConfig.weevia_s1(backend="msmf")` gives Media Foundation; see "Media Foundation through OpenCV" below) — and for a recording, unless `Playback.recorded_time` is set: then the value recorded in its CSV. Opened through MSMF, the camera controls are the OpenCV fallback (no ranges or defaults, no `power_line_frequency` or `low_light_compensation`): that is the price of this time stamp |
 | `driver_clock` | the clock `driver_ns` is on, `None` exactly when it is: `"media_foundation"` = the sample time (100 ns units) Media Foundation's source reader gives with the converted sample OpenCV receives (see below). On one PC (Windows 11) with one camera (2026-11-24, once) the first Media Foundation time was about 364,400 s — not the start of streaming; on this PC it was within a few seconds of Python's `time.perf_counter_ns()` (compared across two runs by file times, not within one process), but what the clock's zero is has not been established. Use differences between frames, not the absolute value; `"v4l2"` = the V4L2 buffer time stamp (microseconds) — OpenCV does not pass on the buffer's clock flag, so whether it is `CLOCK_MONOTONIC` is not checked (the Rust crate checks it); `"v4l2_monotonic"` = only when playing back a recording the Rust crate wrote (`Playback.recorded_time`): the Rust crate's name in the CSV for a V4L2 time it checked to be on `CLOCK_MONOTONIC`, kept apart from `"v4l2"`. Rust recording on Linux has not been run |
@@ -642,8 +642,8 @@ more than one node with the same name; the capture node is the one whose sysfs
 device the node belongs to (`/sys/class/video4linux/videoN/device` and its parents,
 the nearest with an `idVendor` file), for example `1-4.2`, compared ignoring case —
 the `location` the doctor prints on Linux; an empty or blank one raises
-`ValueError`. Run on Linux with one camera once (opened at its location; a location with no camera refused). Not run with
-two cameras.
+`ValueError`. Run on Linux with one camera once (one PC, one camera, 2026-11-25, the 0.0.6 wheel): opened at its
+location; a location with no camera refused. Not run with two cameras.
 
 ---
 
@@ -1135,7 +1135,7 @@ The next generated frame (eye size = the calibration's).
 ## `opticmix_vision.recording`
 
 Recording frames to a file, playing a recording back, and the capture-info JSON
-saved next to captures. `Recorder` (MJPG) and reading a recording back have been run with the camera once (one PC, one camera, 2026-11-24: 443 frames recorded and read back). Seeking, speed, looping and pausing: generated frames only; not run with the camera.
+saved next to captures. Recording with `Recorder` and reading a recording back, seeking and looping: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only (the files were written and read back with the same frame count — not that both eyes showed the scene in every recording: see "One eye goes black or stops moving"). The speed factor (`set_speed`): not verified; pausing: generated frames only; not run with the camera.
 The Rust crate (`opticmix-vision`: `Recorder`, `Device::open_recording`) writes and plays the same MJPG `.avi` files, CSV and JSON; it neither writes nor plays FFV1, and its recordings name a checked V4L2 clock `v4l2_monotonic` in the CSV. Rust recording and playback: generated frames only; not run with the camera.
 
 A recording is three files with the same name. The `.csv` and `.json` are named
@@ -1199,11 +1199,19 @@ when it opened; a control whose write was refused is read once again later, and
 the values include the viewer's own writes since. Reads controls unless given,
 never writes them.
 
+Rust (from 0.0.8): `opticmix_vision::capture_info(&mut device)` — the same field names
+for a camera, the Rust examples' `--synthetic` stand-in (`source` `"synthetic"`, with
+its `camera` fields) or a recording; `created` in UTC, `calibration_files` `null` (not listed), no
+`controls=`. A test of the crate compares its field names with this function's. Run
+without a camera only (generated frames); not run with the camera.
+
 ### `write_capture_info(path: str | Path, source: Any, **extra: Any) -> dict[str, Any]`
 
 `capture_info(source, **extra)` written to `path` as JSON (`controls=` too). Returns the `dict`. The
 viewer's `s` key and the examples `save_stereo_pairs.py` and
-`capture_dataset_npz.py` write it next to what they save.
+`capture_dataset_npz.py` write it next to what they save. Rust (from 0.0.8):
+`write_capture_info(path, &mut device, extra)`, which the Rust `save_stereo_pairs` and
+`capture_dataset` examples write as `capture_info.json`.
 
 ### `Recorder(path: str | Path, source: Any, *, codec: str = "MJPG", fps: float | None = None, controls: Callable[[], dict[str, Any] | None] | None = None, controls_read_at: str | None = None, queue_frames: int = 0)`
 
@@ -1816,6 +1824,20 @@ the same files and the same calls.
 Run without a camera only; writing a preset to the camera writes several controls
 at once — see README, "Camera controls": write once at startup.
 
+Rust: the `presets` module of the `opticmix-vision` crate (from 0.0.8) reads and
+saves the same files in the same folder — `store_dir()`, `preset_path()`,
+`read_preset()`, `list_presets()` and `PresetInfo`, `Controls::save_preset()`, and
+`Controls::plan_preset()`, whose `changes` are what `plan_preset()` returns here,
+with `unchanged`, `left_out` and `skipped_mono` as in `PresetLoad` — with the same
+checks and messages (`SdkError::Preset` for `PresetError`, `SdkError::PresetModel`
+for `PresetModelError`); `Controls::model()` is `Controls.model`. Differences: Rust
+lists controls in the camera's control order, Python in the file's (the files both
+write are in that order); a file it cannot read is `SdkError::Preset` (here
+`OSError`), and for a file that is not JSON the parser's words differ. Applying a
+preset to the camera is not in the Rust crate yet (Python: `presets load`). Run
+without a camera only (simulated controls, preset files written by the Python
+package); not run with the camera.
+
 A preset file:
 
 ```json
@@ -2020,8 +2042,9 @@ options:
                      Windows: as examples/list_devices.py or python -m opticmix_vision.doctor
                      (location) prints it; Linux: the USB device's sysfs name, e.g. 1-4.2; no
                      Weevia S1 there, or an empty one: exit code 2. Not a serial number: it
-                     changes when the camera is plugged into another port. Picking by USB
-                     location: run without a camera only (made-up device lists)
+                     changes when the camera is plugged into another port. This option: run
+                     without a camera only (made-up device lists); not run with a camera, and
+                     not run with two cameras
   --timestamps FILE  with --open: write each frame's host time to a CSV file
   --backend {dshow,msmf,v4l2}
                      with --open: the OpenCV capture backend (default: the Weevia S1 default for
@@ -2327,7 +2350,7 @@ python -m opticmix_vision.viewer --device 1 --layout sbs --lr-order first_is_rig
 
 ## `opticmix_vision.explorer`
 
-A window (Tk) to see whether the camera works and to change its controls. Only the
+A window (Tk) to see whether the camera works and to change its controls (on Linux, to look at them). Only the
 command and `main` are public. The Settings window (gear button) has
 "Reset to defaults…", "Save preset…" (`Controls.save_preset()` to a file you pick,
 starting in `presets.store_dir()`) and "Load preset…" (the presets saved from this
@@ -2352,14 +2375,17 @@ options:
                         choose between two that share a name
                         (DeviceConfig.weevia_s1(usb_location=...)); as
                         examples/list_devices.py or python -m
-                        opticmix_vision.doctor (location) prints it; no Weevia
-                        S1 there, or an empty one: exit code 2. Windows only:
-                        the explorer lists no cameras on Linux. Not a serial
+                        opticmix_vision.doctor (location) prints it; on Linux
+                        the USB device's sysfs name, e.g. 1-4.2; no Weevia S1
+                        there, or an empty one: exit code 2. Not a serial
                         number: it changes when the camera is plugged into
-                        another port. Picking by USB location: run without a
-                        camera only (made-up device lists)
+                        another port. This option: run without a camera only
+                        (made-up device lists); not run with a camera, and not
+                        run with two cameras
 ```
 
-`--usb-location` (Windows only; on Linux, where the explorer lists no cameras, exit code 2): the device list holds only the Weevia S1 that `DeviceConfig.weevia_s1(usb_location=...)` finds there (the refresh button looks again; nothing there: the message says what is where), it is found again by that USB location at every open (not there: it is not opened, and the window shows the error), the USB line above it (VID:PID, revision, link speed) is that camera's, and the Settings window reads and writes that camera's controls. No Weevia S1 at that location, or an empty one: exit code 2 before the window opens; not with `--synthetic`. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
+`--usb-location`: the device list holds only the Weevia S1 that `DeviceConfig.weevia_s1(usb_location=...)` finds there (the refresh button looks again; nothing there: the message says what is where), it is found again by that USB location at every open (not there: it is not opened, and the window shows the error), the USB line above it (VID:PID, revision, link speed) is that camera's, and the Settings window reads and writes that camera's controls (on Linux, reads them only). No Weevia S1 at that location, or an empty one: exit code 2 before the window opens; not with `--synthetic`. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
 
 Without `--usb-location`, two cameras that share a name are listed with their USB locations (`WN Dual Camera · <USB location>`), the one chosen in the list is opened, found again by its USB location at every open (the list's order can change), and the Settings window writes to it; two of one name whose USB locations cannot be read are not opened (the window says to connect one at a time). With two of one name, or with `--usb-location`, the mode list is not asked of ffmpeg (it asks by name): the window opens 1600×800 MJPG and says why. Run without a camera only (made-up device lists); not run with two cameras.
+
+On Linux (from 0.0.8) the device list is V4L2's (`devices.list_devices()`, the default there: one entry per `/dev/videoN` capture node, with the USB device's sysfs name as its USB location), the camera is opened with `backend="v4l2"` at `/dev/videoN` by its number and found again by that USB location at every open, `--usb-location` takes the sysfs name (e.g. `1-4.2`), and the USB line is read from sysfs as the doctor reads it. The mode list is not read there: the window opens 1600×800 MJPG and says why. The Settings window is read only: every control shows its value, range and default but is disabled, and so are Reset to defaults… and Load preset… (Save preset… reads only) — camera controls on Linux are not verified and not supported; the window says so, with the defaults line of Reset to defaults. Run without a camera only (made-up sysfs trees, fake widgets); not run with the camera on Linux, and not run with a display on Linux.

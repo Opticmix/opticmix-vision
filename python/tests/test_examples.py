@@ -368,10 +368,13 @@ def test_record_video_lossless_then_play_recording_with_seek_speed_and_loop(tmp_
     assert info["recording"]["codec"] == "FFV1" and info["recording"]["compressed"] is False and n > 3
     mkv = "recording_lossless.mkv"
     out = run(tmp_path, "play_recording.py", mkv, "--headless", "--start", "2", "--speed", "8")
-    assert f"read {n - 2} frames" in out and f"frames read 2..{n - 1}" in out and "compressed False" in out
+    assert f"read {n - 2} frames" in out and "compressed False" in out
+    assert f"over the {n - 2} frames read (first frame 2, last frame {n - 1}): late" in out
     assert "whole recording: late" in out
     out = run(tmp_path, "play_recording.py", mkv, "--headless", "--loop", "--frames", str(2 * n + 1))
     assert f"read {2 * n + 1} frames" in out
+    # the late / missed counts are over every frame read, not over a range of frame numbers (0.0.7: "frames read 0..0")
+    assert f"over the {2 * n + 1} frames read (first frame 0, last frame 0): late" in out
     out = run(tmp_path, "play_recording.py", mkv, "--headless", "--start-seconds", "0", "--recorded-time")
     assert f"read {n} frames" in out
 
@@ -789,10 +792,44 @@ def test_list_devices_on_linux_lists_the_v4l2_capture_nodes(monkeypatch, capsys,
             "      vid: 0x1d6b", "      pid: 0x0200", "      bcd_device: 0x0409", "      link_speed: Super",
             VERBOSE_LIST[-1],
             "Weevia S1 ('WN Dual Camera') found: 1"]
-    monkeypatch.setattr(sys, "argv", ["list_devices.py", "--synthetic", "--backend", "v4l2"])
-    with pytest.raises(SystemExit) as exc:                 # the made-up lists are DirectShow's and Media Foundation's
-        mod.main()
-    assert exc.value.code == 2 and "--synthetic" in capsys.readouterr().err
+
+
+# The Rust list_devices example prints the same device lines (tests/examples_synthetic.rs in the Rust crate).
+SYNTHETIC_V4L2_LIST = [
+    "3 video device(s) in the V4L2 list:",
+    "  [0] Webcam gadget: WN Dual Camera   <- Weevia S1   USB location: 2-1",
+    "      vid: 0x1d6b",
+    "      pid: 0x0200",
+    "      bcd_device: 0x0409",
+    "      link_speed: Super",
+    "  [2] Example Laptop Webcam   USB location: 1-5",
+    "      vid: not read",
+    "      pid: not read",
+    "      bcd_device: not read",
+    "      link_speed: not read",
+    "  [4] Webcam gadget: WN Dual Camera   <- Weevia S1   USB location: 1-4.2",
+]
+
+
+def test_list_devices_synthetic_v4l2_is_a_made_up_v4l2_list(tmp_path):
+    out = run(tmp_path, "list_devices.py", "--synthetic", "--backend", "v4l2", "--verbose").splitlines()
+    assert out[:12] == SYNTHETIC_V4L2_LIST
+    assert out[16:18] == [VERBOSE_LIST[-1], "Weevia S1 ('WN Dual Camera') found: 2"]
+    assert out[19] == USB_LOCATION_NOTE and len(out) == 20                # no line about another backend's list
+    plain = run(tmp_path, "list_devices.py", "--synthetic", "--backend", "v4l2").splitlines()
+    assert plain[:4] == [SYNTHETIC_V4L2_LIST[i] for i in (0, 1, 6, 11)]
+
+
+def test_list_devices_backend_v4l2_off_linux_says_the_list_is_linuxs(monkeypatch, capsys):
+    from opticmix_vision import devices
+    mod = _example("list_devices.py")
+    monkeypatch.setattr(devices, "_v4l2_devices", lambda _: pytest.fail("the V4L2 list was read"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "argv", ["list_devices.py", "--backend", "v4l2"])
+    assert mod.main() == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "The V4L2 list is Linux's. On Windows: the DirectShow list (the default) or --backend msmf (Media "
+        "Foundation's)."]
 
 
 def test_list_devices_verbose_shows_what_windows_reports(monkeypatch, capsys):

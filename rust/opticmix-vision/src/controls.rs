@@ -473,6 +473,7 @@ pub struct Controls {
     supported: Mutex<HashMap<String, bool>>,
     ranges: Mutex<HashMap<String, Option<RawRange>>>,
     writes_defaults: bool,
+    model: Option<String>,
 }
 
 impl Controls {
@@ -486,6 +487,7 @@ impl Controls {
         let backend_name = backend.name().to_string();
         let exposure_units = backend.exposure_units().to_string();
         let writes_defaults = backend.writes_defaults();
+        let model = backend.model().map(String::from);
         let backend_note = [backend.note(), note]
             .iter()
             .filter(|x| !x.is_empty())
@@ -552,6 +554,7 @@ impl Controls {
             supported: Mutex::new(HashMap::new()),
             ranges: Mutex::new(HashMap::new()),
             writes_defaults,
+            model,
         })
     }
 
@@ -568,6 +571,13 @@ impl Controls {
     /// shown by `describe()`. The same name and meaning as the Python package's `Controls.writes_defaults`.
     pub fn writes_defaults(&self) -> bool {
         self.writes_defaults
+    }
+
+    /// The camera model, as the backend tells it (Python `Controls.model`): `"WN Dual Camera"` for the Weevia S1
+    /// (DirectShow binds only a device of that name; V4L2 when the node's name has it), `"synthetic"` for the
+    /// simulated controls, `None` when the backend cannot tell. Presets record it and check it.
+    pub fn model(&self) -> Option<&str> {
+        self.model.as_deref()
     }
 
     pub fn closed(&self) -> bool {

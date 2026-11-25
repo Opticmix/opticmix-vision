@@ -362,6 +362,14 @@ impl Backend for DShowBackend {
         &self.device_name
     }
 
+    /// The one expected name: `start()` refuses a device not named so (Python `DShowBackend.model`).
+    fn model(&self) -> Option<&str> {
+        match self.expected.as_slice() {
+            [one] => Some(one),
+            _ => None,
+        }
+    }
+
     fn start(&mut self) -> Result<()> {
         #[cfg(windows)]
         {

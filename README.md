@@ -3,7 +3,7 @@
 Python SDK for the **Weevia S1** stereo infrared camera. The camera presents
 itself to the host as a standard UVC device; the SDK opens it, splits the two
 eyes out of one frame, and drives the camera controls and the IR illuminator.
-Camera controls and the illuminator: measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
+Reading the camera controls, with the ranges and defaults the camera reports: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only. Writing the controls, and the illuminator: measured with the earlier Python implementation; with the Rust implementation (since 0.0.3) they have not yet been verified against the camera.
 
 ## Install
 
@@ -15,7 +15,7 @@ pip install opticmix-vision
 
 This installs a wheel that carries a compiled extension, so nothing has to be
 built. The same file is attached to the GitHub release
-[v0.0.7](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.7).
+[v0.0.8](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.8).
 On Windows, verified on Windows 11 only. There is no wheel for macOS, and macOS
 has not been run.
 

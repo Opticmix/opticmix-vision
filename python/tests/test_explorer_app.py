@@ -112,6 +112,39 @@ def test_reset_dialog_on_linux_says_the_defaults_are_shown_not_written(app):
     finally:
         c._writes_defaults = True
 
+def test_on_linux_every_control_is_shown_disabled_and_nothing_is_written(app, monkeypatch):
+    """Linux: camera control writes are not verified and not supported. The rows keep their values but every widget
+    that writes is disabled, so are Reset to defaults and Load preset (Save preset reads only), the banner says why,
+    and releasing a slider or calling the write methods writes nothing. The window is withdrawn before it is shown."""
+    import sys
+    from opticmix_vision.controls import DEFAULTS_NOT_WRITTEN
+    from opticmix_vision.explorer.settings_window import SettingsWindow
+    from opticmix_vision.explorer.state import READ_ONLY_NOTE
+    _open(app)
+    c, be = app.source.controls, app.source._sim
+    monkeypatch.setattr(sys, "platform", "linux")
+    s = SettingsWindow(app.root, app._current_controls)
+    s.top.withdraw()
+    try:
+        assert set(s.vars) == set(c.names())
+        writers = {n: w for n, w in s.widgets.items() if not isinstance(w, tk.Label)}
+        assert writers and {n: str(w.cget("state")) for n, w in writers.items()} == dict.fromkeys(writers, "disabled")
+        assert [str(b.cget("state")) for b in (s.reset_button, s.load_preset_button, s.save_preset_button)] == [
+            "disabled", "disabled", "normal"]
+        assert s.banner.cget("text").splitlines()[-2:] == [READ_ONLY_NOTE, DEFAULTS_NOT_WRITTEN]
+        assert s.value_labels["gain"].cget("text") == str(c.get("gain"))          # shown
+        n0 = len(be.writes)
+        s.vars["gain"].set(c.get("gain") + 20)
+        s._release("gain")
+        s._apply("gain")
+        s._do_reset()
+        app.root.update()
+        c.flush(timeout=5)
+        assert len(be.writes) == n0
+    finally:
+        s.close()
+
+
 def test_a_value_the_camera_did_not_keep_is_shown_and_the_slider_snaps_back(app):
     """2026-09-24: 게인 8 을 드라이버가 받았는데 카메라는 0 을 지켰다 — 창이 그걸 말해야 한다."""
     s = _open(app)

@@ -90,6 +90,15 @@ def test_banner_names_the_limitation():
     assert banner_text("opencv-dshow", "no ranges").startswith("Limited controls (OpenCV fallback)")
 
 
+def test_the_banner_on_linux_says_the_controls_are_shown_not_written():
+    from opticmix_vision.controls import DEFAULTS_NOT_WRITTEN
+    from opticmix_vision.explorer.state import READ_ONLY_NOTE, banner_text
+    assert READ_ONLY_NOTE == "Camera controls on Linux are not verified and not supported — shown, not written"
+    assert banner_text("opencv-v4l2", "no ranges", read_only=True).splitlines() == [
+        "Limited controls (OpenCV fallback): no ranges", READ_ONLY_NOTE, DEFAULTS_NOT_WRITTEN]
+    assert banner_text("dshow", "", read_only=True).splitlines() == [READ_ONLY_NOTE, DEFAULTS_NOT_WRITTEN]
+
+
 def test_reset_lines_count_the_writes():
     from opticmix_vision.explorer.state import reset_lines
     assert reset_lines({}) == ["Everything is already at the device defaults."]

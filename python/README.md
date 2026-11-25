@@ -16,7 +16,7 @@ pip install opticmix-vision
 
 On Windows x64 this installs a wheel — one abi3 wheel for Python 3.10 and newer;
 installed and tested on 3.10, 3.12 and 3.14 (no camera). The same file is
-attached to the GitHub release [v0.0.7](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.7).
+attached to the GitHub release [v0.0.8](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.8).
 On Windows, verified on Windows 11 only. On Linux x86_64 it installs a
 manylinux wheel — experimental, see Linux (experimental) below.
 There is no wheel for macOS, and macOS has not been run. Elsewhere pip tries to
@@ -67,6 +67,15 @@ N of `/dev/videoN` as its index, the USB device's sysfs name as its USB location
 them; `python examples/list_devices.py --verbose` prints them. It opens no device.
 Run without a camera only (made-up sysfs trees); not run with the camera on Linux.
 
+From 0.0.8, the explorer (`python -m opticmix_vision.explorer`) lists the cameras
+on Linux too, from that list, and opens the one chosen with `backend="v4l2"` at its
+`/dev/videoN`; `--usb-location` takes the sysfs name. It opens 1600×800 MJPG (the
+mode list is not read on Linux). Its Settings window shows the controls, their
+ranges and defaults, and writes nothing: every control, Reset to defaults and Load
+preset are disabled.
+Run without a camera only (made-up sysfs trees, fake widgets); not run with the
+camera on Linux, and not run with a display on Linux.
+
 Not verified on Linux:
 
 - camera controls and the illuminator — not verified and not supported;
@@ -105,11 +114,12 @@ Each frame carries `host_ns`, the host clock when it was read. For the capture d
 name in the Media Foundation list, and its controls are then the OpenCV fallback (no ranges or defaults) — or
 use V4L2 on Linux; DirectShow, the Windows default, gives none. `python examples/measure_fps.py --backend msmf`
 prints both. On one PC (Windows 11) with one camera (2026-11-24, once) the first Media Foundation time was about 364,400 s — not the start of streaming; on this PC it was within a few seconds of Python's `time.perf_counter_ns()` (compared across two runs by file times, not within one process), but what the clock's zero is has not been established. Use differences between frames, not the absolute value. Through MSMF, OpenCV asks Media Foundation for RGB, and the time is that converted sample's; run with the camera once (one PC, one camera, 2026-11-24): through MSMF 276 of 900 frames per eye repeated the previous image while the driver-time intervals were 11.11 ms (mean, min and max) — `driver_ns` does not show whether a new image arrived; cause not established. DirectShow: 0 of 900 and 0 of 450; Rust (Media Foundation, no conversion): 0 of 450, driver-time intervals 0.01 to 16.90 ms (mean 11.23). See `StereoFrame` in `API.md`.
-V4L2: not run with the camera.
+V4L2 (Linux, experimental): `examples/measure_fps.py` has been run with the camera once (one PC, one camera, 2026-11-25,
+the 0.0.6 wheel).
 
 `examples/quickstart.py` runs this end to end; `python -m opticmix_vision.viewer`
 and `python -m opticmix_vision.explorer` open the same camera in a window.
-Step-by-step: the [tutorials](https://github.com/Opticmix/opticmix-vision/blob/v0.0.7/python/tutorials/README.md)
+Step-by-step: the [tutorials](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/tutorials/README.md)
 (the `tutorials/` folder next to this README).
 
 In the viewer, `s` saves a left/right PNG pair and `v` starts and stops a
@@ -208,7 +218,7 @@ for — read `cam.mode` rather than assuming. Request the fourcc: without
 
 `cam.controls` covers every control the camera advertises — the same set the Windows driver's property
 page (and the vendor's AMCap tool) shows. Ranges and defaults come from the device, not from this package.
-Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
+Reading the controls, with the ranges and defaults the camera reports: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only. Writing them: measured with the earlier Python implementation; with the Rust implementation (since 0.0.3) writes have not yet been verified against the camera.
 
 ```python
 cfg = DeviceConfig.weevia_s1()
@@ -308,7 +318,7 @@ frames (`python -m opticmix_vision.explorer --synthetic`): the window, keys and
 saving run with nothing attached; the camera's own capture path does not. It is a
 generator, not measured data. The examples
 that open a camera, other than `quickstart.py`, take `--synthetic` as well;
-`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.7/python/examples/README.md).
+`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/examples/README.md).
 
 A recording written by `examples/record_video.py` or the viewer's `v` key can be read
 back the same way as the camera: `Device(DeviceConfig.recording("recording.avi"))` — see
@@ -322,10 +332,11 @@ capture backend gave one — not with DirectShow; run without a camera only, not
 step one frame, `[`/`]` jump one second, `-`/`+` change the speed, the bar under the
 image seeks, and the window stays on the last frame until `q`. `cam.playback` also
 gives the late / missed estimates over the whole recording, and `status`
-(`"playing"`, `"paused"`, `"ended"`). `play_recording.py` has read back a 443-frame MJPG recording made with the
-camera once (one PC, one camera, 2026-11-24); seeking, speed, pausing and playback in the viewer: generated
-recordings only (`record_video.py --synthetic`). Every public name is in
-[API.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.7/python/API.md).
+(`"playing"`, `"paused"`, `"ended"`). `play_recording.py` reading a recording back, seeking and
+looping: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub,
+two USB re-insertions, read-only (the files were written and read back with the same frame count — not that both eyes showed the scene in every recording: see "One eye goes black or stops moving"); the speed factor: not verified; pausing and playback in the viewer:
+generated recordings only (`record_video.py --synthetic`). Every public name is in
+[API.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/API.md).
 
 ## Calibration
 
@@ -429,12 +440,17 @@ Linux, and two cameras on one computer have not been run.
   (VID:PID, USB device revision, link speed) and the installed calibration — without
   opening the camera. `python -m opticmix_vision.doctor --open` also opens it and adds
   the mode, 3 s of frame timing, stalled eyes and every control's value and range; it
-  writes no control. `doctor --open` has been run with the camera once (one PC, one camera, 2026-11-24); without `--open` the doctor has been run without a camera only (generated frames and fake device lists).
+  writes no control. `doctor --open` (its report includes everything the doctor prints without `--open`): verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only; not verified on Linux.
 - **One eye goes black or stops moving.** On the units we have tested, one eye's
   stream has occasionally stopped; re-inserting the USB cable brought it back.
   `read()` raises `DeviceError` saying which eye once it has sent the byte-identical
   image 90 frames in a row. Turn the check off with
   `DeviceConfig.weevia_s1(stall_frames=0)`.
+  The check needs 90 frames: a shorter capture can end without an error with one eye black. Seen once (one
+  unit, one PC, 2026-11-25, the published 0.0.7 wheel): on the third and fourth opens after a USB re-insertion,
+  two 0.6 s recordings made with `examples/record_video.py` (48 and 33 frames) had the left eye at 0 in every
+  pixel from the first frame, and no error was raised; the cause has not been established. Look at both eyes
+  of a recording before relying on it.
 - **The frame rate is far below 90.** Check that the mode is MJPG (`cam.mode`).
 - **"… frames repeated the previous image in both eyes, read through OpenCV's Media Foundation
   backend".** On one PC with one camera (2026-11-24), 276 of 900 frames per eye read with
@@ -460,7 +476,7 @@ Linux, and two cameras on one computer have not been run.
   of them by its USB location: `DeviceConfig.weevia_s1(usb_location="...")`, with a
   location `python examples/list_devices.py` prints (`examples/open_by_usb_location.py`;
   on Linux the USB device's sysfs name, e.g. `1-4.2`, which the doctor prints) — or
-  connect one at a time. The viewer, the explorer (Windows), `doctor --open`, `presets save` and `load` and
+  connect one at a time. The viewer, the explorer, `doctor --open`, `presets save` and `load` and
   `calib check` take it as `--usb-location LOCATION` (the controls they read and write are that camera's; run without a camera only).
   A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run with the camera once (one PC, one camera, 2026-11-25): with one camera connected, the list showed its USB location, and given that location it opened at 1600x800 MJPG and read one frame; a location no device has was refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 - **An index opens another camera with `backend="msmf"`.** OpenCV's Media Foundation
@@ -529,7 +545,7 @@ Linux, and two cameras on one computer have not been run.
 We reply to issues and email within 2 business days (Korea time).
 
 We aim to release about once a month; what changed in each release is in
-[CHANGELOG.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.7/python/CHANGELOG.md).
+[CHANGELOG.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/CHANGELOG.md).
 
 ## What is in this package, and what is not
 
@@ -537,7 +553,7 @@ Run against the camera: capture, stereo split, the illuminator, and camera
 controls — all fourteen read through the native path on one unit (with ranges
 and defaults, while streaming). Native writes have been checked on one unit for power line
 frequency and the auto-exposure mode; writes of exposure, gain and the
-illuminator were checked earlier through OpenCV. Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
+illuminator were checked earlier through OpenCV. Reading the fourteen controls, with the ranges and defaults the camera reports: also verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only. The 0.0.8 wheel itself has not been run with the camera. The writes: measured with the earlier Python implementation; with the Rust implementation (since 0.0.3) they have not yet been verified against the camera.
 Calibration files (install and read): run on two cameras on Windows, once each —
 see Calibration. The calibration check (`calib check`): run without a camera only
 (generated frames); not run with the camera. `calib show`: run without a camera
@@ -569,6 +585,6 @@ extension. Install the wheel into that environment as well.
 
 ## License
 
-Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.7/python/LICENSE). The compiled extension also contains Rust
+Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/LICENSE). The compiled extension also contains Rust
 crates under MIT / Apache-2.0; their notices are in
-[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.7/python/THIRD_PARTY_NOTICES.txt).
+[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/THIRD_PARTY_NOTICES.txt).

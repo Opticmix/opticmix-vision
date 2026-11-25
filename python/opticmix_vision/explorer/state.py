@@ -4,11 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
-from ..controls import CONTROLS, ControlInfo
+from ..controls import CONTROLS, DEFAULTS_NOT_WRITTEN, ControlInfo
 from ..devices import DeviceInfo, Mode
 
 __all__ = ["ExplorerState", "KNOWN_MODE", "LED_MAX", "LED_ONSET", "Row", "build_rows", "locked", "value_text",
-           "banner_text", "reset_lines", "MONO_NOTE", "RANGE_NOTE"]
+           "banner_text", "reset_lines", "MONO_NOTE", "RANGE_NOTE", "READ_ONLY_NOTE"]
 
 # Measured: values above 96 are ignored (two units); 0..16 is off and it lights at 24 (one unit).
 LED_MAX = 96
@@ -39,7 +39,7 @@ class ExplorerState:
             self.mode_note = ""
         else:
             self.modes = [KNOWN_MODE]
-            self.mode_note = "Could not read the mode list (needs ffmpeg) — opening 1600×800 MJPG, the mode verified on the Weevia S1"
+            self.mode_note = "Could not read the mode list (needs ffmpeg) — opening 1600×800 MJPG"
 
     def select_mode(self, mode: Mode) -> None:
         self.mode = mode
@@ -57,6 +57,8 @@ class ExplorerState:
 
 MONO_NOTE = "no effect on mono sensor"
 RANGE_NOTE = "range not reported — set it from code"
+# Linux: the Settings window shows every control and writes none (its controls and Reset/Load preset are disabled).
+READ_ONLY_NOTE = "Camera controls on Linux are not verified and not supported — shown, not written"
 LABELS = {
     "backlight_compensation": "IR LED (BACKLIGHT)", "auto_exposure": "AUTO EXPOSURE",
     "auto_exposure_priority": "LOW-LIGHT COMP.", "power_line_frequency": "POWER LINE",
@@ -122,12 +124,16 @@ def value_text(name: str, value: Any) -> str:
     return f"{value:g}" if isinstance(value, (int, float)) else str(value)
 
 
-def banner_text(backend_name: str, backend_note: str) -> str:
+def banner_text(backend_name: str, backend_note: str, read_only: bool = False) -> str:
+    """The line over the rows; read_only (Linux) adds why nothing can be changed and why Reset is off."""
     if backend_name == "dshow":
-        return ""
-    if backend_name == "sim":
-        return "Simulated controls — ranges and defaults are made up"
-    return f"Limited controls (OpenCV fallback): {backend_note}"
+        text = ""
+    elif backend_name == "sim":
+        text = "Simulated controls — ranges and defaults are made up"
+    else:
+        text = f"Limited controls (OpenCV fallback): {backend_note}"
+    lines = [text, READ_ONLY_NOTE, DEFAULTS_NOT_WRITTEN] if read_only else [text]
+    return "\n".join(line for line in lines if line)
 
 
 def reset_lines(plan: Mapping[str, tuple[Any, Any]], *, nothing: str = "Everything is already at the device defaults."

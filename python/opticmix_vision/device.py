@@ -118,8 +118,9 @@ _USB_LOCATION_HELP = ("open the Weevia S1 plugged in at this USB location, to ch
                       "(DeviceConfig.weevia_s1(usb_location=...)); Windows: as examples/list_devices.py or python -m "
                       "opticmix_vision.doctor (location) prints it; "
                       "Linux: the USB device's sysfs name, e.g. 1-4.2; no Weevia S1 there, or an empty one: exit code "
-                      "2. Not a serial number: it changes when the camera is plugged into another port. Picking by USB "
-                      "location: run without a camera only (made-up device lists)")
+                      "2. Not a serial number: it changes when the camera is plugged into another port. This option: run "
+                      "without a camera only (made-up device lists); not run with a camera, and not run with two "
+                      "cameras")
 
 
 class DeviceError(RuntimeError):

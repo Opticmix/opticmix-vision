@@ -11,6 +11,9 @@
 //! ```text
 //! left_000123.pgm, right_000123.pgm   one pair per saved frame (123 = frame index in this run)
 //! pairs.csv                            index,host_ns,left,right
+//! capture_info.json                    the negotiated mode, the camera's layout and left/right order, every
+//!                                      control value when the run started, the crate version
+//!                                      (recording::write_capture_info, the Python example's file)
 //! ```
 //!
 //! The images are 8-bit gray PGM (binary, "P5") so that this example needs no image crate; GIMP,
@@ -31,6 +34,9 @@ mod common;
 
 use std::io::Write;
 use std::path::Path;
+
+use opticmix_vision::serde_json::{json, Map};
+use opticmix_vision::write_capture_info;
 
 const USAGE: &str = "usage: save_stereo_pairs [--every N] [--count N] [--out DIR] [--synthetic]";
 
@@ -61,6 +67,9 @@ fn run(
 
     let mut cam = common::open_camera(synthetic)?;
     println!("negotiated: {}", common::mode_line(&cam.mode()));
+    let mut pairs = Map::new();
+    pairs.insert("pairs".into(), json!("pairs.csv"));
+    write_capture_info(dir.join("capture_info.json"), &mut cam, pairs)?; // reads the controls; writes none
     let mut saved = 0;
     while saved < count {
         let f = cam.read()?;

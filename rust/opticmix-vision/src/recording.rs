@@ -48,7 +48,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
@@ -59,6 +59,7 @@ use crate::controls::Controls;
 use crate::convert::UserValue;
 use crate::device::{Device, FrameStats, StereoFrame};
 use crate::error::{Result, SdkError};
+use crate::presets::now;
 use crate::stereo::{GrayImage, Layout, LrOrder};
 
 /// JPEG quality of the frames `Recorder` writes (OpenCV's own MJPG writer uses 95 unless told otherwise).
@@ -109,27 +110,6 @@ fn clock_from_name(s: &str) -> Option<DriverClock> {
         "v4l2_monotonic" => Some(DriverClock::V4l2Monotonic),
         _ => None,
     }
-}
-
-/// Seconds since 1970 (and milliseconds) as ISO 8601 in UTC. The Python package writes local time with its offset;
-/// the standard library has no time zones.
-fn iso_utc(secs: u64, millis: Option<u32>) -> String {
-    // civil date from days since 1970 (H. Hinnant's days_from_civil, inverted)
-    let z = (secs / 86_400) as i64 + 719_468;
-    let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let (d, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    let t = secs % 86_400;
-    let ms = millis.map(|v| format!(".{v:03}")).unwrap_or_default();
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}{ms}+00:00", t / 3600, t % 3600 / 60, t % 60)
-}
-
-fn now(millis: bool) -> String {
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    iso_utc(d.as_secs(), millis.then(|| d.subsec_millis()))
 }
 
 fn control_values(snap: Vec<(String, UserValue)>) -> Value {
@@ -403,6 +383,86 @@ struct Queue {
     thread: JoinHandle<()>,
 }
 
+/// What is capturing, as the JSON the Python package writes next to its captures (`opticmix_vision.recording.capture_info`,
+/// the same field names and meanings): the crate version (`opticmix_vision`), the time (`created`, ISO 8601 in UTC —
+/// the Python package writes local time with its offset), what `host_ns` is (`host_clock`), the negotiated mode, and
+///
+/// - a camera: `source` `"camera"` (`"synthetic"` when the capture backend is named so, as the examples' `--synthetic`
+///   stand-in is), `camera` (the device as `DeviceConfig` names it, the name it opened, the capture backend, the
+///   camera's own layout and left/right order), `calibration_files` `null` (this crate does not list them;
+///   `calibration_note` says so);
+/// - a recording (`Device::open_recording`): `source` `"recording"` and `recorded_from`, the recording's own JSON;
+///
+/// and every control value (`controls`, from `Controls::snapshot`, which opens the controls; reads only, writes
+/// nothing), where they came from (`controls_source`: `"camera"`, or `"simulated"` for the crate's simulated
+/// controls) and when they were read (`controls_read_at`). Without controls (a recording) those three are `null` and
+/// `controls_note` says why. `Recorder` writes this, with its `writer` and `recording` fields, as a recording's JSON.
+/// Run without a camera only (generated frames); not run with the camera.
+pub fn capture_info(device: &mut Device) -> Value {
+    info_and_controls(device).0
+}
+
+/// `capture_info(device)` with `extra` added as is (a key already there is replaced, as Python's `dict.update`),
+/// written to `path` as indented JSON (an existing file is replaced, as in Python). Returns what it wrote.
+/// Errors: `SdkError::Recording` (an `OSError` in the Python package) when the file cannot be written.
+pub fn write_capture_info(path: impl AsRef<Path>, device: &mut Device, extra: Map<String, Value>) -> Result<Value> {
+    let path = path.as_ref();
+    let mut info = capture_info(device);
+    if let Some(m) = info.as_object_mut() {
+        m.extend(extra);
+    }
+    let text = serde_json::to_string_pretty(&info).expect("a JSON value") + "\n";
+    std::fs::write(path, text).map_err(|e| io_err("writing", path, e))?;
+    Ok(info)
+}
+
+/// `capture_info` and the controls it read (the recorder reads them again when it closes).
+fn info_and_controls(device: &mut Device) -> (Value, Option<Arc<Controls>>) {
+    let mode = device.mode();
+    let mut info = json!({
+        "opticmix_vision": env!("CARGO_PKG_VERSION"),
+        "created": now(false),
+        "host_clock": "host_ns is the capturing process's monotonic clock (Rust std::time::Instant) when the \
+                       frame was read, not a camera clock",
+        "mode": {"width": mode.width, "height": mode.height, "fps": mode.fps, "fourcc": mode.fourcc,
+                 "backend_name": mode.backend_name},
+    });
+    if let Some(p) = device.playback() {
+        info["source"] = json!("recording");
+        info["recorded_from"] = p.info().cloned().unwrap_or(Value::Null);
+    } else {
+        let cfg = device.config();
+        let selector = match &cfg.device {
+            DeviceSelector::Name(s) | DeviceSelector::Path(s) => json!(s),
+            DeviceSelector::Index(i) => json!(i),
+            // the camera was picked by name and USB location; the name goes here like `Name`
+            DeviceSelector::UsbLocation { name, .. } => json!(name),
+        };
+        info["source"] = json!(if mode.backend_name == "synthetic" { "synthetic" } else { "camera" });
+        info["camera"] = json!({"device": selector, "device_name": device.device_name(),
+                                "backend": mode.backend_name, "layout": layout_name(cfg.layout),
+                                "lr_order": lr_order_name(cfg.lr_order)});
+        info["calibration_files"] = Value::Null;
+        info["calibration_note"] = json!("not listed by the Rust crate");
+    }
+    let controls = match device.controls().and_then(|c| c.snapshot().map(|s| (c, s))) {
+        Ok((c, snap)) => {
+            info["controls"] = control_values(snap);
+            info["controls_source"] = json!(controls_source(&c));
+            info["controls_read_at"] = json!(now(true));
+            Some(c)
+        }
+        Err(e) => {
+            for k in ["controls", "controls_source", "controls_read_at"] {
+                info[k] = Value::Null;
+            }
+            info["controls_note"] = json!(format!("{}: {e}", e.python_type()));
+            None
+        }
+    };
+    (info, controls)
+}
+
 /// Writes frames to a recording: `<name>.avi` with `<name>.csv` and `<name>.json` next to it (see the module
 /// documentation). The files are made when the first frame is written; a recorder closed before that leaves none.
 ///
@@ -496,48 +556,8 @@ impl Recorder {
         }
         let mode = device.mode();
         let fps = if mode.fps > 0.0 { mode.fps } else { 30.0 };
-        let mut info = json!({
-            "opticmix_vision": env!("CARGO_PKG_VERSION"),
-            "writer": "Rust crate opticmix-vision",
-            "created": now(false),
-            "host_clock": "host_ns is the recording process's monotonic clock (Rust std::time::Instant) when the \
-                           frame was read, not a camera clock",
-            "mode": {"width": mode.width, "height": mode.height, "fps": mode.fps, "fourcc": mode.fourcc,
-                     "backend_name": mode.backend_name},
-        });
-        if let Some(p) = device.playback() {
-            info["source"] = json!("recording");
-            info["recorded_from"] = p.info().cloned().unwrap_or(Value::Null);
-        } else {
-            let cfg = device.config();
-            let selector = match &cfg.device {
-                DeviceSelector::Name(s) | DeviceSelector::Path(s) => json!(s),
-                DeviceSelector::Index(i) => json!(i),
-                // the camera was picked by name and USB location; the name goes here like `Name`
-                DeviceSelector::UsbLocation { name, .. } => json!(name),
-            };
-            info["source"] = json!(if mode.backend_name == "synthetic" { "synthetic" } else { "camera" });
-            info["camera"] = json!({"device": selector, "device_name": device.device_name(),
-                                    "backend": mode.backend_name, "layout": layout_name(cfg.layout),
-                                    "lr_order": lr_order_name(cfg.lr_order)});
-            info["calibration_files"] = Value::Null;
-            info["calibration_note"] = json!("not listed by the Rust crate");
-        }
-        let controls = match device.controls().and_then(|c| c.snapshot().map(|s| (c, s))) {
-            Ok((c, snap)) => {
-                info["controls"] = control_values(snap);
-                info["controls_source"] = json!(controls_source(&c));
-                info["controls_read_at"] = json!(now(true));
-                Some(c)
-            }
-            Err(e) => {
-                for k in ["controls", "controls_source", "controls_read_at"] {
-                    info[k] = Value::Null;
-                }
-                info["controls_note"] = json!(format!("{}: {e}", e.python_type()));
-                None
-            }
-        };
+        let (mut info, controls) = info_and_controls(device);
+        info["writer"] = json!("Rust crate opticmix-vision");
         let csv_name = csv_path.file_name().map(|n| n.to_string_lossy().into_owned());
         info["recording"] = json!({
             "codec": "MJPG", "compressed": true, "layout": "sbs", "lr_order": "first_is_left", "fps_label": fps,
@@ -1368,6 +1388,67 @@ mod tests {
         assert_eq!(r["controls_at_end_source"], "simulated");
     }
 
+    /// The fields of the Python package's `capture_info` for a camera: no `recording` block and no `writer` (those
+    /// are the recorder's), the rest as the recorder's JSON has them.
+    #[test]
+    fn capture_info_has_the_python_fields_and_is_the_recorders_json_without_its_own() {
+        let mut d = fake_device();
+        let info = capture_info(&mut d);
+        let keys: Vec<&str> = info.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "calibration_files", "calibration_note", "camera", "controls", "controls_read_at", "controls_source",
+                "created", "host_clock", "mode", "opticmix_vision", "source"
+            ]
+        );
+        assert_eq!(info["mode"], serde_json::json!({"width": 64, "height": 16, "fps": 90.0, "fourcc": "MJPG", "backend_name": "fake"}));
+        assert_eq!((info["source"].as_str(), info["controls_source"].as_str()), (Some("camera"), Some("simulated")));
+        assert_eq!(info["camera"]["lr_order"], "first_is_right");
+        assert!(info["controls"]["gain"].is_number(), "{}", info["controls"]);
+
+        let p = record(&tmp("info_vs_rec"), "rec.avi", (0..1).map(frame));
+        let mut rec: Value = serde_json::from_str(&std::fs::read_to_string(p.with_extension("json")).unwrap()).unwrap();
+        let rec = rec.as_object_mut().unwrap();
+        assert_eq!(rec.remove("writer"), Some(json!("Rust crate opticmix-vision")));
+        assert!(rec.remove("recording").is_some());
+        let mut info = info.as_object().unwrap().clone();
+        for k in ["created", "controls_read_at"] {
+            rec.remove(k);
+            info.remove(k);
+        }
+        assert_eq!(*rec, info);
+    }
+
+    #[test]
+    fn capture_info_of_a_recording_says_where_it_came_from() {
+        let p = record(&tmp("info_rec"), "a.avi", (0..2).map(frame));
+        let mut cam = Device::open_recording(&p).unwrap();
+        let info = capture_info(&mut cam);
+        assert_eq!(info["source"], "recording");
+        assert_eq!(info["recorded_from"]["recording"]["frames"], 2);
+        assert!(info.get("camera").is_none());
+        assert_eq!((info["controls"].clone(), info["controls_source"].clone()), (Value::Null, Value::Null));
+        assert!(info["controls_note"].as_str().unwrap().starts_with("ControlsUnavailable: "), "{}", info["controls_note"]);
+    }
+
+    #[test]
+    fn write_capture_info_adds_the_extra_fields_and_writes_what_it_returns() {
+        let dir = tmp("info_write");
+        let p = dir.join("capture_info.json");
+        let mut extra = Map::new();
+        extra.insert("pairs".into(), json!("pairs.csv"));
+        extra.insert("source".into(), json!("mine")); // extra is added as is, as in Python (dict.update)
+        let info = write_capture_info(&p, &mut fake_device(), extra).unwrap();
+        assert_eq!((info["pairs"].as_str(), info["source"].as_str()), (Some("pairs.csv"), Some("mine")));
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.ends_with("}\n"), "{text:?}");
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), info);
+        // a folder that is not there: SdkError::Recording (OSError in Python's terms), naming the file
+        let e = write_capture_info(dir.join("no_such_dir/info.json"), &mut fake_device(), Map::new()).unwrap_err();
+        assert!(matches!(&e, SdkError::Recording(m) if m.contains("info.json")), "{e:?}");
+    }
+
     /// Windows' own decoder (Media Foundation, also OpenCV's MSMF) decoded one-component (gray) JPEG frames to
     /// zeros; FFmpeg's MJPG files are three-component 4:2:0, and those it shows.
     #[test]
@@ -1873,6 +1954,7 @@ mod tests {
 
     #[test]
     fn iso_utc_is_iso_8601_in_utc() {
+        use crate::presets::iso_utc;
         assert_eq!(iso_utc(0, None), "1970-01-01T00:00:00+00:00");
         assert_eq!(iso_utc(951_825_600, Some(7)), "2000-02-29T12:00:00.007+00:00");
         assert_eq!(iso_utc(1_795_995_045, None), "2026-11-29T23:30:45+00:00"); // Python datetime.fromtimestamp(.., UTC)

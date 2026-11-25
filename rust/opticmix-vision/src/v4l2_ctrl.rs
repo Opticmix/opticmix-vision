@@ -1,4 +1,4 @@
-//! Linux controls (reading run with the camera once, 2026-11-25; writing not run) — standard V4L2 controls only (`v4l`'s `control`/`set_control` = VIDIOC_QUERY_EXT_CTRL·
+//! Linux controls (reading run with the camera once — one PC, one camera, 2026-11-25, crate 0.0.6; writing not run) — standard V4L2 controls only (`v4l`'s `control`/`set_control` = VIDIOC_QUERY_EXT_CTRL·
 //! VIDIOC_G_EXT_CTRLS·VIDIOC_S_EXT_CTRLS, standard control IDs). The exposure unit is "100us", the same as Python OpenCV V4L2.
 
 use std::collections::HashMap;
@@ -93,6 +93,11 @@ impl Backend for V4l2Controls {
     fn device_name(&self) -> &str {
         &self.name
     }
+    /// The Weevia S1 when the node's name has its USB name, as Python's `Device` tells the OpenCV backend on Linux.
+    fn model(&self) -> Option<&str> {
+        let s1 = crate::spec::WEEVIA_S1_NAME;
+        self.name.to_lowercase().contains(&s1.to_lowercase()).then_some(s1)
+    }
     fn start(&mut self) -> Result<()> {
         let d = VDev::with_path(&self.path).map_err(|e| be(format!("open {}", self.path.display()), e))?;
         self.descs = d
@@ -146,6 +151,15 @@ impl Backend for V4l2Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Python's rule for the OpenCV backend on Linux (`Device._usb_model`); creating the backend opens nothing.
+    #[test]
+    fn the_model_is_the_weevia_s1_when_the_node_name_has_its_usb_name() {
+        let model = |name: &str| V4l2Controls::new("/dev/video0".into(), name.into()).model().map(String::from);
+        assert_eq!(model("WN Dual Camera: WN Dual Camera").as_deref(), Some("WN Dual Camera"));
+        assert_eq!(model("wn dual camera").as_deref(), Some("WN Dual Camera"));
+        assert_eq!(model("Integrated Camera"), None);
+    }
 
     #[test]
     fn every_dshow_key_has_a_standard_v4l2_id() {

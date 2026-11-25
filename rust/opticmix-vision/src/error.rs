@@ -6,7 +6,8 @@ use std::fmt;
 /// Exceptions as seen from Python: Unavailable·Closed → ControlsUnavailable, State → ControlStateError,
 /// UnknownControl → KeyError, InvalidValue → ValueError, WrongType → TypeError, Backend → OSError,
 /// NoMatch / MultipleMatches → devices.NoMatch / MultipleMatches, Calibration → calibration.CalibrationError,
-/// CalibLookup → calib.CalibLookupError, Recording → OSError, EndOfRecording → device.EndOfRecording.
+/// CalibLookup → calib.CalibLookupError, Recording → OSError, EndOfRecording → device.EndOfRecording,
+/// Preset → presets.PresetError, PresetModel → presets.PresetModelError.
 ///
 /// `#[non_exhaustive]`: variants may be added — match with a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,12 @@ pub enum SdkError {
     Recording(String),
     /// `Device::read` reached the end of a recording (`Device::open_recording`) (Python `EndOfRecording`).
     EndOfRecording(String),
+    /// Not a preset file, a preset that does not fit this camera, or a preset file that cannot be read or written
+    /// (`presets`; Python `PresetError`, and `OSError` for a file it cannot read or write).
+    Preset(String),
+    /// The preset was saved from another camera model, or this camera's model is unknown; `force` accepts it
+    /// (Python `PresetModelError`, a subclass of `PresetError`).
+    PresetModel(String),
 }
 
 pub type Result<T> = std::result::Result<T, SdkError>;
@@ -83,7 +90,9 @@ impl fmt::Display for SdkError {
             | SdkError::Calibration(m)
             | SdkError::CalibLookup(m)
             | SdkError::Recording(m)
-            | SdkError::EndOfRecording(m) => f.write_str(m),
+            | SdkError::EndOfRecording(m)
+            | SdkError::Preset(m)
+            | SdkError::PresetModel(m) => f.write_str(m),
         }
     }
 }
@@ -108,6 +117,8 @@ impl SdkError {
             SdkError::CalibLookup(_) => "CalibLookupError",
             SdkError::Recording(_) => "OSError",
             SdkError::EndOfRecording(_) => "EndOfRecording",
+            SdkError::Preset(_) => "PresetError",
+            SdkError::PresetModel(_) => "PresetModelError",
         }
     }
 }
@@ -182,6 +193,8 @@ mod tests {
             SdkError::CalibLookup("l".into()),
             SdkError::Recording("r".into()),
             SdkError::EndOfRecording("e".into()),
+            SdkError::Preset("p".into()),
+            SdkError::PresetModel("m".into()),
         ] {
             assert_eq!(e.to_string().len(), 1, "{e:?}");
         }

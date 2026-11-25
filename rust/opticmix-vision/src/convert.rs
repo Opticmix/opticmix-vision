@@ -32,7 +32,7 @@ pub enum DevValue {
     Auto(bool),
 }
 
-fn tuple_repr(choices: &[&str]) -> String {
+pub(crate) fn tuple_repr(choices: &[&str]) -> String {
     let inner: Vec<String> = choices.iter().map(|c| format!("'{c}'")).collect();
     if inner.len() == 1 {
         format!("({},)", inner[0])

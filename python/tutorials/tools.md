@@ -244,23 +244,25 @@ options:
                         choose between two that share a name
                         (DeviceConfig.weevia_s1(usb_location=...)); as
                         examples/list_devices.py or python -m
-                        opticmix_vision.doctor (location) prints it; no Weevia
-                        S1 there, or an empty one: exit code 2. Windows only:
-                        the explorer lists no cameras on Linux. Not a serial
+                        opticmix_vision.doctor (location) prints it; on Linux
+                        the USB device's sysfs name, e.g. 1-4.2; no Weevia S1
+                        there, or an empty one: exit code 2. Not a serial
                         number: it changes when the camera is plugged into
-                        another port. Picking by USB location: run without a
-                        camera only (made-up device lists)
+                        another port. This option: run without a camera only
+                        (made-up device lists); not run with a camera, and not
+                        run with two cameras
 ```
 
-`--usb-location` (Windows only) leaves in the device list only the Weevia S1 at that USB location, finds it again there each time it opens it, shows that camera's USB details next to it, and the Settings window reads and writes that camera's controls. No Weevia S1 there, or an empty location, exits with code 2 before the window opens. Two cameras of one name, without `--usb-location`, are listed with their USB locations; the one chosen is the one opened and written to. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
+`--usb-location` leaves in the device list only the Weevia S1 at that USB location, finds it again there each time it opens it, shows that camera's USB details next to it, and the Settings window reads and writes that camera's controls (on Linux, reads them only). No Weevia S1 there, or an empty location, exits with code 2 before the window opens. Two cameras of one name, without `--usb-location`, are listed with their USB locations; the one chosen is the one opened and written to. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Run without a camera only (made-up device lists); not run with a camera, and not run with two cameras.
+
+On Linux (from 0.0.8) the device list is V4L2's (`devices.list_devices()`, the default there: one entry per `/dev/videoN` capture node, with the USB device's sysfs name as its USB location), the camera is opened with `backend="v4l2"` at `/dev/videoN` by its number and found again by that USB location at every open, `--usb-location` takes the sysfs name (e.g. `1-4.2`), and the USB line is read from sysfs as the doctor reads it. The mode list is not read there: the window opens 1600×800 MJPG and says why. The Settings window is read only: every control shows its value, range and default but is disabled, and so are Reset to defaults… and Load preset… (Save preset… reads only) — camera controls on Linux are not verified and not supported; the window says so, with the defaults line of Reset to defaults. Run without a camera only (made-up sysfs trees, fake widgets); not run with the camera on Linux, and not run with a display on Linux.
 
 The explorer has no keyboard shortcuts; everything is a button or a list.
 
 ### The window
 
 - **Top bar, left:** `LIVE` (streaming), `IDLE` or `ERROR`, and the **mode** list. If the mode list cannot be
-  read, the bottom bar says `Could not read the mode list (needs ffmpeg) — opening 1600×800 MJPG, the mode
-  verified on the Weevia S1`.
+  read, the bottom bar says `Could not read the mode list (needs ffmpeg) — opening 1600×800 MJPG`.
 - **Top bar, right:** the **device** list (`ID:`), which starts on the Weevia S1 if one is connected and on
   the first camera otherwise; the camera's USB details from the operating system, without opening it —
   `VID:PID · REV <USB device revision> · <link speed> · no serial` (`USB: — · no serial` when no Weevia S1 is

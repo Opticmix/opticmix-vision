@@ -25,6 +25,11 @@ pub trait Backend: Send {
     fn device_name(&self) -> &str {
         ""
     }
+    /// The camera model presets record and check (the Python backend's `model`, `Controls.model`): the USB name when
+    /// the backend has confirmed it, `"synthetic"` for simulated controls, `None` when it cannot tell.
+    fn model(&self) -> Option<&str> {
+        None
+    }
     fn start(&mut self) -> Result<()>;
     fn supports(&mut self, key: &str) -> bool;
     fn query(&mut self, key: &str) -> Result<Option<RawRange>>;
@@ -73,6 +78,9 @@ impl<B: Backend> Backend for ReadOnly<B> {
     }
     fn device_name(&self) -> &str {
         self.inner.device_name()
+    }
+    fn model(&self) -> Option<&str> {
+        self.inner.model()
     }
     fn start(&mut self) -> Result<()> {
         self.inner.start()
@@ -148,6 +156,8 @@ pub mod mock {
         pub fail_start: Option<String>,
         /// true: `writes_defaults()` is false, as on Linux (V4L2).
         pub defaults_not_written: bool,
+        /// true: `model()` is None, like a backend that cannot tell what camera it is.
+        pub no_model: bool,
         pub writes: Vec<Write>,
         pub threads: HashSet<ThreadId>,
         pub started: bool,
@@ -216,6 +226,9 @@ pub mod mock {
         }
         fn note(&self) -> &str {
             "simulated controls — ranges and defaults are made up, not measured"
+        }
+        fn model(&self) -> Option<&str> {
+            (!self.st().no_model).then_some("synthetic") // Python SimBackend.model
         }
         fn start(&mut self) -> Result<()> {
             let mut s = self.touch();

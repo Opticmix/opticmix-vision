@@ -60,6 +60,15 @@ fn host_ns() -> u64 {
     if let Some(t) = tests::FAKE_HOST_NS.with(|q| q.borrow_mut().pop_front()) {
         return t;
     }
+    host_now_ns()
+}
+
+/// Now, on the clock of `StereoFrame::host_ns`: this process's monotonic clock in ns, from a start point the crate
+/// picks the first time it is asked (so only differences mean something, and only within this process). Compare a
+/// frame's `host_ns` with it — for example to see how long ago the frame was read, or to put another event of this
+/// process on the same time line. Not a wall-clock time and not a camera time. The Python package's `host_ns` is
+/// `time.perf_counter_ns()`, another clock with another start point.
+pub fn host_now_ns() -> u64 {
     static T0: OnceLock<Instant> = OnceLock::new();
     T0.get_or_init(Instant::now).elapsed().as_nanos() as u64
 }
@@ -613,6 +622,20 @@ mod tests {
         let (a, b) = (d.read().unwrap(), d.read().unwrap());
         assert_eq!((a.index, b.index), (0, 1));
         assert!(b.host_ns >= a.host_ns);
+    }
+
+    #[test]
+    fn host_now_ns_is_the_clock_of_a_frames_host_ns() {
+        let frames = vec![sbs(10, 20), sbs(30, 40)];
+        let mut d = Device::open_with(cfg(), Box::new(FakeCapture::new(frames, 16, 8))).unwrap();
+        let before = host_now_ns();
+        let f = d.read().unwrap();
+        let after = host_now_ns();
+        assert!(before <= f.host_ns && f.host_ns <= after, "{before} {} {after}", f.host_ns);
+        // the test hook that hands out made-up read times is not consumed by it
+        host_times_ms(&[5]);
+        let _ = host_now_ns();
+        assert_eq!(d.read().unwrap().host_ns, 5_000_000);
     }
 
     #[test]

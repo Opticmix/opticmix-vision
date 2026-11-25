@@ -1,6 +1,6 @@
 [package]
 name = "opticmix-vision"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2021"
 rust-version = "1.88"
 description = "Rust API for the Weevia S1 stereo-IR camera (preview): device lookup, MJPG capture, stereo split, camera controls, the installed calibration file"
@@ -91,6 +91,22 @@ required-features = ["capture"]
 
 [[example]]
 name = "export_recording"
+required-features = ["capture"]
+
+[[example]]
+name = "quickstart"
+required-features = ["capture"]
+
+[[example]]
+name = "brightness_stats"
+required-features = ["capture"]
+
+[[example]]
+name = "capture_dataset"
+required-features = ["capture"]
+
+[[example]]
+name = "presets"
 required-features = ["capture"]
 
 # docs.rs (https://docs.rs/about/metadata): Windows is the main platform, so it is the landing page; Linux is built too.

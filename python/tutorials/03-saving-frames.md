@@ -122,11 +122,12 @@ back as if it were the camera.
 
 ## Rust
 
-The Rust crate has `save_stereo_pairs`. In a checkout of the repository, from
+The Rust crate has `save_stereo_pairs` and `capture_dataset`. In a checkout of the repository, from
 `rust/opticmix-vision`, without a camera:
 
 ```bash
 cargo run --release --features test-support --example save_stereo_pairs -- --synthetic --every 5 --count 3
+cargo run --release --features test-support --example capture_dataset -- --synthetic --frames 20
 ```
 
 Output with `--synthetic` (generated frames); with the camera the numbers differ.
@@ -134,12 +135,22 @@ Output with `--synthetic` (generated frames); with the camera the numbers differ
 ```text
 $ cargo run --release --features test-support --example save_stereo_pairs -- --synthetic --every 5 --count 3
 negotiated: 1600x800 MJPG 90.0 fps (synthetic)
-saved 3 pairs in captures\1795575648
+saved 3 pairs in captures\1795592544
+
+$ cargo run --release --features test-support --example capture_dataset -- --synthetic --frames 20
+negotiated: 1600x800 MJPG 90.0 fps (synthetic)
+saved 20 frames of 800x800 per eye to stereo_dataset (0.21 s from first to last frame, host-measured)
 ```
 
 - It writes 8-bit gray PGM (binary, "P5"), not PNG, so that it needs no image crate, and `pairs.csv` has the
-  columns `index,host_ns,left,right`. Each run writes into a new folder, `<out>/<seconds since 1970>/`
-  (`--out`, default `captures`).
+  columns `index,host_ns,left,right`; `capture_info.json` beside them is written by `write_capture_info`, the
+  Rust version of the function the Python example uses (from 0.0.8). Each run writes into a new folder,
+  `<out>/<seconds since 1970>/` (`--out`, default `captures`).
 - It opens no window: it saves every `--every`-th frame (default 30) until `--count` pairs (default 10).
-- `capture_dataset_npz.py` and `torch_dataloader.py`: no Rust example yet.
+- `capture_dataset` is `capture_dataset_npz.py` without the `.npz` (writing one needs a zip crate, which the
+  crate does not depend on): it keeps the frames in memory, then writes left/right PGM pairs, `pairs.csv`
+  (`index,host_ns,left,right`) and `capture_info.json` (`write_capture_info`; the frame count, one eye's size and
+  the late / estimated missed frames under `pgm_pairs`) into a new or empty folder (`--out`, default
+  `stereo_dataset`). Run without a camera only (generated frames); not run with the camera.
+- `torch_dataloader.py`: no Rust example yet.
 - With the camera: not run yet.

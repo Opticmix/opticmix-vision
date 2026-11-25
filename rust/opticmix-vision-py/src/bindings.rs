@@ -52,6 +52,8 @@ fn to_py(py: Python<'_>, e: SdkError) -> PyErr {
             raise_as(py, "opticmix_vision.calibration", "CalibrationError", msg)
         }
         SdkError::CalibLookup(_) => raise_as(py, "opticmix_vision.calib", "CalibLookupError", msg),
+        SdkError::Preset(_) => raise_as(py, "opticmix_vision.presets", "PresetError", msg),
+        SdkError::PresetModel(_) => raise_as(py, "opticmix_vision.presets", "PresetModelError", msg),
         SdkError::Foreign { type_name, message } => {
             // 바깥 백엔드가 던진 내장 예외는 같은 타입으로 되살린다
             let builtin = py
