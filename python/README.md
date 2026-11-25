@@ -16,7 +16,7 @@ pip install opticmix-vision
 
 On Windows x64 this installs a wheel — one abi3 wheel for Python 3.10 and newer;
 installed and tested on 3.10, 3.12 and 3.14 (no camera). The same file is
-attached to the GitHub release [v0.0.5](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.5).
+attached to the GitHub release [v0.0.6](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.6).
 On Windows, verified on Windows 11 only. On Linux x86_64 it installs a
 manylinux wheel — experimental, see Linux (experimental) below.
 There is no wheel for macOS, and macOS has not been run. Elsewhere pip tries to
@@ -97,7 +97,7 @@ V4L2: not run with the camera.
 
 `examples/quickstart.py` runs this end to end; `python -m opticmix_vision.viewer`
 and `python -m opticmix_vision.explorer` open the same camera in a window.
-Step-by-step: the [tutorials](https://github.com/Opticmix/opticmix-vision/blob/v0.0.5/python/tutorials/README.md)
+Step-by-step: the [tutorials](https://github.com/Opticmix/opticmix-vision/blob/v0.0.6/python/tutorials/README.md)
 (the `tutorials/` folder next to this README).
 
 In the viewer, `s` saves a left/right PNG pair and `v` starts and stops a
@@ -112,16 +112,27 @@ every control value and the SDK version (`opticmix_vision.recording.capture_info
 LED, exposure and gain changes made while recording and the values at the end. A
 compressed (MJPG, the default) recording does not have the camera's pixel values.
 With `--lossless` the viewer records FFV1 `.mkv`: the lossless file keeps the pixel values the SDK delivered (generated frames only; not run with the camera).
+With the opencv-python 4.12 and 4.13 wheels FFV1 writing failed now and then (one Windows PC, generated
+frames; not with 4.14 or 5.1): see `opticmix_vision.recording` in `API.md`.
 Lossless takes longer per frame to write than MJPG, so it may not keep up with
 90 fps; the REC line and the `.json` count the frames missed while recording.
 The viewer's `v` runs alongside the preview and may not keep up with 90 fps even
 with MJPG: to record every frame, use `examples/record_video.py` first (it records
 with no window), then a lower `--fps` or `examples/capture_dataset_npz.py`.
+A thread encodes while the window draws; a frame that finds its queue full is not
+recorded, and the REC line, the `.json` (`dropped_frames`) and the message when
+recording stops count it; `estimated_missed_frames` includes `dropped_frames` — do
+not add them. A queue does not make lossless keep up with 90 fps: the frames it
+cannot take are dropped and counted. Stopping writes the frames still queued first. The
+`.json` says where its control values come from and when the viewer read them
+(`controls_source`, `controls_read_at`). Run on generated frames only; not run with
+the camera.
 Recording with `v` has been run with the camera once (one PC, one camera, 2026-11-24): one
-recording started and stopped with `v` (392 frames, about 130 missed while recording), no stall
+recording started and stopped with `v` (392 frames, about 130 missed while recording; 0.0.5,
+before the writing thread), no stall
 error; its `.json` carries `controls_note`. Lossless recording and the `s` key's `.json`:
-generated frames only; not run with the camera. Recording is Python only; the Rust crate has
-no recording API yet.
+generated frames only; not run with the camera. The Rust crate records and plays the same MJPG
+`.avi` files (generated frames only; not run with the camera); lossless recording is Python only.
 
 The viewer's top line shows the frame index, frames per second over the last 30
 frames, and how many frames came late or are estimated missing:
@@ -285,7 +296,7 @@ frames (`python -m opticmix_vision.explorer --synthetic`): the window, keys and
 saving run with nothing attached; the camera's own capture path does not. It is a
 generator, not measured data. The examples
 that open a camera, other than `quickstart.py`, take `--synthetic` as well;
-`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.5/python/examples/README.md).
+`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.6/python/examples/README.md).
 
 A recording written by `examples/record_video.py` or the viewer's `v` key can be read
 back the same way as the camera: `Device(DeviceConfig.recording("recording.avi"))` — see
@@ -302,7 +313,7 @@ gives the late / missed estimates over the whole recording, and `status`
 (`"playing"`, `"paused"`, `"ended"`). `play_recording.py` has read back a 443-frame MJPG recording made with the
 camera once (one PC, one camera, 2026-11-24); seeking, speed, pausing and playback in the viewer: generated
 recordings only (`record_video.py --synthetic`). Every public name is in
-[API.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.5/python/API.md).
+[API.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.6/python/API.md).
 
 ## Calibration
 
@@ -333,9 +344,30 @@ with Device(DeviceConfig.weevia_s1()) as cam:
 
 `cam.calibration` uses the installed file when there is exactly one; with more
 than one it raises and lists them — keep only the file for the camera you use.
-Two cameras on one computer are not supported yet. The video does not need a
+Using two cameras at the same time is not supported; with two connected, open one by
+its USB location (see "Two Weevia S1 are connected" under When something goes wrong).
+The installed file is still not matched to the camera (no USB serial). The video does not need a
 calibration — without one, only `cam.calibration` raises, and its message says
 what to do.
+
+`calib show` prints what a file holds, read from the file (the camera is not opened):
+
+```
+python -m opticmix_vision.calib show                    # the installed file
+python -m opticmix_vision.calib show S1-NNNN            # one of several installed files
+python -m opticmix_vision.calib show D:/S1-NNNN.json    # a file, installed or not
+python -m opticmix_vision.calib show --json             # the same as JSON (calib.show() in Python)
+```
+
+For each eye: the model, the eye size (and the mode it is for), fx, fy, cx, cy and the
+distortion k1..k4. Between the eyes (left to right, `p_right = R @ p_left + t`, mm):
+the baseline, t, all nine values of the rotation matrix R, its Rodrigues vector in
+rad and in degrees, and the rotation angle and axis. Also the file's sha256 (the
+value a recording's `.json` lists), its `meta` block, and whether `cam.calibration`
+uses it. It says `installed file, not matched to this camera (no USB serial)`: the
+camera cannot confirm the file is its own. With no file installed, or several and no
+serial named, it says what to do. `calib show` has been run without a camera only
+(made-up calibration files); not run with the camera.
 
 **The SDK cannot check that a file belongs to the camera you opened** — the camera
 does not send a USB serial number, so another unit's file loads without an error.
@@ -392,6 +424,18 @@ Linux, and two cameras on one computer have not been run.
   image 90 frames in a row. Turn the check off with
   `DeviceConfig.weevia_s1(stall_frames=0)`.
 - **The frame rate is far below 90.** Check that the mode is MJPG (`cam.mode`).
+- **"… frames repeated the previous image in both eyes, read through OpenCV's Media Foundation
+  backend".** On one PC with one camera (2026-11-24), 276 of 900 frames per eye read with
+  `backend="msmf"` repeated the previous image; repeats were not seen through DirectShow
+  (`DeviceConfig.weevia_s1()`'s default on Windows; 0 of 900) or the Rust crate (0 of 450); the cause has not
+  been established. `read()` warns once per `open()` when more than 5 % of the last 300 frames do, and
+  `cam.repeated_frames` counts them (with any backend).
+  `python -m opticmix_vision.doctor --open --backend msmf` reports it as a finding. The count and the
+  warning have been run with the camera once through each backend (one PC, one camera, 2026-11-25;
+  `examples/measure_fps.py`, whose output does not record the OpenCV version): through `msmf` the warning
+  came once and the count was 271 of 900; through DirectShow 0 of 900, no warning. The doctor's
+  `--open --backend msmf` once (same PC and camera, OpenCV 4.13.0): its finding said 276 of 904. The doctor's
+  other `--backend` values: run without a camera only.
 - **"Weevia S1 not found".** The message lists the cameras Windows reported.
   Re-insert the cable; if the camera is missing from the list, Windows does not
   see it either. On Linux the message lists the video nodes it found; you can
@@ -399,8 +443,12 @@ Linux, and two cameras on one computer have not been run.
 - **A setting did not stick.** Look at `result.kept` — see Camera controls.
 - **Two Weevia S1 are connected.** Finding the camera by name stops (the camera
   reports no USB serial number); the error begins "Weevia S1 ... not found" and ends
-  with the list ['WN Dual Camera', 'WN Dual Camera'] (on Linux, the list of their `/dev/video` paths).
-  Using two units on one computer has not been tested — connect one at a time.
+  with the two USB locations — or, where they could not be read, the list
+  ['WN Dual Camera', 'WN Dual Camera'] (on Linux, their `/dev/video` paths). Open one
+  of them by its USB location: `DeviceConfig.weevia_s1(usb_location="...")`, with a
+  location `python examples/list_devices.py` prints (`examples/open_by_usb_location.py`;
+  on Linux the USB device's sysfs name, e.g. `1-4.2`, which the doctor prints) — or
+  connect one at a time. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
 - **An index opens another camera with `backend="msmf"`.** OpenCV's Media Foundation
   backend (`CAP_MSMF`) counts indexes in Media Foundation's device list and DirectShow
   (`CAP_DSHOW`) in its own. The two lists can be in a different order: on one PC with one camera (2026-11-24), `devices.list_devices(backend="msmf")` and `list_devices()` returned the same three cameras in a different order, once.
@@ -444,7 +492,7 @@ Linux, and two cameras on one computer have not been run.
   installed file only when there is exactly one. Install the file for your camera with
   `python -m opticmix_vision.calib add <file.json>`, or delete the other files from the folder the
   message names; `python -m opticmix_vision.calib check --all` shows which of them fits the connected
-  camera — see Calibration.
+  camera, and `python -m opticmix_vision.calib show S1-NNNN` what one of them holds — see Calibration.
 - **"This calibration is for 800x800 eyes. Open the 1600x800 mode."** `cam.calibration` compares
   the eye size in the file with the mode the camera was opened in (half the frame width, the full
   height). Open the mode the message names; `DeviceConfig.weevia_s1()` opens 1600×800 unless you
@@ -467,7 +515,7 @@ Linux, and two cameras on one computer have not been run.
 We reply to issues and email within 2 business days (Korea time).
 
 We aim to release about once a month; what changed in each release is in
-[CHANGELOG.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.5/python/CHANGELOG.md).
+[CHANGELOG.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.6/python/CHANGELOG.md).
 
 ## What is in this package, and what is not
 
@@ -478,7 +526,8 @@ frequency and the auto-exposure mode; writes of exposure, gain and the
 illuminator were checked earlier through OpenCV. Measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera.
 Calibration files (install and read): run on two cameras on Windows, once each —
 see Calibration. The calibration check (`calib check`): run without a camera only
-(generated frames); not run with the camera.
+(generated frames); not run with the camera. `calib show`: run without a camera
+only (made-up calibration files); not run with the camera.
 
 **Not in this package:** rectification, depth and hand tracking.
 The code for them exists but has not been validated for release, so it is
@@ -506,6 +555,6 @@ extension. Install the wheel into that environment as well.
 
 ## License
 
-Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.5/python/LICENSE). The compiled extension also contains Rust
+Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.6/python/LICENSE). The compiled extension also contains Rust
 crates under MIT / Apache-2.0; their notices are in
-[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.5/python/THIRD_PARTY_NOTICES.txt).
+[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.6/python/THIRD_PARTY_NOTICES.txt).

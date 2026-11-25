@@ -13,7 +13,8 @@ can raise DeviceError too, for example "Weevia S1 ... not found" while the cable
 
 On each error this example prints the message, closes the camera, asks you to re-insert the USB cable,
 waits --wait seconds and opens a new Device. After --retries failed reopens it stops with exit code 2.
-Use a new Device for every attempt: one Device keeps the stall count of the stream it was reading.
+Every attempt opens a new Device here. Device.open() also starts the stall count afresh, so opening the
+same Device again judges the new stream on its own frames, not on the count of the stream before.
 
 --synthetic uses a fake VideoCapture (not a camera) where one eye repeats one image after 10 frames on
 the first open only, so the error and the reopen run without hardware.

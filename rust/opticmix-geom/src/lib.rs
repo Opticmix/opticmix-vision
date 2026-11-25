@@ -8,6 +8,8 @@ pub mod error;
 pub mod kb4;
 #[cfg(feature = "stereo")]
 pub mod map;
+// Python notation for the messages; one source with the published crate (opticmix-vision).
+#[path = "../../opticmix-vision/src/pyrepr.rs"]
 pub mod pyrepr;
 #[cfg(feature = "stereo")]
 pub mod rectify;

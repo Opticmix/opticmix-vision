@@ -8,6 +8,7 @@ Usage:
   python examples/record_video.py --codec mp4v --out run1.mp4       # needs a codec your OpenCV build has
   python examples/record_video.py --synthetic --seconds 1           # no camera: generated frames
   python examples/record_video.py --backend msmf                    # Windows: fills driver_ns
+  python examples/record_video.py --queue-frames 64                 # encode on a thread (Recorder queue_frames)
 
 Writes three files (opticmix_vision.recording.Recorder):
   recording.avi   grayscale, left eye in the left half; the file's frame rate is the rate the camera negotiated
@@ -22,7 +23,13 @@ The file's frame rate is only a label. If encoding is slower than the camera, fr
 video plays too fast; the CSV is the record of real timing, and the late / missed counts printed at the end
 are estimated from it. MJPG changes pixel values; --lossless (FFV1) keeps the values the SDK delivered, but
 takes longer per frame and may not keep up with 90 fps: when frames were missed, the last line says what to
-do (MJPG, a lower --fps, or capture_dataset_npz.py). play_recording.py plays the result back.
+do (MJPG, a lower --fps, or capture_dataset_npz.py). With the opencv-python 4.12 and 4.13 wheels FFV1 writing
+failed now and then (one Windows PC, generated frames; not with 4.14 or 5.1): upgrade OpenCV or record MJPG.
+play_recording.py plays the result back.
+--queue-frames N (default 0: encode before reading the next frame) encodes on a thread through a queue of N
+frames, as the viewer's v does; a frame that finds the queue full is dropped, and the last line counts it
+(the estimated missed frames include the dropped ones; do not add them). --queue-frames: run on generated
+frames only; not run with the camera.
 The .csv and .json take the video's name without its extension, so --lossless writes recording_lossless.*
 by default, apart from recording.*; a --out whose name another recording (or a .npz) already has
 is refused rather than overwrite that recording's .csv and .json.
@@ -75,6 +82,9 @@ def main() -> int:
     ap.add_argument("--fps", type=float, default=None, help="frame rate to ask the camera for (default: 90)")
     ap.add_argument("--backend", choices=("dshow", "msmf", "v4l2"),
                     help="OpenCV capture backend (default: the Weevia S1 default for this OS); msmf fills driver_ns")
+    ap.add_argument("--queue-frames", type=int, default=0, metavar="N",
+                    help="encode on a thread through a queue of N frames; a frame that finds it full is dropped"
+                         " and counted (default 0: no thread)")
     ap.add_argument("--device", type=int,
                     help="camera index in that backend's list, instead of finding the Weevia S1 by name")
     a = ap.parse_args()
@@ -83,10 +93,13 @@ def main() -> int:
     codec = LOSSLESS_CODEC if a.lossless else (a.codec or "MJPG")
     if len(codec) != 4:
         ap.error("--codec takes four characters, e.g. MJPG or mp4v")
+    if a.queue_frames < 0:
+        ap.error("--queue-frames takes 0 or a number of frames")
     out = a.out or Path("recording_lossless.mkv" if a.lossless else "recording.avi")
 
     try:
-        with open_camera(a.synthetic, a.fps, a.backend, a.device) as cam, Recorder(out, cam, codec=codec) as rec:
+        with open_camera(a.synthetic, a.fps, a.backend, a.device) as cam, \
+                Recorder(out, cam, codec=codec, queue_frames=a.queue_frames) as rec:
             print("negotiated:", cam.mode.to_dict())
             t_end = time.perf_counter() + a.seconds
             while True:
@@ -104,7 +117,8 @@ def main() -> int:
     w, h = r["eye_size"]
     print(f"wrote {r['frames']} frames ({2 * w}x{h}, {codec}{'' if rec.compressed else ', lossless'}) to {out}, "
           f"labelled {rec.fps:g} fps; frames arrived at {rate:.1f} per second (host-measured); "
-          f"while recording: late {rec.late_frames}, estimated missed {rec.estimated_missed_frames}; "
+          f"while recording: late {rec.late_frames}, estimated missed {rec.estimated_missed_frames} "
+          f"(of which dropped by the write queue {rec.dropped_frames}); "
           f"info in {rec.info_path}")
     if rec.missed_advice:
         print("Frames were missed while recording.", rec.missed_advice)

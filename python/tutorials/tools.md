@@ -86,6 +86,8 @@ options:
   (not with `--synthetic` or `--device`); `--loop` starts it again after the last frame.
 - `--lossless` makes `v` record FFV1 `.mkv`, which keeps the pixel values the SDK delivered, instead of MJPG
   `.avi`, which changes them. Lossless takes longer per frame to write and may not keep up with 90 fps.
+  With the opencv-python 4.12 and 4.13 wheels FFV1 writing failed now and then (one Windows PC, generated
+  frames; not with 4.14 or 5.1): upgrade OpenCV or record MJPG.
 - `--headless` runs the same loop without a window; with `--frames N` it stops after N frames.
 
 ### Keys
@@ -127,6 +129,16 @@ frames were missed. The viewer's `v` runs alongside the preview and may not keep
 MJPG: to record every frame, use `examples/record_video.py` first (it records with no window), then a lower
 `--fps` or `examples/capture_dataset_npz.py`.
 
+A thread encodes while the window draws. A frame that finds its queue (64 frames) full is not recorded: the
+REC line, the `.json` (`dropped_frames`) and the message when recording stops count it. A dropped frame is
+also a gap in the frame times, so the missed estimate includes it (`estimated_missed_frames` includes
+`dropped_frames` — do not add them): the message says `about N frames missed while recording (estimated from
+the frame times; the N frames the write queue dropped are among them, not in addition)`. A queue does not
+make lossless keep up with 90 fps. Stopping (`v`, `q`) writes the frames still queued before the
+files close, so the window waits for them. The `.json` of `s` and `v` says where its control values come from
+and when the viewer read them (`controls_source` `"given"`, `controls_read_at`). The writing thread has been
+run on generated frames only; not run with the camera.
+
 While a recording plays (`--recording`):
 
 | Key | What it does |
@@ -147,8 +159,11 @@ Both eyes side by side, left eye on the left, with text in the top-left corner:
   rate frames reach the viewer's loop when the source does not report one); the frames that came late and the
   estimated missed frames (`Device.late_frames`, `Device.estimated_missed_frames`, when the source reports
   them); and the eye size. They are estimated from host times, not read from a device frame counter.
-- `REC <file>  N frames  missed~N since start  (v stops)` while recording (`lossless` after the frame count
-  with `--lossless`).
+  `repeated N` is added once a frame's two eyes both repeated the previous image (`Device.repeated_frames`;
+  run without a camera only).
+- `REC <file>  N frames  missed~N since start (dropped N)  (v stops)` while recording: the frames written so
+  far, those estimated missed, and, among them, those dropped because the write queue was full (a dropped frame
+  leaves a gap in the frame times; `lossless` after the frame count with `--lossless`).
 - `PLAY <frame>/<last>  <time>/<duration> s  <speed>x` while a recording plays, with `PAUSED` or `ENDED` and
   `loop` when they apply, and the rate frames are shown.
 - `LED …  exp …  gain …  (as opened + viewer's writes)` — the illuminator level, exposure and gain as the viewer
@@ -166,7 +181,7 @@ Both eyes side by side, left eye on the left, with text in the top-left corner:
 
 When the viewer closes it prints one line: frames read, pairs saved and the last rate.
 
-Recording with `v` has been run with the camera once (one PC, one camera, 2026-11-24): one recording started and stopped with `v` (392 frames, about 130 missed while recording), no stall error; its `.json` carries `controls_note`. Lossless recording, the `s` key's `.json`, playing a recording in the viewer, presets, the defaults and `c` have been run
+Recording with `v` has been run with the camera once (one PC, one camera, 2026-11-24): one recording started and stopped with `v` (392 frames, about 130 missed while recording; 0.0.5, before the writing thread), no stall error; its `.json` carries `controls_note`. Lossless recording, the `s` key's `.json`, playing a recording in the viewer, presets, the defaults and `c` have been run
 on generated frames only; not run with the camera.
 
 ### Run it without a camera
@@ -188,7 +203,7 @@ $ python -m opticmix_vision.viewer --synthetic --headless --frames 60
 
 $ python examples/record_video.py --synthetic --seconds 1
 negotiated: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
-wrote 96 frames (640x200, MJPG) to recording.avi, labelled 90 fps; frames arrived at 94.7 per second (host-measured); while recording: late 0, estimated missed 0; info in recording.json
+wrote 96 frames (640x200, MJPG) to recording.avi, labelled 90 fps; frames arrived at 94.7 per second (host-measured); while recording: late 0, estimated missed 0 (of which dropped by the write queue 0); info in recording.json
 
 $ python -m opticmix_vision.viewer --recording recording.avi --headless
 [viewer] frames 96 saved 0 fps 2754.7
@@ -228,7 +243,9 @@ The explorer has no keyboard shortcuts; everything is a button or a list.
   the first camera otherwise; the camera's USB details from the operating system, without opening it —
   `VID:PID · REV <USB device revision> · <link speed> · no serial` (`USB: — · no serial` when no Weevia S1 is
   found, `synthetic · no serial` with `--synthetic`); `no serial` because the camera reports no USB serial
-  number, so two units cannot be told apart in software — label them physically; the refresh button, which
+  number, so two units cannot be told apart by name — label them physically, or open one by its USB location
+  (`DeviceConfig.weevia_s1(usb_location=...)`; the port, not a serial number; picking by USB location has been
+  run without a camera only, not with a camera and not with two cameras); the refresh button, which
   lists the cameras again; and the gear, which opens the Settings window.
 - **Middle:** both eyes side by side, shrunk to fit by keeping every Nth pixel, without interpolation.
 - **Over the video, bottom left:**

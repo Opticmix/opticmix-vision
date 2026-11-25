@@ -58,6 +58,10 @@ jobs:
       - name: Test (no default features)
         working-directory: rust
         run: cargo test -p opticmix-vision --no-default-features --locked
+      # The examples' `--synthetic` paths (the crate's test doubles) are built only with `test-support`.
+      - name: Test (test-support)
+        working-directory: rust
+        run: cargo test -p opticmix-vision --features test-support --locked
       - name: Build the Python extension crate
         working-directory: rust
         run: cargo build -p opticmix-vision-py --locked

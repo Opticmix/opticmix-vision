@@ -28,7 +28,7 @@ frame rate, ranges and brightness say nothing about the camera. Of the six examp
 `calibration_check.py`, added in 0.0.5. Platform: Windows; on Linux (experimental) the examples have not been
 run.
 
-Tutorials 01, 02 and 05 also show the Rust version of their examples (`cargo run --example …` in
+Tutorials 01, 02, 05 and 08 also show the Rust version of their examples (`cargo run --example …` in
 `rust/opticmix-vision`), run without a camera only — except `list_devices` and `measure_fps`, run with the camera once (one PC, one camera, 2026-11-24).
 
 The two windows that come with the package, the viewer and the explorer, are described in

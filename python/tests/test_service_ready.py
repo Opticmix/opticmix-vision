@@ -113,6 +113,122 @@ def test_stall_check_can_be_switched_off():
             cam.read()
 
 
+# ---------------------------------------------------------------- repeated images (both eyes) are counted; MSMF warns
+class _Backend(FakeCapture):
+    def __init__(self, frames, name):
+        super().__init__(frames)
+        self.name = name
+
+    def getBackendName(self):  # noqa: N802
+        return self.name
+
+
+def _with_repeats(n: int, repeat_at: set[int], seed: int = 5) -> list[np.ndarray]:
+    """n frames; frame i (i >= 1) in repeat_at is a copy of frame i - 1, the rest are new images."""
+    rng = np.random.default_rng(seed)
+    frames: list[np.ndarray] = []
+    for i in range(n):
+        frames.append(frames[-1].copy() if i in repeat_at else _sbs(None, None, rng))
+    return frames
+
+
+def _read_all(cam, n):
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(n):
+            cam.read()
+    return [w for w in caught if "repeated the previous image" in str(w.message)]
+
+
+def test_repeated_frames_counts_frames_whose_two_eyes_both_repeat():
+    rng = np.random.default_rng(6)
+    a = _sbs(None, None, rng)
+    left_only = np.hstack([a[:, :8], rng.integers(0, 255, (8, 8), dtype=np.uint8)])   # left repeats, right new
+    frames = [a, a.copy(), a.copy(), left_only, _sbs(None, None, rng), _sbs(None, None, rng)]
+    frames.append(frames[-1].copy())
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left")
+    cam = Device(cfg, capture=FakeCapture(frames + _with_repeats(4, {2})))
+    with cam:
+        assert cam.repeated_frames == 0
+        for _ in range(7):
+            cam.read()
+        assert cam.repeated_frames == 3          # frames 1, 2 and 6; frame 3 repeats in one eye only
+    cam.open()                                    # counted from this open(): the next frame has no frame before it
+    for _ in range(4):
+        cam.read()
+    assert cam.repeated_frames == 1
+
+
+def test_repeated_frames_is_none_when_the_stall_check_is_off():
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left", stall_frames=0)
+    with Device(cfg, capture=_Backend(_with_repeats(400, set(range(1, 400, 2))), "MSMF")) as cam:
+        assert _read_all(cam, 400) == [] and cam.repeated_frames is None
+
+
+@pytest.mark.parametrize("repeats, warned", [(15, False), (16, True)])
+def test_msmf_warns_once_when_more_than_5_percent_of_300_frames_repeat(repeats, warned):
+    at = set(range(10, 10 + 18 * repeats, 18))                     # spread out: never a stall
+    frames = _with_repeats(301, at) + _with_repeats(300, set(range(1, 300, 5)), seed=7)
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left")
+    with Device(cfg, capture=_Backend(frames, "MSMF")) as cam:
+        first = _read_all(cam, 301)                                 # 300 comparisons fill the window
+        assert cam.repeated_frames == repeats
+        assert len(first) == int(warned)
+        if warned:
+            msg = str(first[0].message)
+            assert msg.startswith(f"{repeats} of the last 300 frames repeated the previous image in both eyes")
+            assert "backend='dshow'" in msg and "Rust crate" in msg and "cause not established" in msg
+            assert first[0].filename == __file__                    # points at the caller of read()
+        later = _read_all(cam, 300)                                 # 60 more repeats in the next 300 frames
+        assert len(first) + len(later) == 1                         # once per open(), whichever window passed
+        assert cam.repeated_frames == repeats + 60
+
+
+def test_the_same_repeats_through_directshow_give_no_warning():
+    frames = _with_repeats(601, set(range(1, 601, 3)))
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left")
+    with Device(cfg, capture=_Backend(frames, "DSHOW")) as cam:
+        assert _read_all(cam, 601) == [] and cam.repeated_frames == 200
+
+
+@pytest.mark.parametrize("frozen", [("left",), ("left", "right")])
+def test_after_reopening_a_frozen_stream_raises_on_the_stall_frames_th_frame(frozen):
+    """50 live frames whose last one already shows the frozen image, close, open again, frozen frames: the count
+    starts afresh at open(), so read() raises on the 5th frozen frame after it — not earlier, and not never."""
+    rng = np.random.default_rng(10)
+    still = rng.integers(0, 255, (8, 8), dtype=np.uint8)
+
+    def frame(stopped):
+        halves = {e: (still if e in stopped else rng.integers(0, 255, (8, 8), dtype=np.uint8))
+                  for e in ("left", "right")}
+        return np.hstack([halves["left"], halves["right"]])          # first_is_left: first half is the left eye
+
+    live = [frame(()) for _ in range(49)] + [frame(frozen)]          # the eye stopped on the last frame before close
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left", stall_frames=5)
+    cam = Device(cfg, capture=FakeCapture(live + [frame(frozen) for _ in range(10)]))
+    with cam:
+        for _ in range(50):
+            cam.read()
+    with cam:
+        for _ in range(4):
+            cam.read()
+        with pytest.raises(DeviceError, match=f"The {frozen[0]} eye has sent the same image for 5 frames"):
+            cam.read()
+
+
+def test_each_open_starts_a_new_window_and_may_warn_again():
+    repeating = _with_repeats(301, set(range(1, 301, 3)))
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left")
+    cam = Device(cfg, capture=_Backend(repeating + _with_repeats(301, set(), seed=9) + repeating, "MSMF"))
+    with cam:
+        assert len(_read_all(cam, 301)) == 1
+    with cam:                                                       # no repeats: the last open's frames do not count
+        assert _read_all(cam, 301) == [] and cam.repeated_frames == 0
+    with cam:
+        assert len(_read_all(cam, 301)) == 1
+
+
 # ---------------------------------------------------------------- documented commands run in the published package
 def test_quickstart_help_runs():
     r = subprocess.run([sys.executable, str(SDK / "examples" / "quickstart.py"), "--help"],

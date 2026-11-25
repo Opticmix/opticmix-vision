@@ -48,6 +48,10 @@ fn to_py(py: Python<'_>, e: SdkError) -> PyErr {
             raise_as(py, "opticmix_vision.devices", "MultipleMatches", msg)
         }
         SdkError::Device(_) => raise_as(py, "opticmix_vision.device", "DeviceError", msg),
+        SdkError::Calibration(_) => {
+            raise_as(py, "opticmix_vision.calibration", "CalibrationError", msg)
+        }
+        SdkError::CalibLookup(_) => raise_as(py, "opticmix_vision.calib", "CalibLookupError", msg),
         SdkError::Foreign { type_name, message } => {
             // 바깥 백엔드가 던진 내장 예외는 같은 타입으로 되살린다
             let builtin = py
@@ -65,6 +69,8 @@ fn to_py(py: Python<'_>, e: SdkError) -> PyErr {
                 None => PyRuntimeError::new_err(format!("{type_name}: {message}")),
             }
         }
+        // SdkError is #[non_exhaustive]: a variant added later surfaces as RuntimeError until it gets its own arm
+        _ => PyRuntimeError::new_err(msg),
     }
 }
 
@@ -303,6 +309,37 @@ fn enumerate_mf_video_devices(py: Python<'_>) -> PyResult<Vec<String>> {
         .map_err(|e| to_py(py, e))
 }
 
+/// (index, name, usb_location) of a device list — the Python side builds DeviceInfo from it.
+type DeviceRow = (usize, String, Option<String>);
+
+fn rows(list: Vec<devices::DeviceInfo>) -> Vec<DeviceRow> {
+    list.into_iter()
+        .map(|d| (d.index, d.name, d.usb_location))
+        .collect()
+}
+
+fn infos(list: Vec<DeviceRow>) -> Vec<devices::DeviceInfo> {
+    list.into_iter()
+        .map(|(index, name, usb_location)| devices::DeviceInfo::new(index, name, usb_location))
+        .collect()
+}
+
+/// The Media Foundation list with each source's USB location (from its symbolic link). Activates no device.
+#[pyfunction]
+fn list_mf_devices(py: Python<'_>) -> PyResult<Vec<DeviceRow>> {
+    py.detach(devices::list_mf_devices)
+        .map(rows)
+        .map_err(|e| to_py(py, e))
+}
+
+/// DirectShow's video devices, enumerated directly (no ffmpeg), with their USB locations. Binds to no device.
+#[pyfunction]
+fn list_dshow_devices(py: Python<'_>) -> PyResult<Vec<DeviceRow>> {
+    py.detach(devices::list_dshow_devices)
+        .map(rows)
+        .map_err(|e| to_py(py, e))
+}
+
 #[pyfunction]
 #[pyo3(signature = (names, index, expected))]
 fn choose(
@@ -327,11 +364,8 @@ fn choose(
 
 #[pyfunction]
 #[pyo3(signature = (raw=None))]
-fn list_devices(py: Python<'_>, raw: Option<String>) -> Vec<(usize, String)> {
-    py.detach(|| devices::list_devices(raw.as_deref()))
-        .into_iter()
-        .map(|d| (d.index, d.name))
-        .collect()
+fn list_devices(py: Python<'_>, raw: Option<String>) -> Vec<DeviceRow> {
+    rows(py.detach(|| devices::list_devices(raw.as_deref())))
 }
 
 #[pyfunction]
@@ -361,19 +395,24 @@ type RangeTuple = (i64, i64, i64, Option<i64>, bool);
 /// One plan_reset() line: (name, current, default).
 type PlanRow<'py> = (String, Bound<'py, PyAny>, Bound<'py, PyAny>);
 
-/// Picks one by name from an existing (index, name) list → (index, name).
+/// Picks one by name from an existing (index, name, usb_location) list → (index, name, usb_location).
 #[pyfunction]
-fn pick_by_name(
+fn pick_by_name(py: Python<'_>, needle: &str, devices: Vec<DeviceRow>) -> PyResult<DeviceRow> {
+    let d = devices::pick_by_name(needle, &infos(devices)).map_err(|e| to_py(py, e))?;
+    Ok((d.index, d.name, d.usb_location))
+}
+
+/// Picks one by name and USB location from an existing (index, name, usb_location) list.
+#[pyfunction]
+fn pick_by_usb_location(
     py: Python<'_>,
     needle: &str,
-    devices: Vec<(usize, String)>,
-) -> PyResult<(usize, String)> {
-    let list: Vec<devices::DeviceInfo> = devices
-        .into_iter()
-        .map(|(index, name)| devices::DeviceInfo { index, name })
-        .collect();
-    let d = devices::pick_by_name(needle, &list).map_err(|e| to_py(py, e))?;
-    Ok((d.index, d.name))
+    usb_location: &str,
+    devices: Vec<DeviceRow>,
+) -> PyResult<DeviceRow> {
+    let d = devices::pick_by_usb_location(needle, usb_location, &infos(devices))
+        .map_err(|e| to_py(py, e))?;
+    Ok((d.index, d.name, d.usb_location))
 }
 
 // ---- DirectShow 백엔드 -------------------------------------------------------------------------
@@ -865,6 +904,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_modes, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_by_name, m)?)?;
     m.add_function(wrap_pyfunction!(pick_by_name, m)?)?;
+    m.add_function(wrap_pyfunction!(pick_by_usb_location, m)?)?;
+    m.add_function(wrap_pyfunction!(list_mf_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(list_dshow_devices, m)?)?;
     m.add_class::<PyDShow>()?;
     m.add_class::<CoreControls>()?;
     Ok(())

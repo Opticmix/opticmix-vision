@@ -80,8 +80,9 @@ def reader(cam, latest: queue.Queue, stop: threading.Event, error: list) -> None
 The processing thread counts skipped frames from gaps in `frame.index`. `--work-ms` stands in for your own
 processing.
 
-`handle_stall.py`: leaving the `with` block closes the camera; every attempt opens a new `Device`, because
-one `Device` keeps the stall count of the stream it was reading:
+`handle_stall.py`: leaving the `with` block closes the camera, and every attempt opens a new `Device`.
+`Device.open()` also starts the stall count afresh, so opening the same `Device` again judges the new stream
+on its own frames, not on the count of the stream before:
 
 ```python
 while got < a.frames:

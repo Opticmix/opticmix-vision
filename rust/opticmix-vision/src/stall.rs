@@ -16,11 +16,18 @@ pub struct StallCheck {
     n: u32,
     prev: Option<(Vec<u8>, Vec<u8>)>,
     same: [u32; 2],
+    /// Frames whose two eyes were both byte-identical to the frame before.
+    repeated: u64,
 }
 
 impl StallCheck {
     pub fn new(n: u32) -> StallCheck {
-        StallCheck { n, prev: None, same: [0, 0] }
+        StallCheck {
+            n,
+            prev: None,
+            same: [0, 0],
+            repeated: 0,
+        }
     }
 
     pub fn check(&mut self, left: &GrayImage, right: &GrayImage) -> Result<()> {
@@ -32,16 +39,22 @@ impl StallCheck {
         let Some(prev) = self.prev.replace((left.data.clone(), right.data.clone())) else {
             return Ok(());
         };
-        for (i, (eye, now, before)) in [("left", &left.data, &prev.0), ("right", &right.data, &prev.1)]
-            .into_iter()
-            .enumerate()
-        {
-            self.same[i] = if now == before { self.same[i] + 1 } else { 0 };
+        // Both eyes first: a frame that ends in a stall error still counts, as in Python.
+        let same = [left.data == prev.0, right.data == prev.1];
+        self.repeated += u64::from(same[0] && same[1]);
+        for (i, eye) in ["left", "right"].into_iter().enumerate() {
+            self.same[i] = if same[i] { self.same[i] + 1 } else { 0 };
             if self.same[i] + 1 >= n {
                 return Err(SdkError::Device(stall_message(eye, n)));
             }
         }
         Ok(())
+    }
+
+    /// Frames whose two eyes were both byte-identical to the frame before, by the comparison above; `None` when
+    /// the check is off (`n == 0`: nothing is compared).
+    pub fn repeated(&self) -> Option<u64> {
+        (self.n != 0).then_some(self.repeated)
     }
 }
 
@@ -80,12 +93,27 @@ mod tests {
     }
 
     #[test]
+    fn repeated_counts_only_frames_whose_two_eyes_both_repeat() {
+        let mut s = StallCheck::new(90);
+        s.check(&g(1), &g(5)).unwrap();
+        s.check(&g(1), &g(5)).unwrap();
+        assert_eq!(s.repeated(), Some(1), "both eyes repeated");
+        s.check(&g(1), &g(6)).unwrap();
+        assert_eq!(s.repeated(), Some(1), "one eye only: not counted");
+    }
+
+    #[test]
     fn zero_turns_it_off() {
         let mut s = StallCheck::new(0);
         for _ in 0..10 {
             s.check(&g(1), &g(1)).unwrap();
         }
         assert!(s.prev.is_none(), "off must not copy the frames");
+        assert_eq!(
+            s.repeated(),
+            None,
+            "off compares nothing, so it counts nothing"
+        );
     }
 
     #[test]

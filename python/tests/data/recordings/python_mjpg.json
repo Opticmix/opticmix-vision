@@ -1,0 +1,72 @@
+{
+  "opticmix_vision": "0.0.5",
+  "created": "2026-11-25T01:09:30+09:00",
+  "host_clock": "host_ns is time.perf_counter_ns() on the host when the frame was read, not a camera clock",
+  "mode": {
+    "width": 64,
+    "height": 16,
+    "fps": 90.0,
+    "fourcc": "SYNT",
+    "backend_name": "synthetic"
+  },
+  "source": "synthetic",
+  "controls": {
+    "brightness": 50,
+    "contrast": 50,
+    "hue": 64,
+    "saturation": 36,
+    "sharpness": 28,
+    "gamma": 50,
+    "white_balance": 128,
+    "auto_white_balance": false,
+    "backlight_compensation": 32,
+    "gain": 32,
+    "power_line_frequency": "60hz",
+    "exposure": -5,
+    "auto_exposure": "manual",
+    "auto_exposure_priority": false
+  },
+  "controls_read_at": "2026-11-25T01:09:30.382+09:00",
+  "controls_source": "simulated",
+  "controls_note": "simulated values (synthetic source)",
+  "recording": {
+    "codec": "MJPG",
+    "compressed": true,
+    "layout": "sbs",
+    "lr_order": "first_is_left",
+    "fps_label": 90.0,
+    "frames": 6,
+    "csv": "python_mjpg.csv",
+    "closed": true,
+    "write_queue": 0,
+    "dropped_frames": 0,
+    "breaks": [],
+    "control_changes": [],
+    "eye_size": [
+      32,
+      16
+    ],
+    "first_host_ns": 1000000000,
+    "last_host_ns": 1055555555,
+    "duration_s": 0.055555555,
+    "late_frames": 0,
+    "estimated_missed_frames": 0,
+    "controls_at_end": {
+      "brightness": 50,
+      "contrast": 50,
+      "hue": 64,
+      "saturation": 36,
+      "sharpness": 28,
+      "gamma": 50,
+      "white_balance": 128,
+      "auto_white_balance": false,
+      "backlight_compensation": 32,
+      "gain": 32,
+      "power_line_frequency": "60hz",
+      "exposure": -5,
+      "auto_exposure": "manual",
+      "auto_exposure_priority": false
+    },
+    "controls_at_end_source": "simulated"
+  }
+}

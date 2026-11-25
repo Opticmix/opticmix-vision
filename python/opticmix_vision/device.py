@@ -21,7 +21,7 @@ Timestamps: `StereoFrame.host_ns` is the host monotonic clock (`time.perf_counte
 `StereoFrame.driver_ns` is the operating system capture driver's time stamp for the frame, as OpenCV passes it
 on in `CAP_PROP_POS_MSEC`, with `driver_clock` naming the clock:
   "media_foundation"  OpenCV CAP_MSMF: the sample time (100 ns units) Media Foundation's source reader gives with
-                      the sample it hands OpenCV — OpenCV 4.13 asks the reader to convert the camera's MJPG to
+                      the sample it hands OpenCV — OpenCV 4.13 asks the reader to convert the camera's format to
                       RGB (cap_msmf.cpp), so it is the converted sample's time. On one PC (Windows 11) with one
                       camera (2026-11-24, once) the first time was about 364,400 s — not the start of
                       streaming; what the clock's zero is has not been established. Use differences between
@@ -47,6 +47,7 @@ import re
 import sys
 import threading
 import time
+import warnings
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -88,6 +89,17 @@ def _driver_ns(ms: float, per_ms: int) -> int | None:
     if not ms >= 0:
         return None
     return round(ms * per_ms) * (1_000_000 // per_ms)
+
+
+# Repeated images through OpenCV's Media Foundation path: Device warns once per open() when more than
+# _MSMF_REPEAT_WARN of the last _MSMF_REPEAT_WINDOW frames repeated the previous image in both eyes.
+# Run with the camera (one PC, one camera, 2026-11-24; API.md, "Media Foundation through OpenCV"): through
+# CAP_MSMF 276 of 900 frames per eye repeated the previous image (30.7 %); through DirectShow 0 of 900, and the Rust crate reading Media
+# Foundation without OpenCV 0 of 450. Cause not established. 5 % sits far below 30.7 % and above 0;
+# 300 frames is about 3.3 s at 90 fps. Whether a live eye sends byte-identical images in a dark or covered
+# scene has not been measured.
+_MSMF_REPEAT_WINDOW = 300
+_MSMF_REPEAT_WARN = 0.05
 
 
 # The Weevia S1, as measured — not assumed. The first half of the side-by-side
@@ -136,7 +148,8 @@ class DeviceConfig:
     stall_frames  When one eye sends the byte-identical image this many frames in a row, read() raises
                DeviceError — on the units we have tested one eye has occasionally stopped and came back after
                re-inserting the USB cable. A live eye has never been recorded sending byte-identical frames in a
-               row (one unit, a lit room). 0 turns the check off; otherwise 2 or more.
+               row (one unit, a lit room). 0 turns the check off; otherwise 2 or more. The same comparison
+               counts `Device.repeated_frames`, so 0 turns that count off too (it is then None).
     """
 
     layout: str
@@ -172,7 +185,7 @@ class DeviceConfig:
         object.__setattr__(self, "extra_props", dict(self.extra_props))
 
     @classmethod
-    def weevia_s1(cls, **overrides: Any) -> "DeviceConfig":
+    def weevia_s1(cls, *, usb_location: str | None = None, **overrides: Any) -> "DeviceConfig":
         """The measured settings for a Weevia S1, with the camera found by name.
 
         Picking a camera by index is how the wrong one gets opened: plugging in any
@@ -187,26 +200,37 @@ class DeviceConfig:
         order (Media Foundation before DirectShow in OpenCV 4.13) and falls back to the next one with the same index,
         so the index is used only when the camera has the same index in both lists; otherwise pass backend="msmf"
         or "dshow". Media Foundation lookup: run without a camera only; not run with the camera.
+
+        usb_location: with two cameras of the same name connected, the one at this USB location (`DeviceInfo.
+        usb_location` as `examples/list_devices.py` prints it; Linux: the USB device's sysfs name, e.g. `1-4.2`;
+        an empty or blank one is `ValueError`).
+        A USB location is not a serial number: it names the port the camera is plugged into, and it changes when
+        the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a
+        camera by USB location has been run without a camera only (made-up device lists); it has not been run with
+        a camera, and not run with two cameras.
         """
         from . import devices
         linux = sys.platform.startswith("linux")
         if linux:
             overrides.setdefault("backend", "v4l2")
+        if "device" in overrides and usb_location is not None:
+            raise ValueError("pass device= or usb_location=, not both")
         if "device" not in overrides:
             backend = overrides.get("backend")
             try:
                 if linux:
-                    overrides["device"] = devices.find_v4l2_node(WEEVIA_S1_NAME)
+                    overrides["device"] = devices.find_v4l2_node(WEEVIA_S1_NAME, usb_location=usb_location)
                 elif backend in ("msmf", "any"):
-                    mf = devices.resolve_by_name(WEEVIA_S1_NAME, backend="msmf").index
-                    if backend == "any" and mf != (ds := devices.resolve_by_name(WEEVIA_S1_NAME).index):
+                    mf = devices.resolve_by_name(WEEVIA_S1_NAME, usb_location=usb_location, backend="msmf").index
+                    if backend == "any" and mf != (ds := devices.resolve_by_name(WEEVIA_S1_NAME,
+                                                                                 usb_location=usb_location).index):
                         raise DeviceError(
                             f"backend='any': the Weevia S1 is index {mf} in the Media Foundation list but {ds} in the "
                             "DirectShow list, and OpenCV may open either backend with the index it is given. Pass "
                             "backend='msmf' or backend='dshow'.")
                     overrides["device"] = mf
                 else:
-                    overrides["device"] = devices.resolve_by_name(WEEVIA_S1_NAME).index
+                    overrides["device"] = devices.resolve_by_name(WEEVIA_S1_NAME, usb_location=usb_location).index
             except LookupError as exc:
                 raise DeviceError(f"Weevia S1 ({WEEVIA_S1_NAME!r}) not found. {exc}") from exc
         return cls(**{**WEEVIA_S1, **overrides})
@@ -277,7 +301,9 @@ class DeviceConfig:
 
 @dataclass(frozen=True)
 class NegotiatedMode:
-    """The mode the device actually gave (`cap.get` readback). It can differ from what was requested."""
+    """The mode the device actually gave (`cap.get` readback). It can differ from what was requested.
+
+    Through MSMF, fourcc is OpenCV's output format code (RGB32 or RGB24), not the camera's format."""
 
     width: int
     height: int
@@ -297,7 +323,8 @@ class StereoFrame:
     host_ns: int                # host monotonic clock, right after cap.read()
     index: int                  # frame number from this Device (not a device counter)
     driver_ns: int | None = None        # capture driver's time stamp (ns) on driver_clock; not a camera clock
-    driver_clock: str | None = None     # "media_foundation" | "v4l2" | None
+    driver_clock: str | None = None     # "media_foundation" | "v4l2" | None; also "v4l2_monotonic" when
+                                        # playing back a Rust crate recording (recorded_time)
     driver_sequence: int | None = None  # driver frame sequence number; None here (OpenCV does not give it)
 
     @property
@@ -416,6 +443,9 @@ class Device:
         self._index = 0
         self._prev: tuple[np.ndarray, np.ndarray] | None = None
         self._same = [0, 0]              # identical frames in a row, per eye
+        self._repeated = 0               # frames whose two eyes both repeated the previous image, since open()
+        self._repeat_window: deque[bool] = deque(maxlen=_MSMF_REPEAT_WINDOW)
+        self._repeat_warned = False
         self._driver: tuple[str, int] | None = None   # (clock name, units per ms) when the backend gives one
         self._controls: Controls | None = None
         self._controls_lock = threading.Lock()
@@ -519,6 +549,9 @@ class Device:
         from .recording import Playback
         self._playback = self._cap if isinstance(self._cap, Playback) else None
         self._stats = _FrameStats()
+        self._prev, self._same, self._repeated = None, [0, 0], 0     # counted from this open()
+        self._repeat_window.clear()
+        self._repeat_warned = False
         # a recording (Playback reports the backend it was recorded with) has no driver time
         recording = isinstance(c.device, str) and Path(c.device).is_file()
         self._driver = None if recording else _DRIVER_CLOCKS.get(backend_name.upper())
@@ -609,6 +642,12 @@ class Device:
         """Frames per second over the last 30 frames, from host times (0.0 until two frames are read)."""
         return self._stats.fps
 
+    @property
+    def repeated_frames(self) -> int | None:
+        """Frames read() returned since open() whose two eyes were both byte-identical to the frame before —
+        the comparison the stall_frames check makes. None when stall_frames=0 (no comparison is made)."""
+        return self._repeated if int(self.config.stall_frames) else None
+
     # ---- frames ------------------------------------------------------------
     def read_raw(self) -> tuple[np.ndarray, int]:
         """The raw frame before the split, and the host time (ns). A failure raises."""
@@ -656,13 +695,33 @@ class Device:
         prev, self._prev = self._prev, (left, right)
         if not n or prev is None:
             return
-        for i, (eye, now, before) in enumerate((("left", left, prev[0]), ("right", right, prev[1]))):
-            self._same[i] = self._same[i] + 1 if np.array_equal(now, before) else 0
+        same = (np.array_equal(left, prev[0]), np.array_equal(right, prev[1]))
+        self._count_repeat(same[0] and same[1])
+        for i, eye in enumerate(("left", "right")):
+            self._same[i] = self._same[i] + 1 if same[i] else 0
             if self._same[i] + 1 >= n:
                 raise DeviceError(
                     f"The {eye} eye has sent the same image for {n} frames in a row: its stream has stopped. "
                     "Re-insert the USB cable: unplug it and plug it back in (it sometimes takes two tries). "
                     "stall_frames=0 in DeviceConfig turns this check off.")
+
+    def _count_repeat(self, repeated: bool) -> None:
+        self._repeated += repeated
+        if self._repeat_warned or self._playback is not None or self._mode.backend_name.upper() != "MSMF":
+            return
+        w = self._repeat_window
+        w.append(repeated)
+        k = sum(w)
+        if len(w) == w.maxlen and k > _MSMF_REPEAT_WARN * w.maxlen:
+            self._repeat_warned = True
+            warnings.warn(
+                f"{k} of the last {w.maxlen} frames repeated the previous image in both eyes, read through "
+                "OpenCV's Media Foundation backend (backend='msmf'). Seen on one PC with one camera (2026-11-24): "
+                "276 of 900 frames per eye through this path; not seen through DirectShow (backend='dshow', "
+                "DeviceConfig.weevia_s1()'s default on Windows; 0 of 900) or the Rust crate, which reads Media "
+                "Foundation without OpenCV (0 of 450); cause not established. driver_ns does not show whether a "
+                "new image arrived. Device.repeated_frames counts them; this warning is given once per open().",
+                stacklevel=4)
 
     # ---- camera controls--------------------------------------------------------------------------
     def _flavor(self) -> str:

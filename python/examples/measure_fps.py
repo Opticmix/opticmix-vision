@@ -10,7 +10,7 @@ Usage:
 
 Prints the mode the camera negotiated (read it rather than assuming the one you asked for), then the
 intervals between frames: mean, min, max, the rate they add up to, how many came late, and how many
-frames repeated the previous image byte for byte.
+frames repeated the previous image byte for byte (per eye, and Device.repeated_frames: both eyes).
 
 Times are host_ns: the host's monotonic clock right after each frame was read, not a camera timestamp,
 so they include the host's scheduling jitter. Where the capture driver's own time stamp comes through OpenCV
@@ -22,11 +22,15 @@ have different zero points). These are operating-system driver times, not a
 camera clock; whether they mark the exposure or the arrival of a frame is not known.
 On one PC (Windows 11) with one camera (2026-11-24, once) the first Media Foundation time was about 364,400 s —
 not the start of streaming; what the clock's zero is has not been established. Use differences between frames,
-not the absolute value. With --backend msmf, OpenCV has Media Foundation convert the MJPG to RGB first and the
-time is that converted sample's. Run with the camera once (one PC, one camera, 2026-11-24): through MSMF
+not the absolute value. With --backend msmf, OpenCV has Media Foundation convert the camera's format to RGB first:
+the time is that converted sample's, and the mode's fourcc is OpenCV's output format code, not the camera's
+format. Run with the camera once (one PC, one camera, 2026-11-24): through MSMF
 276 of 900 frames per eye repeated the previous image while the driver-time intervals were 11.11 ms (mean,
 min and max), so there driver_ns does not show whether a new image arrived (cause not established);
 DirectShow gave 0 of 900. See StereoFrame in API.md. V4L2 driver times: not run with the camera.
+The Device.repeated_frames line came later; run with the camera once (one PC, one camera, 2026-11-25; this
+example's output does not record the OpenCV version): through MSMF 271 of 900, with the repeated-images warning
+once; through DirectShow 0 of 900, no warning.
 
 Stall check: if one eye sends a byte-identical image stall_frames times in a row (default 90),
 read() raises DeviceError naming the eye — on the units we have tested one eye's stream has
@@ -93,6 +97,7 @@ def main() -> int:
                 repeats["left"] += np.array_equal(f.left, prev.left)
                 repeats["right"] += np.array_equal(f.right, prev.right)
                 prev = f
+            both = getattr(cam, "repeated_frames", None)  # Device's own count; generated frames have none
     except DeviceError as exc:
         print(f"Camera error: {exc}", file=sys.stderr)
         return 2
@@ -104,6 +109,8 @@ def main() -> int:
           f"-> {1000.0 / dt.mean():.1f} frames per second")
     print(f"intervals over 1.5x the median: {late}")
     print(f"frames identical to the previous one: left {repeats['left']}, right {repeats['right']}")
+    if both is not None:
+        print(f"frames identical in both eyes (Device.repeated_frames): {both}")
 
     clocks = {c for _, c in drivers}
     if len(clocks) == 1 and None not in clocks and all(ns is not None for ns, _ in drivers):

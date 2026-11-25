@@ -11,7 +11,7 @@ use crate::backend::Backend;
 use crate::capture::{Capture, SampleInfo};
 use crate::config::{DeviceConfig, DeviceSelector, NegotiatedMode};
 use crate::devices::mf_enum::{dev_err, sources};
-use crate::devices::{pick_by_name, DeviceInfo};
+use crate::devices::{pick_by_name, pick_by_usb_location, repr, DeviceInfo};
 use crate::dshow::{name_matches, DShowBackend};
 use crate::error::{Result, SdkError};
 use crate::spec::EXPECTED_NAMES;
@@ -22,6 +22,8 @@ pub struct MfCapture {
     reader: IMFSourceReader,
     mode: NegotiatedMode,
     name: String,
+    /// Set when opened by `DeviceSelector::UsbLocation`: the controls find the camera at the same location.
+    usb_location: Option<String>,
 }
 
 // SAFETY: 소스 리더는 MTA(COINIT_MULTITHREADED)로 초기화한 스레드에서 만든다 — MTA 객체는 다른 MTA 스레드에서
@@ -38,7 +40,7 @@ impl MfCapture {
             // 짝이 되는 CoUninitialize 는 일부러 부르지 않는다: 소스 리더가 이 스레드의 MTA 에 살아 있어야 하고,
             // 언제 놓일지(다른 스레드로 옮겨 간 Device 의 drop) 여기서 알 수 없다. MFStartup 처럼 끝까지 둔다.
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let (act, name) = pick(cfg)?; // also runs MFStartup (once per process)
+            let (act, name, usb_location) = pick(cfg)?; // also runs MFStartup (once per process)
             let source: IMFMediaSource = act.ActivateObject().map_err(|e| dev_err("ActivateObject", e))?;
             let reader = match MFCreateSourceReaderFromMediaSource(&source, None) {
                 Ok(r) => r,
@@ -49,35 +51,60 @@ impl MfCapture {
                 }
             };
             let mode = choose_type(&reader, cfg)?;
-            Ok(MfCapture { reader, mode, name })
+            Ok(MfCapture { reader, mode, name, usb_location })
         }
     }
 }
 
-/// Picks one from the video device list (`devices::enumerate_mf_video_devices` order). Name match is a
-/// case-insensitive substring; more than one is an error.
-unsafe fn pick(cfg: &DeviceConfig) -> Result<(IMFActivate, String)> {
+/// Picks one from the video device list (`devices::enumerate_mf_video_devices` order) by `choose`.
+unsafe fn pick(cfg: &DeviceConfig) -> Result<(IMFActivate, String, Option<String>)> {
     let named = sources()?;
-    let have = || named.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", ");
-    match &cfg.device {
-        DeviceSelector::Index(i) => named
-            .get(*i)
-            .cloned()
-            .ok_or_else(|| SdkError::NoMatch(format!("no video device at index {i} — have: {}", have()))),
+    let list: Vec<DeviceInfo> =
+        named.iter().enumerate().map(|(i, (_, n, l))| DeviceInfo::new(i, n.clone(), l.clone())).collect();
+    let (i, usb_location) = choose(&cfg.device, &list)?;
+    Ok((named[i].0.clone(), named[i].1.clone(), usb_location))
+}
+
+/// The entry of the Media Foundation list `sel` names, and the USB location the controls look for (only with
+/// `UsbLocation`). Name match is a case-insensitive substring; more than one is an error.
+fn choose(sel: &DeviceSelector, list: &[DeviceInfo]) -> Result<(usize, Option<String>)> {
+    let have = || list.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ");
+    match sel {
+        DeviceSelector::Index(i) if *i < list.len() => Ok((*i, None)),
+        DeviceSelector::Index(i) => {
+            Err(SdkError::NoMatch(format!("no video device at index {i} — have: {}", have())))
+        }
         DeviceSelector::Name(needle) => {
-            let hits: Vec<_> = named.iter().filter(|(_, n)| name_matches(n, &[needle.as_str()])).cloned().collect();
+            let hits: Vec<_> = list.iter().filter(|d| name_matches(&d.name, &[needle.as_str()])).collect();
             match hits.len() {
-                1 => Ok(hits.into_iter().next().unwrap()),
+                1 => Ok((hits[0].index, None)),
                 0 => Err(SdkError::NoMatch(format!("no video device named {needle:?} — have: {}", have()))),
-                _ => Err(SdkError::MultipleMatches(format!(
-                    "{} video devices match {needle:?} — unplug the others or pass DeviceSelector::Index",
-                    hits.len()
+                n => Err(SdkError::MultipleMatches(format!(
+                    "{n} video devices match {needle:?} — unplug the others, pass DeviceSelector::Index, or pick one \
+                     by USB location with DeviceSelector::UsbLocation (the port it is plugged into, not a serial \
+                     number): [{}]",
+                    hits.iter()
+                        .map(|d| d.usb_location.as_deref().map_or("None".into(), repr))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ))),
             }
+        }
+        DeviceSelector::UsbLocation { name, usb_location } => {
+            let d = pick_by_usb_location(name, usb_location, list)?;
+            Ok((d.index, d.usb_location))
         }
         DeviceSelector::Path(p) => Err(SdkError::InvalidValue(format!(
             "DeviceSelector::Path({p:?}) is for Linux; use Name or Index on Windows"
         ))),
+    }
+}
+
+/// The DirectShow device the controls use: at the USB location the camera was opened at, otherwise by name.
+fn controls_device(name: &str, usb_location: Option<&str>, dshow: &[DeviceInfo]) -> Result<DeviceInfo> {
+    match usb_location {
+        Some(l) => pick_by_usb_location(name, l, dshow),
+        None => pick_by_name(name, dshow),
     }
 }
 
@@ -164,15 +191,12 @@ impl Capture for MfCapture {
         }
     }
 
-    /// Controls use the existing DirectShow backend — the MF list order can differ from DirectShow's, so the camera is found again by name.
-    /// Enumerates DirectShow directly (no ffmpeg child process). Two or more with the same name give `MultipleMatches`.
+    /// Controls use the existing DirectShow backend — the MF list order can differ from DirectShow's, so the camera is found again by name
+    /// (and by USB location when it was opened by one). Enumerates DirectShow directly (no ffmpeg child process). Two or more with the
+    /// same name, opened by name, give `MultipleMatches`.
     fn controls_backend(&self) -> Result<Box<dyn Backend>> {
-        let list: Vec<DeviceInfo> = crate::dshow::enumerate_video_devices()?
-            .into_iter()
-            .enumerate()
-            .map(|(index, name)| DeviceInfo { index, name: name.unwrap_or_default() })
-            .collect();
-        let info = pick_by_name(&self.name, &list)?;
+        let list = crate::devices::list_dshow_devices()?;
+        let info = controls_device(&self.name, self.usb_location.as_deref(), &list)?;
         Ok(Box::new(DShowBackend::new(info.index, &EXPECTED_NAMES)?))
     }
 }
@@ -186,5 +210,50 @@ mod tests {
         assert_eq!(subtype_name(&MFVideoFormat_MJPG), "MJPG");
         assert_eq!(subtype_name(&MFVideoFormat_YUY2), "YUY2");
         assert_eq!(subtype_name(&MFVideoFormat_RGB24), "00000014"); // D3DFMT_R8G8B8 = 20, 글자가 아니다
+    }
+
+    // ---- made-up device lists only: nothing is enumerated or opened ----------------------------------------
+    const LOC1: &str = "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)";
+    const LOC2: &str = "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)";
+
+    fn listed(v: &[(&str, Option<&str>)]) -> Vec<DeviceInfo> {
+        v.iter().enumerate().map(|(i, (n, l))| DeviceInfo::new(i, *n, l.map(str::to_string))).collect()
+    }
+
+    fn at(usb_location: &str) -> DeviceSelector {
+        DeviceSelector::UsbLocation { name: "WN Dual Camera".into(), usb_location: usb_location.into() }
+    }
+
+    #[test]
+    fn opening_by_usb_location_picks_that_entry_and_keeps_its_location() {
+        let mf = listed(&[("WN Dual Camera", Some(LOC2)), ("Example Webcam", None), ("WN Dual Camera", Some(LOC1))]);
+        assert_eq!(choose(&at(LOC1), &mf), Ok((2, Some(LOC1.to_string()))));
+        assert_eq!(choose(&at(&LOC2.to_lowercase()), &mf), Ok((0, Some(LOC2.to_string())))); // case does not matter
+        assert!(matches!(choose(&at("PCIROOT(0)#USB(9)"), &mf), Err(SdkError::NoMatch(_))));
+        assert!(matches!(choose(&at(" "), &mf), Err(SdkError::InvalidValue(_))));
+        // by name or index no location is kept: the controls look the camera up by name, as before
+        assert_eq!(choose(&DeviceSelector::Name("webcam".into()), &mf), Ok((1, None)));
+        assert_eq!(choose(&DeviceSelector::Index(2), &mf), Ok((2, None)));
+        assert!(matches!(choose(&DeviceSelector::Index(3), &mf), Err(SdkError::NoMatch(_))));
+        let Err(SdkError::MultipleMatches(m)) = choose(&DeviceSelector::Name("wn dual".into()), &mf) else { panic!() };
+        assert!(m.ends_with(&format!("number): ['{LOC2}', '{LOC1}']")), "{m}");
+    }
+
+    /// Media Foundation and DirectShow list the two cameras in a different order: the controls find, in DirectShow's
+    /// list, the camera at the location capture opened.
+    #[test]
+    fn the_controls_find_the_camera_at_the_location_it_was_opened_at() {
+        let mf = listed(&[("WN Dual Camera", Some(LOC2)), ("Example Webcam", None), ("WN Dual Camera", Some(LOC1))]);
+        let dshow = listed(&[("WN Dual Camera", Some(LOC1)), ("WN Dual Camera", Some(LOC2))]);
+        for (loc, mf_index, dshow_index) in [(LOC1, 2, 0), (LOC2, 0, 1)] {
+            let (i, kept) = choose(&at(loc), &mf).unwrap();
+            assert_eq!(i, mf_index);
+            assert_eq!(controls_device("WN Dual Camera", kept.as_deref(), &dshow).unwrap().index, dshow_index);
+        }
+        // opened by name or index: two of one name in DirectShow's list are refused, not guessed
+        assert!(matches!(controls_device("WN Dual Camera", None, &dshow), Err(SdkError::MultipleMatches(_))));
+        // the location is not in DirectShow's list (read differently there): NoMatch, never the other camera
+        let one = listed(&[("WN Dual Camera", Some(LOC1)), ("WN Dual Camera", None)]);
+        assert!(matches!(controls_device("WN Dual Camera", Some(LOC2), &one), Err(SdkError::NoMatch(_))));
     }
 }

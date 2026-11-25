@@ -13,6 +13,7 @@ use v4l::{Device as VDev, FourCC, Fraction};
 use crate::backend::Backend;
 use crate::capture::{Capture, SampleInfo};
 use crate::config::{DeviceConfig, DeviceSelector, NegotiatedMode};
+use crate::devices::{pick_by_usb_location, repr, v4l2_usb_location, DeviceInfo};
 use crate::dshow::name_matches;
 use crate::error::{Result, SdkError};
 
@@ -85,28 +86,46 @@ fn pick(cfg: &DeviceConfig) -> Result<(PathBuf, String)> {
     match &cfg.device {
         DeviceSelector::Path(p) => Ok((PathBuf::from(p), String::new())),
         DeviceSelector::Index(i) => Ok((PathBuf::from(format!("/dev/video{i}")), String::new())),
-        DeviceSelector::Name(needle) => {
-            let nodes = v4l::context::enum_devices()
+        DeviceSelector::Name(needle) => choose_named(needle, named_nodes(), capture_node, v4l2_usb_location),
+        DeviceSelector::UsbLocation { name, usb_location } => {
+            // The capture nodes with the name (in path order), each with its USB device's sysfs name.
+            let mut nodes = named_nodes();
+            nodes.sort();
+            let hits: Vec<(PathBuf, String)> =
+                nodes.into_iter().filter(|(p, n)| name_matches(n, &[name.as_str()]) && capture_node(p)).collect();
+            let list: Vec<DeviceInfo> = hits
                 .iter()
-                .map(|n| (n.path().to_path_buf(), n.name().unwrap_or_default()))
+                .enumerate()
+                .map(|(index, (p, n))| DeviceInfo { index, name: n.clone(), usb_location: v4l2_usb_location(p) })
                 .collect();
-            let capture_node = |p: &Path| -> bool {
-                VDev::with_path(p)
-                    .and_then(|d| d.query_caps())
-                    .map(|c| c.capabilities.contains(v4l::capability::Flags::VIDEO_CAPTURE))
-                    .unwrap_or(false)
-            };
-            choose_named(needle, nodes, capture_node)
+            let d = pick_by_usb_location(name, usb_location, &list)?;
+            Ok(hits[d.index].clone())
         }
     }
 }
 
+fn named_nodes() -> Vec<(PathBuf, String)> {
+    v4l::context::enum_devices()
+        .iter()
+        .map(|n| (n.path().to_path_buf(), n.name().unwrap_or_default()))
+        .collect()
+}
+
+fn capture_node(p: &Path) -> bool {
+    VDev::with_path(p)
+        .and_then(|d| d.query_caps())
+        .map(|c| c.capabilities.contains(v4l::capability::Flags::VIDEO_CAPTURE))
+        .unwrap_or(false)
+}
+
 /// Several nodes share a name (video and metadata), so only nodes whose name matches and that can capture video count (in path order).
-/// One gives that node, none gives `NoMatch`, more than one gives `MultipleMatches` — it does not open either of two identical cameras.
+/// One gives that node, none gives `NoMatch`, more than one gives `MultipleMatches` — it does not open either of two identical cameras;
+/// its message gives each node's USB location (`locate`, None when it cannot be read).
 fn choose_named(
     needle: &str,
     mut nodes: Vec<(PathBuf, String)>,
     is_capture: impl Fn(&Path) -> bool,
+    locate: impl Fn(&Path) -> Option<String>,
 ) -> Result<(PathBuf, String)> {
     nodes.sort();
     let mut hits: Vec<_> = nodes
@@ -114,21 +133,25 @@ fn choose_named(
         .filter(|(p, n)| name_matches(n, &[needle]) && is_capture(p))
         .cloned()
         .collect();
-    let list = |v: &[(PathBuf, String)], with_name: bool| {
-        v.iter()
-            .map(|(p, n)| if with_name { format!("{} {n}", p.display()) } else { p.display().to_string() })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
     match hits.len() {
         0 => Err(SdkError::NoMatch(format!(
             "no video capture node named {needle:?} — have: {}",
-            list(&nodes, true)
+            nodes.iter().map(|(p, n)| format!("{} {n}", p.display())).collect::<Vec<_>>().join(", ")
         ))),
         1 => Ok(hits.remove(0)),
         n => Err(SdkError::MultipleMatches(format!(
-            "{n} video capture nodes match {needle:?} ({}) — unplug the others or pass DeviceSelector::Path",
-            list(&hits, false)
+            "{n} video capture nodes match {needle:?} — they cannot be told apart by name (no USB serial number). \
+             Unplug the others, pass DeviceSelector::Path, or pick one by USB location with \
+             DeviceSelector::UsbLocation (the USB device's sysfs name, e.g. 1-4.2: the port it is plugged into, not \
+             a serial number): [{}]",
+            hits.iter()
+                .map(|(p, _)| format!(
+                    "({}, {})",
+                    repr(&p.display().to_string()),
+                    locate(p).map_or("None".into(), |l| repr(&l))
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
         ))),
     }
 }
@@ -176,10 +199,19 @@ mod tests {
         p == Path::new("/dev/video0") || p == Path::new("/dev/video2")
     }
 
+    /// A made-up sysfs: /dev/video0 and 1 on the USB device 1-2, /dev/video2 on 1-4.2, the rest not on USB.
+    fn located(p: &Path) -> Option<String> {
+        match p.to_str()? {
+            "/dev/video0" | "/dev/video1" => Some("1-2".into()),
+            "/dev/video2" => Some("1-4.2".into()),
+            _ => None,
+        }
+    }
+
     #[test]
     fn the_one_capture_node_with_the_name_is_chosen_over_its_metadata_node() {
         let have = nodes(&[("/dev/video1", "WN Dual Camera"), ("/dev/video0", "WN Dual Camera")]);
-        let got = choose_named("WN Dual Camera", have, video_0_and_2).unwrap();
+        let got = choose_named("WN Dual Camera", have, video_0_and_2, located).unwrap();
         assert_eq!(got, (PathBuf::from("/dev/video0"), "WN Dual Camera".to_string()));
     }
 
@@ -190,11 +222,21 @@ mod tests {
             ("/dev/video1", "WN Dual Camera"),
             ("/dev/video0", "WN Dual Camera"),
         ]);
-        let e = choose_named("WN Dual Camera", have, video_0_and_2).unwrap_err();
+        let e = choose_named("WN Dual Camera", have, video_0_and_2, located).unwrap_err();
         let SdkError::MultipleMatches(m) = &e else { panic!("{e:?}") };
-        assert!(m.starts_with("2 video capture nodes match"), "{m}");
-        assert!(m.contains("/dev/video0, /dev/video2"), "{m}");
-        assert!(m.contains("unplug the others or pass DeviceSelector::Path"), "{m}");
+        // each node with its USB location, as the Python find_v4l2_node lists them
+        assert_eq!(
+            m,
+            "2 video capture nodes match \"WN Dual Camera\" — they cannot be told apart by name (no USB serial \
+             number). Unplug the others, pass DeviceSelector::Path, or pick one by USB location with \
+             DeviceSelector::UsbLocation (the USB device's sysfs name, e.g. 1-4.2: the port it is plugged into, not \
+             a serial number): [('/dev/video0', '1-2'), ('/dev/video2', '1-4.2')]"
+        );
+        // a node whose USB location cannot be read shows None
+        let have = nodes(&[("/dev/video0", "WN Dual Camera"), ("/dev/video2", "WN Dual Camera")]);
+        let e = choose_named("WN Dual Camera", have, video_0_and_2, |_| None).unwrap_err();
+        let SdkError::MultipleMatches(m) = &e else { panic!("{e:?}") };
+        assert!(m.ends_with("[('/dev/video0', None), ('/dev/video2', None)]"), "{m}");
     }
 
     #[test]
@@ -208,7 +250,7 @@ mod tests {
     #[test]
     fn no_capture_node_with_the_name_lists_what_is_there() {
         let have = nodes(&[("/dev/video0", "USB webcam"), ("/dev/video1", "WN Dual Camera")]);
-        let e = choose_named("WN Dual Camera", have, video_0_and_2).unwrap_err();
+        let e = choose_named("WN Dual Camera", have, video_0_and_2, located).unwrap_err();
         let SdkError::NoMatch(m) = &e else { panic!("{e:?}") };
         assert!(m.contains("/dev/video0 USB webcam, /dev/video1 WN Dual Camera"), "{m}");
     }

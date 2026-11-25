@@ -78,6 +78,37 @@ def test_measure_fps_prints_the_driver_time_figures(monkeypatch, capsys):
     assert "host_ns - driver_ns, above its smallest value, ms: median 0.10  95th percentile 0.18  max 0.20" in out
 
 
+def test_measure_fps_prints_device_repeated_frames_beside_its_own_count(monkeypatch, capsys):
+    import importlib.util
+
+    from opticmix_vision import Device, DeviceConfig
+    from test_device import FakeCapture
+    spec = importlib.util.spec_from_file_location("measure_fps_example", EXAMPLES / "measure_fps.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    rng = np.random.default_rng(11)
+    frames = []
+    for i in range(7):                                        # read 0 untimed; 2 and 5 repeat both eyes, 3 the left
+        if i in (2, 5):
+            frames.append(frames[-1].copy())
+        elif i == 3:
+            frames.append(np.hstack([frames[-1][:, :4], rng.integers(0, 255, (4, 4), dtype=np.uint8)]))
+        else:
+            frames.append(rng.integers(0, 255, (4, 8), dtype=np.uint8))
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left")
+    monkeypatch.setattr(mod, "open_camera", lambda *_a, **_k: Device(cfg, capture=FakeCapture(frames)).open())
+    monkeypatch.setattr(sys, "argv", ["measure_fps.py", "--frames", "6"])
+    assert mod.main() == 0
+    out = capsys.readouterr().out
+    assert "frames identical to the previous one: left 3, right 2\n" in out
+    assert "frames identical in both eyes (Device.repeated_frames): 2\n" in out
+
+
+def test_measure_fps_prints_no_device_count_for_generated_frames(tmp_path):
+    out = run(tmp_path, "measure_fps.py", "--synthetic", "--frames", "5")
+    assert "frames identical to the previous one:" in out and "Device.repeated_frames" not in out
+
+
 def test_measure_fps_points_directshow_users_to_msmf(monkeypatch, capsys):
     import importlib.util
 
@@ -315,6 +346,20 @@ def test_record_video_writes_a_readable_file(tmp_path):
     assert r["frames"] == n and r["codec"] == "MJPG" and r["compressed"] is True
 
 
+def test_record_video_queue_frames_encodes_on_a_thread_and_its_last_line_counts_the_dropped_frames(tmp_path):
+    import re
+    out = run(tmp_path, "record_video.py", "--synthetic", "--seconds", "0.3", "--queue-frames", "8")
+    r = json.loads((tmp_path / "recording.json").read_text(encoding="utf-8"))["recording"]
+    assert r["write_queue"] == 8 and r["frames"] > 0 and r["closed"] is True
+    m = re.search(r"estimated missed (\d+) \(of which dropped by the write queue (\d+)\)", out)
+    assert m and (int(m[1]), int(m[2])) == (r["estimated_missed_frames"], r["dropped_frames"])
+    lines = (tmp_path / "recording.csv").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == r["frames"] + 1
+    r0 = subprocess.run([sys.executable, str(EXAMPLES / "record_video.py"), "--synthetic", "--queue-frames", "-1"],
+                        cwd=tmp_path, capture_output=True, text=True)
+    assert r0.returncode == 2 and "--queue-frames takes 0 or a number of frames" in r0.stderr
+
+
 def test_record_video_lossless_then_play_recording_with_seek_speed_and_loop(tmp_path):
     out = run(tmp_path, "record_video.py", "--synthetic", "--seconds", "0.3", "--lossless")
     assert "lossless" in out and (tmp_path / "recording_lossless.mkv").is_file()
@@ -385,17 +430,109 @@ def test_dataset_npz_then_torch_dataloader(tmp_path):
     assert "10 frames in 3 batches" in out
 
 
+USB_LOCATION_NOTE = ("A USB location is not a serial number: it names the port the camera is plugged into, and it "
+                     "changes when the camera is plugged into another port. Using two cameras at the same time is not "
+                     "supported. Picking a camera by USB location has been run without a camera only (made-up device "
+                     "lists); it has not been run with a camera, and not run with two cameras.")
+
+
 def test_list_devices_counts_two_weevia(tmp_path):
     out = run(tmp_path, "list_devices.py", "--synthetic")
     assert "3 video device(s) in the DirectShow list:" in out and "found: 2" in out and "cannot be told apart" in out
+    assert ("  [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)\n" in out
+            and 'DeviceConfig.weevia_s1(usb_location="<USB location>")' in out and f"\n{USB_LOCATION_NOTE}\n" in out)
     assert out.endswith("The Media Foundation list (--backend msmf) can be in a different order: an index goes only "
                         "with the backend whose list it came from.\n")
 
 
+def test_list_devices_shows_the_usb_location_windows_reports(monkeypatch, capsys):
+    # without --synthetic: a (fake) DirectShow list in which one device has no USB location — its line has none
+    import importlib.util
+
+    from opticmix_vision import devices
+    spec = importlib.util.spec_from_file_location("list_devices_example", EXAMPLES / "list_devices.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    def no_ffmpeg():
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
+    monkeypatch.setattr(devices, "_native_devices", lambda: [("WN Dual Camera", "PCIROOT(0)#USB(3)"),
+                                                             ("OBS Virtual Camera", None)])
+    monkeypatch.setattr(sys, "argv", ["list_devices.py"])
+    assert mod.main() == 0
+    assert capsys.readouterr().out.splitlines()[:3] == [
+        "2 video device(s) in the DirectShow list:",
+        "  [0] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#USB(3)",
+        "  [1] OBS Virtual Camera"]
+
+
+def test_open_by_usb_location_picks_one_of_two_made_up_weevia_and_reads_a_frame(tmp_path):
+    out = run(tmp_path, "open_by_usb_location.py", "--synthetic")
+    assert out.splitlines() == [
+        "Weevia S1 in the made-up list:",
+        "  [0] USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)",
+        "  [2] USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)",
+        "picked [2] at USB location PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)",
+        "negotiated: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}",
+        "one frame: left 320x200, right 320x200"]
+    out = run(tmp_path, "open_by_usb_location.py", "--synthetic", "--usb-location",
+              "pciroot(0)#pci(1400)#usbroot(0)#usb(1)")                  # case does not matter
+    assert "picked [0] at USB location" in out
+    # the webcam's location holds no Weevia S1: exit code 2, nothing opened
+    r = subprocess.run([sys.executable, str(EXAMPLES / "open_by_usb_location.py"), "--synthetic", "--usb-location",
+                        "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)"], cwd=tmp_path, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=120)
+    assert r.returncode == 2 and "negotiated" not in r.stdout
+    assert "No camera matches 'WN Dual Camera' at USB location" in r.stderr
+    # an empty --usb-location is an error, not "pick the last one"
+    r = subprocess.run([sys.executable, str(EXAMPLES / "open_by_usb_location.py"), "--synthetic", "--usb-location", ""],
+                       cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    assert r.returncode == 2 and "negotiated" not in r.stdout
+    assert "error: usb_location is empty" in r.stderr
+
+
+def test_open_by_usb_location_opens_the_camera_at_that_location(monkeypatch, capsys):
+    # without --synthetic: two (fake) Weevia S1 in the DirectShow list; the Device is opened at the second one's index
+    import importlib.util
+
+    from opticmix_vision import devices
+    from opticmix_vision.synthetic import SyntheticStereoSource
+    spec = importlib.util.spec_from_file_location("open_by_usb_location_example", EXAMPLES / "open_by_usb_location.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    def no_ffmpeg():
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
+    monkeypatch.setattr(devices, "_native_devices", lambda: [("WN Dual Camera", "PCIROOT(0)#USB(1)"),
+                                                             ("WN Dual Camera", "PCIROOT(0)#USB(2)")])
+    opened = []
+
+    class FakeDevice:
+        def __init__(self, cfg):
+            opened.append(cfg)
+
+        def open(self):
+            return SyntheticStereoSource()
+    monkeypatch.setattr(mod, "Device", FakeDevice)
+    monkeypatch.setattr(sys, "argv", ["open_by_usb_location.py", "--usb-location", "PCIROOT(0)#USB(2)"])
+    assert mod.main() == 0
+    assert [c.device for c in opened] == [1]
+    out = capsys.readouterr().out.splitlines()
+    assert out[:3] == ["Weevia S1 in the DirectShow list:", "  [0] USB location: PCIROOT(0)#USB(1)",
+                       "  [1] USB location: PCIROOT(0)#USB(2)"]
+    assert out[-1] == "one frame: left 320x200, right 320x200"
+
+
 def test_list_devices_synthetic_msmf_is_the_same_devices_in_another_order(tmp_path):
     out = run(tmp_path, "list_devices.py", "--synthetic", "--backend", "msmf")
-    assert out.splitlines()[:4] == ["3 video device(s) in the Media Foundation list:", "  [0] Example Laptop Webcam",
-                                    "  [1] WN Dual Camera   <- Weevia S1", "  [2] WN Dual Camera   <- Weevia S1"]
+    assert out.splitlines()[:4] == [
+        "3 video device(s) in the Media Foundation list:",
+        "  [0] Example Laptop Webcam   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)",
+        "  [1] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)",
+        "  [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)"]
     assert out.endswith("The DirectShow list (--backend dshow) can be in a different order: an index goes only with "
                         "the backend whose list it came from.\n")
 

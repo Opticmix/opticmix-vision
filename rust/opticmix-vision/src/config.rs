@@ -5,15 +5,25 @@ use crate::spec::WEEVIA_S1_NAME;
 use crate::stereo::{Layout, LrOrder};
 
 /// Which camera to open. An index changes when another camera is plugged in — the name is the default.
+///
+/// `#[non_exhaustive]`: variants may be added — match with a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceSelector {
     /// Part of the name (case-insensitive). `MultipleMatches` if two or more cameras have that name.
     Name(String),
-    /// Windows: Media Foundation enumeration order; Linux: `/dev/videoN`.
+    /// Windows: Media Foundation enumeration order (`cargo run --example list_devices -- --backend msmf`), which
+    /// can differ from DirectShow's; Linux: `/dev/videoN`.
     /// Check what was opened with `Device::device_name()`.
     Index(usize),
-    /// Linux `/dev/videoN`.
+    /// Linux `/dev/videoN`. A Device from `Device::open_recording` has the recording's path here.
     Path(String),
+    /// Part of the name (as `Name`) at one USB location (`DeviceInfo::usb_location`, as `cargo run --example
+    /// list_devices` prints it) — how to open one of two cameras that share a name. A USB location is not a serial
+    /// number: it names the port the camera is plugged into, and it changes when the camera is plugged into another
+    /// port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run
+    /// without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+    UsbLocation { name: String, usb_location: String },
 }
 
 /// Capture backend choice. Choosing one this platform does not have makes `Device::open` fail.

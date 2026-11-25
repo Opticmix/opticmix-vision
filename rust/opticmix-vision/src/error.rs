@@ -5,8 +5,12 @@ use std::fmt;
 
 /// Exceptions as seen from Python: Unavailable·Closed → ControlsUnavailable, State → ControlStateError,
 /// UnknownControl → KeyError, InvalidValue → ValueError, WrongType → TypeError, Backend → OSError,
-/// NoMatch / MultipleMatches → devices.NoMatch / MultipleMatches.
+/// NoMatch / MultipleMatches → devices.NoMatch / MultipleMatches, Calibration → calibration.CalibrationError,
+/// CalibLookup → calib.CalibLookupError, Recording → OSError, EndOfRecording → device.EndOfRecording.
+///
+/// `#[non_exhaustive]`: variants may be added — match with a wildcard arm.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SdkError {
     /// The control path cannot be opened — backend connection failure, or a different device.
     Unavailable(String),
@@ -35,6 +39,16 @@ pub enum SdkError {
     },
     /// Camera open, read or decode failure (Python `DeviceError`). Never returns an empty frame silently.
     Device(String),
+    /// A calibration file that breaks the schema or the geometry checks, or cannot be read (Python `CalibrationError`).
+    Calibration(String),
+    /// No usable calibration — none installed, several installed, or the eye size does not match the mode; the
+    /// message says what to do (Python `CalibLookupError`).
+    CalibLookup(String),
+    /// A recording's files (`recording`) cannot be written or read: a file that exists already, an AVI this crate
+    /// cannot play, a CSV row that is not a frame time, a write that failed (Python `OSError`).
+    Recording(String),
+    /// `Device::read` reached the end of a recording (`Device::open_recording`) (Python `EndOfRecording`).
+    EndOfRecording(String),
 }
 
 pub type Result<T> = std::result::Result<T, SdkError>;
@@ -65,7 +79,11 @@ impl fmt::Display for SdkError {
             | SdkError::NoMatch(m)
             | SdkError::MultipleMatches(m)
             | SdkError::Foreign { message: m, .. }
-            | SdkError::Device(m) => f.write_str(m),
+            | SdkError::Device(m)
+            | SdkError::Calibration(m)
+            | SdkError::CalibLookup(m)
+            | SdkError::Recording(m)
+            | SdkError::EndOfRecording(m) => f.write_str(m),
         }
     }
 }
@@ -86,6 +104,10 @@ impl SdkError {
             SdkError::MultipleMatches(_) => "MultipleMatches",
             SdkError::Foreign { type_name, .. } => type_name,
             SdkError::Device(_) => "DeviceError",
+            SdkError::Calibration(_) => "CalibrationError",
+            SdkError::CalibLookup(_) => "CalibLookupError",
+            SdkError::Recording(_) => "OSError",
+            SdkError::EndOfRecording(_) => "EndOfRecording",
         }
     }
 }
@@ -156,6 +178,10 @@ mod tests {
             SdkError::NoMatch("n".into()),
             SdkError::MultipleMatches("m".into()),
             SdkError::Device("d".into()),
+            SdkError::Calibration("c".into()),
+            SdkError::CalibLookup("l".into()),
+            SdkError::Recording("r".into()),
+            SdkError::EndOfRecording("e".into()),
         ] {
             assert_eq!(e.to_string().len(), 1, "{e:?}");
         }

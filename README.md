@@ -15,7 +15,7 @@ pip install opticmix-vision
 
 This installs a wheel that carries a compiled extension, so nothing has to be
 built. The same file is attached to the GitHub release
-[v0.0.5](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.5).
+[v0.0.6](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.6).
 On Windows, verified on Windows 11 only. There is no wheel for macOS, and macOS
 has not been run.
 
@@ -39,7 +39,7 @@ pip install "git+https://github.com/Opticmix/opticmix-vision#subdirectory=python
 | Folder | What it holds |
 |---|---|
 | [`python/`](python/) | the `opticmix_vision` package, its tests and examples. Start with [python/README.md](python/README.md) |
-| [`rust/`](rust/) | `opticmix-vision`, the Rust crate behind camera controls and device listing, `opticmix-geom`, the calibration-file checks, and the extension that exposes them to Python as `opticmix_vision._core`. `opticmix-vision` can also be used from Rust as a preview that has not yet been verified against the camera — see [its README](rust/opticmix-vision/README.md) |
+| [`rust/`](rust/) | `opticmix-vision`, the Rust crate behind camera controls and device listing, `opticmix-geom`, the calibration-file checks, and the extension that exposes them to Python as `opticmix_vision._core`. `opticmix-vision` can also be used from Rust (camera, controls, the installed calibration file) as a preview that has not yet been verified against the camera — see [its README](rust/opticmix-vision/README.md) |
 | [`ros2/`](ros2/) | weevia_ros — experimental ROS 2 package, not a supported feature; see [ros2/README.md](ros2/README.md) |
 
 What changed between releases: [python/CHANGELOG.md](python/CHANGELOG.md). We aim to release about once a month.

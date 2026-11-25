@@ -103,6 +103,12 @@ pub trait Capture: Send {
     }
     /// Control backend for the same camera. `SdkError::Unavailable` if there is none.
     fn controls_backend(&self) -> Result<Box<dyn Backend>>;
+    /// The recording this backend plays, so `Device` can take the recorded times and `Device::playback` can
+    /// seek: `Some` only for `recording::Playback` (`Device::open_recording`). Your own backend keeps the
+    /// default, `None`.
+    fn playback(&mut self) -> Option<&mut crate::recording::Playback> {
+        None
+    }
 }
 
 /// Opens this platform's capture backend for `cfg.api` (Windows = Media Foundation, Linux = V4L2).

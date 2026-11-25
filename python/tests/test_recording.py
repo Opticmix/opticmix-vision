@@ -779,6 +779,52 @@ def test_a_top_bottom_camera_is_recorded_at_its_eye_size_from_the_start(tmp_path
     assert np.array_equal(g.left, frames[0].left) and np.array_equal(g.right, frames[0].right)
 
 
+class _FailingWriter:
+    """Stands in for the opencv-python 4.12/4.13 FFV1 encoder failing on a frame (seen now and then on one PC)."""
+
+    def __init__(self, real):
+        self.real = real
+
+    def write(self, img):
+        import cv2
+        raise cv2.error("Unknown C++ exception from OpenCV code")
+
+    def release(self):
+        self.real.release()
+
+
+@pytest.mark.parametrize("version, says_upgrade", [("4.13.0", True), ("4.12.0", True), ("4.14.0", False),
+                                                   ("5.1.0", False)])
+def test_an_ffv1_write_failure_with_opencv_before_4_14_says_to_upgrade(tmp_path, monkeypatch, version, says_upgrade):
+    import cv2
+    monkeypatch.setattr(cv2, "__version__", version)
+    src = SyntheticStereoSource(eye_size=(32, 16), fps=1000.0)
+    path = tmp_path / "r.mkv"
+    with pytest.raises(Exception) as e:
+        with Recorder(path, src, codec=LOSSLESS_CODEC) as rec:
+            first = src.read()
+            rec.write(first)
+            rec._writer = _FailingWriter(rec._writer)
+            rec.write(src.read())
+    assert ("pip install -U opencv-python" in str(e.value)) is says_upgrade
+    assert isinstance(e.value if not says_upgrade else e.value.__cause__, cv2.error)
+    r = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["recording"]
+    assert r["frames"] == 1 and r["closed"]                          # the frame before is kept, the file closed
+    with Device(DeviceConfig.recording(path)) as cam:
+        assert np.array_equal(cam.read().left, first.left)
+
+
+def test_an_mjpg_write_failure_is_not_blamed_on_the_opencv_version(tmp_path, monkeypatch):
+    import cv2
+    monkeypatch.setattr(cv2, "__version__", "4.13.0")
+    src = SyntheticStereoSource(eye_size=(32, 16), fps=1000.0)
+    with pytest.raises(cv2.error):
+        with Recorder(tmp_path / "r.avi", src) as rec:
+            rec.write(src.read())
+            rec._writer = _FailingWriter(rec._writer)
+            rec.write(src.read())
+
+
 def test_recording_again_to_the_same_path_with_no_frame_keeps_the_old_recording(tmp_path):
     src = SyntheticStereoSource(eye_size=(32, 16), fps=1000.0)
     path = tmp_path / "recording.avi"
@@ -910,3 +956,302 @@ def test_after_a_process_stopped_over_a_recording_the_message_gets_the_earlier_o
         q.rename(q.with_name(q.name[: -len(".replaced")]))
     with Device(DeviceConfig.recording(path)) as cam:
         assert cam.playback.frame_count == 5
+
+
+# ---------------------------------------------------------------- writing on a thread (queue_frames)
+
+_PERIOD = 11_111_111                                                  # ns: 90 fps
+
+
+def _f(i: int) -> StereoFrame:
+    """Frame i of a 90 fps stream: both eyes filled with i, host_ns i periods in."""
+    eye = np.full((4, 4), i, np.uint8)
+    return StereoFrame(left=eye, right=eye.copy(), host_ns=10**9 + i * _PERIOD, index=i)
+
+
+def _until(cond, timeout: float = 10.0) -> None:
+    import time
+    end = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < end, "timed out"
+        time.sleep(0.005)
+
+
+def _rows(path: Path) -> list[tuple[int, int]]:
+    with open(path.with_suffix(".csv"), newline="", encoding="utf-8") as fh:
+        return [(int(r["frame"]), int(r["host_ns"])) for r in csv.DictReader(fh)]
+
+
+@pytest.fixture
+def slow_encoder(monkeypatch):
+    """cv2.VideoWriter replaced by a slow encoder: each write waits until `gate` is set, then `delay` seconds; the
+    n-th write raises OSError (disk full) when n == `fail_at`. `got`: the frames written, in order (the value each
+    is filled with); `threads`: the threads they were written on. Encodes nothing."""
+    import threading
+    import time
+    from types import SimpleNamespace
+    import cv2
+    enc = SimpleNamespace(gate=threading.Event(), entered=threading.Event(), got=[], threads=set(),
+                          fail_at=None, delay=0.0, calls=0)
+
+    class Writer:
+        def __init__(self, path, fourcc, fps, size, isColor=True):
+            Path(path).write_bytes(b"")
+
+        def isOpened(self):
+            return True
+
+        def write(self, img):
+            enc.entered.set()
+            assert enc.gate.wait(10), "the test never let the encoder go on"
+            time.sleep(enc.delay)
+            enc.threads.add(threading.current_thread().name)
+            enc.calls += 1
+            if enc.calls == enc.fail_at:
+                raise OSError(28, "No space left on device")
+            enc.got.append(int(img[0, 0]))
+
+        def release(self):
+            pass
+    monkeypatch.setattr(cv2, "VideoWriter", Writer)
+    return enc
+
+
+def _src() -> SyntheticStereoSource:
+    return SyntheticStereoSource(eye_size=(4, 4), fps=90.0)
+
+
+def _json(rec: Recorder) -> dict:
+    return json.loads(rec.info_path.read_text(encoding="utf-8"))["recording"]
+
+
+def test_a_write_queue_that_fills_up_drops_nothing_and_close_writes_what_is_queued(tmp_path, slow_encoder):
+    rec = Recorder(tmp_path / "q.avi", _src(), queue_frames=3)
+    rec.write(_f(0))
+    assert slow_encoder.entered.wait(10)                             # the writing thread holds frame 0
+    for i in (1, 2, 3):                                              # three more fill the queue: nothing dropped
+        rec.write(_f(i))
+    assert (rec.frames, rec.dropped_frames) == (0, 0)                # write() did not wait for the encoder
+    slow_encoder.delay = 0.02
+    slow_encoder.gate.set()
+    rec.close()                                                      # waits until the queued frames are written
+    assert slow_encoder.got == [0, 1, 2, 3] and rec.frames == 4
+    assert slow_encoder.threads == {"Recorder q.avi"}                # not the caller's thread
+    assert _rows(rec.path) == [(i, _f(i).host_ns) for i in range(4)]
+    r = _json(rec)
+    assert (r["frames"], r["dropped_frames"], r["write_queue"], r["closed"]) == (4, 0, 3, True)
+    assert (r["late_frames"], r["estimated_missed_frames"]) == (0, 0)
+
+
+def test_frames_that_find_the_queue_full_are_dropped_and_counted_and_frame_numbers_are_the_files(tmp_path,
+                                                                                                slow_encoder):
+    rec = Recorder(tmp_path / "q.avi", _src(), queue_frames=3)
+    rec.write(_f(0))
+    assert slow_encoder.entered.wait(10)
+    rec.write(_f(1))
+    rec.write(_f(2))
+    rec.note_control("gain", 40, "pending")                          # before the frame written next: file frame 3
+    for i in (3, 4, 5):                                              # 3 fills the queue; 4 and 5 are dropped
+        rec.write(_f(i))
+    assert rec.dropped_frames == 2
+    rec.note_control("gain", 48)                                     # the next frame recorded is file frame 4
+    slow_encoder.gate.set()
+    _until(lambda: rec.frames == 4)
+    rec.write(_f(6))
+    rec.close()
+    assert slow_encoder.got == [0, 1, 2, 3, 6]
+    assert _rows(rec.path) == [(n, _f(i).host_ns) for n, i in enumerate([0, 1, 2, 3, 6])]
+    r = _json(rec)
+    assert (r["frames"], r["dropped_frames"], r["write_queue"]) == (5, 2, 3)
+    assert [(c["frame"], c["value"]) for c in r["control_changes"]] == [(3, 40), (4, 48)]
+    # the dropped frames leave a gap in the recorded times, so the missed estimate counts them as well
+    assert (r["late_frames"], r["estimated_missed_frames"]) == (1, 2)
+
+
+def test_a_break_still_goes_with_the_next_frame_recorded_when_the_first_one_after_it_is_dropped(tmp_path,
+                                                                                                 slow_encoder):
+    rec = Recorder(tmp_path / "q.avi", _src(), queue_frames=1)
+    rec.write(_f(0))
+    assert slow_encoder.entered.wait(10)
+    rec.write(_f(1))                                                 # the queue is full
+    rec.pause()
+    rec.write(_f(2))                                                 # paused: not recorded, not dropped
+    rec.resume()
+    rec.write(_f(3))                                                 # dropped
+    slow_encoder.gate.set()
+    _until(lambda: rec.frames == 2)
+    rec.write(_f(4))
+    rec.close()
+    assert slow_encoder.got == [0, 1, 4]
+    r = _json(rec)
+    assert (r["breaks"], r["dropped_frames"], r["frames"]) == ([2], 1, 3)
+
+
+def test_an_error_on_the_writing_thread_is_raised_by_every_later_write_and_the_files_still_close(tmp_path,
+                                                                                                  slow_encoder):
+    slow_encoder.gate.set()
+    slow_encoder.fail_at = 2                                         # the disk fills up on the second frame
+    rec = Recorder(tmp_path / "q.avi", _src(), queue_frames=4)
+    rec.write(_f(0))
+    rec.write(_f(1))
+    _until(lambda: rec.dropped_frames == 1)                          # frame 1 is not in the file
+    for i in (2, 3):                                                 # each later write raises it, records nothing
+        with pytest.raises(OSError, match="No space left on device"):
+            rec.write(_f(i))
+    rec.close()                                                      # raised already: close() only closes
+    r = _json(rec)
+    assert (r["frames"], r["dropped_frames"], r["closed"]) == (1, 1, True)
+    assert slow_encoder.got == [0] and _rows(rec.path) == [(0, _f(0).host_ns)]
+
+
+def test_close_raises_the_error_of_the_writing_thread_when_no_write_did(tmp_path, slow_encoder):
+    slow_encoder.gate.set()
+    slow_encoder.fail_at = 1
+    rec = Recorder(tmp_path / "q.avi", _src(), queue_frames=4)
+    rec.write(_f(0))
+    with pytest.raises(OSError, match="No space left on device"):
+        rec.close()
+    rec.close()                                                      # once only
+    assert rec.dropped_frames == 1 and list(tmp_path.iterdir()) == []   # no frame written: no files
+
+
+def test_without_a_queue_write_writes_on_the_callers_thread_before_it_returns(tmp_path, slow_encoder):
+    import threading
+    slow_encoder.gate.set()
+    rec = Recorder(tmp_path / "s.avi", _src())
+    rec.write(_f(0))
+    assert rec.frames == 1 and slow_encoder.threads == {threading.current_thread().name}
+    rec.close()
+    assert (_json(rec)["write_queue"], _json(rec)["dropped_frames"]) == (0, 0)
+    with pytest.raises(ValueError, match="queue_frames"):
+        Recorder(tmp_path / "n.avi", _src(), queue_frames=-1)
+    assert not (tmp_path / "n.avi").exists()
+
+
+def test_with_a_queue_an_earlier_recording_is_kept_until_a_frame_is_written(tmp_path):
+    path = tmp_path / "take.avi"
+    _five_frames(path)
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    Recorder(path, SyntheticStereoSource(eye_size=(32, 16), fps=1000.0), queue_frames=4).close()
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
+    src = SyntheticStereoSource(eye_size=(32, 16), fps=1000.0)
+    with Recorder(path, src, queue_frames=4) as rec:
+        for _ in range(3):
+            rec.write(src.read())
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["take.avi", "take.csv", "take.json"]
+    with Device(DeviceConfig.recording(path)) as cam:
+        assert cam.playback.frame_count == 3
+
+
+def test_capture_info_says_where_the_control_values_came_from_and_when_they_were_read(tmp_path):
+    from datetime import timedelta
+    from types import SimpleNamespace
+    src = SyntheticStereoSource(eye_size=(32, 16))
+    t0 = datetime.now().astimezone()
+    info = capture_info(src)
+    read = datetime.fromisoformat(info["controls_read_at"])
+    assert info["controls_source"] == "simulated" and read.tzinfo is not None
+    assert t0 - timedelta(seconds=1) <= read <= datetime.now().astimezone()
+    cam = SimpleNamespace(controls=src.controls)                   # a source other than the synthetic one
+    assert capture_info(cam)["controls_source"] == "camera"
+    at = "2026-11-24T10:00:00.000+09:00"
+    given = capture_info(src, controls={"gain": 1}, controls_read_at=at)
+    assert (given["controls_source"], given["controls_read_at"]) == ("given", at)
+    assert capture_info(src, controls={"gain": 1})["controls_read_at"] is None
+    path, _, _ = _record(tmp_path, 3)
+    with Device(DeviceConfig.recording(path)) as rec:              # no controls: null, the reason in the note
+        none = capture_info(rec)
+    assert (none["controls"], none["controls_source"], none["controls_read_at"]) == (None, None, None)
+    r = Recorder(tmp_path / "g.avi", src, controls=lambda: {"gain": 1}, controls_read_at=at)
+    r.write(src.read())
+    r.close()
+    assert (r.info["controls_source"], r.info["controls_read_at"]) == ("given", at)
+    assert r.info["recording"]["controls_at_end_source"] == "given"
+    read_here = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["recording"]
+    assert read_here["controls_at_end_source"] == "simulated"      # _record gives no values: read at the end
+
+
+@pytest.mark.parametrize("queue_frames", [0, 4])
+def test_write_after_close_says_the_recorder_is_closed(tmp_path, queue_frames):
+    """Before: with a queue, frames written after close() were taken quietly; without one, AttributeError."""
+    src = SyntheticStereoSource(eye_size=(32, 16), fps=1000.0)
+    rec = Recorder(tmp_path / "c.avi", src, queue_frames=queue_frames)
+    rec.write(src.read())
+    rec.close()
+    with pytest.raises(ValueError, match="recorder is closed"):
+        rec.write(src.read())
+    assert rec.frames == 1 and rec.dropped_frames == 0
+    rec.close()                                                      # still fine to call again
+
+
+# ---------------------------------------------------------------- the Rust crate's recordings
+
+_FIXTURES = Path(__file__).resolve().parent / "data" / "recordings"
+
+
+def _fixture_frame(i: int) -> tuple[int, int, int, int | None, str | None]:
+    """The frames in data/recordings (make_python_mjpg.py; the Rust crate's recording.rs test frame(i)): left eye
+    40 + 20 i with a 250 block in its top-left 8x8, right eye 200 - 20 i, 32x16 each; 90 fps host times;
+    Media Foundation driver times except the last frame. Returns (left, right, host_ns, driver_ns, driver_clock)."""
+    d = 5_000_000_000 + i * 11_111_100 if i < 5 else None
+    return 40 + 20 * i, 200 - 20 * i, 1_000_000_000 + i * 11_111_111, d, "media_foundation" if d else None
+
+
+def test_the_python_fixture_is_what_the_recorder_writes_now(tmp_path):
+    """python_mjpg.* is read by the Rust crate's test (a_recording_the_python_package_wrote_plays_here): the Recorder
+    of today must still write its CSV byte for byte and the same `recording` fields in its JSON, or the fixture
+    stands for a format Python no longer writes. The .avi depends on the OpenCV build, so it is not compared.
+    To write the fixture again: python sdk/python/tests/data/recordings/make_python_mjpg.py"""
+    path = tmp_path / "python_mjpg.avi"
+    with Recorder(path, SyntheticStereoSource(eye_size=(32, 16), fps=90.0)) as rec:
+        for i in range(6):
+            left_v, right_v, host_ns, driver_ns, clock = _fixture_frame(i)
+            left = np.full((16, 32), left_v, np.uint8)
+            left[:8, :8] = 250
+            right = np.full((16, 32), right_v, np.uint8)
+            rec.write(StereoFrame(left=left, right=right, host_ns=host_ns, index=i, driver_ns=driver_ns,
+                                  driver_clock=clock))
+    assert path.with_suffix(".csv").read_bytes() == (_FIXTURES / "python_mjpg.csv").read_bytes()
+    now = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))["recording"]
+    kept = json.loads((_FIXTURES / "python_mjpg.json").read_text(encoding="utf-8"))["recording"]
+    assert sorted(now) == sorted(kept)
+
+
+def test_a_recording_the_rust_crate_wrote_plays_back_with_its_times_and_eyes():
+    """rust_mjpg.* is what the Rust crate's Recorder writes (its test the_rust_fixture_the_python_tests_read_is_what_
+    the_recorder_writes checks that); here it plays through Device like a Python recording."""
+    path = _FIXTURES / "rust_mjpg.avi"
+    with Device(DeviceConfig.recording(path)) as cam:
+        info = cam.recording_info
+        assert info["writer"] == "Rust crate opticmix-vision" and info["recording"]["closed"] is True
+        assert (info["recording"]["layout"], info["recording"]["lr_order"]) == ("sbs", "first_is_left")
+        assert (cam.mode.width, cam.mode.height, cam.mode.fps, cam.mode.fourcc) == (64, 16, 90.0, "MJPG")
+        assert cam.playback.frame_count == 6
+        cam.playback.recorded_time = True
+        for i in range(6):
+            left, right, host_ns, driver_ns, clock = _fixture_frame(i)
+            f = cam.read()
+            assert (f.index, f.host_ns, f.driver_ns, f.driver_clock) == (i, host_ns, driver_ns, clock)
+            assert f.left.shape == f.right.shape == (16, 32)
+            assert np.abs(f.left[:8, :8].astype(int) - 250).max() <= 6          # the marker: the left eye, unmirrored
+            assert np.abs(f.left[8:, 24:].astype(int) - left).max() <= 3
+            assert np.abs(f.right[:8, :8].astype(int) - right).max() <= 3
+        with pytest.raises(EndOfRecording):
+            cam.read()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Media Foundation is Windows' decoder")
+@pytest.mark.parametrize("name", ["rust_mjpg.avi", "python_mjpg.avi"])
+def test_windows_own_decoder_shows_the_picture_of_either_recording(name):
+    """Media Foundation (OpenCV's MSMF, and Windows' video player) decoded one-component (gray) JPEG frames to zeros;
+    a recording must show its picture there too, even if the values shift (they do for the Python file)."""
+    import cv2
+    cap = cv2.VideoCapture(str(_FIXTURES / name), cv2.CAP_MSMF)
+    if not cap.isOpened():
+        pytest.skip("OpenCV without its Media Foundation backend")
+    ok, img = cap.read()
+    cap.release()
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(int)
+    assert ok and g.shape == (16, 64)
+    marker, left, right = g[:8, :8].mean(), g[8:, 24:32].mean(), g[:8, 32:40].mean()   # frame 0: 250, 40, 200
+    assert marker > 200 and left < 80 and right > 150, (marker, left, right)

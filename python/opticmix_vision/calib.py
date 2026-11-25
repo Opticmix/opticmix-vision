@@ -6,12 +6,15 @@ whether a file fits the camera in front of it, and compares several files when m
 
     python -m opticmix_vision.calib add D:/S1-0042.json   # install the file for your camera
     python -m opticmix_vision.calib list                  # what is installed, and where
+    python -m opticmix_vision.calib show                  # what the installed file holds (--json for a program)
     python -m opticmix_vision.calib check                 # does the installed file fit the connected camera?
     python -m opticmix_vision.calib check --all           # which installed file fits it best?
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import sys
@@ -21,9 +24,10 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 
-from .calibration import StereoCalibration, StereoExtrinsics, load_calibration, synthetic_equidistant
+from .calibration import (CONVENTION, SCHEMA_NAME, SCHEMA_VERSION, StereoCalibration, StereoExtrinsics,
+                          load_calibration, synthetic_equidistant)
 
-__all__ = ["CalibLookupError", "parse_label", "store_dir", "add", "installed", "resolve",
+__all__ = ["CalibLookupError", "parse_label", "store_dir", "add", "installed", "resolve", "show",
            "CheckResult", "check", "check_pairs", "compare_pairs", "read_pairs", "load_pairs",
            "MIN_PAIRS", "MIN_POINTS", "main"]
 
@@ -91,6 +95,116 @@ def resolve() -> StereoCalibration:
                                f"the camera you use: delete the others from {store_dir()}. To see which one fits the "
                                "connected camera: python -m opticmix_vision.calib check --all")
     return load_calibration(store_dir() / f"{have[0]}.json")
+
+
+# ---------------------------------------------------------------------------
+# show: what a file holds
+# ---------------------------------------------------------------------------
+
+_SHOW_FILE = "python -m opticmix_vision.calib show <file.json>"
+_NOTE = {"installed": "installed file, not matched to this camera (no USB serial)",
+         "file": "file not installed, not matched to this camera (no USB serial)",
+         "generated": "generated calibration (--synthetic): made-up values, not a file and not a camera"}
+
+
+def show(target: str | None = None) -> dict[str, Any]:
+    """What a calibration file holds, as plain values: `calib show` prints them, `calib show --json` this dict.
+
+    `target`: None for the installed file (exactly one installed), an installed file's serial `S1-NNNN` (or the
+    label `S1-NNNN-XXXX`), or a file's path. Reads the file only; the camera reports no USB serial number, so the
+    file is not matched to a camera."""
+    have = installed()
+    if target is not None and Path(target).is_file():
+        path = Path(target)
+    elif target is not None:
+        key = target.strip().upper()
+        serial = parse_label(key)[0] if LABEL_RE.match(key) else key
+        if not SERIAL_RE.match(serial):
+            raise CalibLookupError(f"No such file: {target}. Name a calibration file, or the serial of an installed "
+                                   f"one (S1-NNNN; installed: {', '.join(have) or 'none'}).")
+        if serial not in have:
+            raise CalibLookupError(f"{serial} is not installed (installed: {', '.join(have) or 'none'}). Install its "
+                                   f"file: python -m opticmix_vision.calib add <file.json> — or show a file without "
+                                   f"installing it: {_SHOW_FILE}")
+        path = store_dir() / f"{serial}.json"
+    elif not have:
+        raise CalibLookupError("No calibration installed. Install the file for your camera: python -m "
+                               f"opticmix_vision.calib add <file.json> — or show a file without installing it: {_SHOW_FILE}")
+    elif len(have) > 1:
+        raise CalibLookupError(f"{len(have)} calibrations installed ({', '.join(have)}). Name the one to show: "
+                               f"python -m opticmix_vision.calib show {have[0]}. Device.calibration uses a file only "
+                               f"when exactly one is installed: keep only the file for the camera you use (delete the "
+                               f"others from {store_dir()}); python -m opticmix_vision.calib check --all shows which "
+                               "one fits the connected camera.")
+    else:
+        path = store_dir() / f"{have[0]}.json"
+    data = path.read_bytes()
+    c = StereoCalibration.from_json(data.decode("utf-8"))
+    is_installed = path.stem in have and path.resolve().parent == store_dir().resolve()
+    if not is_installed:
+        use = f"no: not installed (python -m opticmix_vision.calib add {path} installs it)"
+    elif len(have) == 1:
+        use = "yes: the only installed file"
+    else:
+        use = f"no: {len(have)} files are installed, and it needs exactly one"
+    return _describe(c, "installed" if is_installed else "file", str(path), hashlib.sha256(data).hexdigest(),
+                     is_installed and len(have) == 1, use)
+
+
+def _describe(c: StereoCalibration, source: str, path: str | None, sha256: str | None, used: bool,
+              use: str) -> dict[str, Any]:
+    import cv2
+
+    def eye(e: Any) -> dict[str, Any]:
+        w, h = e.size
+        return {"model": e.model, "size": [w, h], "mode": [2 * w, h], "fx": e.fx, "fy": e.fy, "cx": e.cx,
+                "cy": e.cy, "K": e.K.tolist(), "D": e.D.tolist()}
+
+    R = c.extrinsics.R
+    rvec = cv2.Rodrigues(R)[0].reshape(3)
+    angle = float(np.linalg.norm(rvec))
+    return {"source": source, "path": path, "sha256": sha256, "matched_to_camera": False, "note": _NOTE[source],
+            "used_by_device_calibration": used, "use": use,
+            "schema": SCHEMA_NAME, "schema_version": SCHEMA_VERSION, "units": c.units, "device": dict(c.device),
+            "left": eye(c.left), "right": eye(c.right),
+            "extrinsics": {"convention": CONVENTION, "R": R.tolist(), "t": c.extrinsics.t.tolist(),
+                           "baseline_mm": c.baseline_mm, "rvec_rad": rvec.tolist(),
+                           "rvec_deg": np.degrees(rvec).tolist(), "rotation_deg": float(np.degrees(angle)),
+                           "rotation_axis": (rvec / angle).tolist() if angle > 0 else None},
+            "meta": dict(c.meta)}
+
+
+def _show_text(d: Mapping[str, Any]) -> str:
+    def row(values: Iterable[float], fmt: str) -> str:
+        return "  ".join(format(v, fmt) for v in values)
+
+    dev = d["device"]
+    L = [f"calibration {dev.get('serial') or '-'}" + (f" ({dev['model']})" if dev.get("model") else "")]
+    if d["path"]:
+        L.append(f"file:     {d['path']}")
+    L.append(f"          {d['note']}")
+    if d["sha256"]:
+        L.append(f"sha256:   {d['sha256']}")
+    L.append(f"used by Device.calibration: {d['use']}")
+    L.append(f"schema:   {d['schema']} version {d['schema_version']}, units {d['units']}")
+    for side in ("left", "right"):
+        e = d[side]
+        L.append(f"{side + ':':<9} {e['model']}, eye size {e['size'][0]}x{e['size'][1]} "
+                 f"(the {e['mode'][0]}x{e['mode'][1]} mode)")
+        L.append(f"  fx {e['fx']:.4f}  fy {e['fy']:.4f}  cx {e['cx']:.4f}  cy {e['cy']:.4f}")
+        L.append(f"  D (k1..k4)  {row(e['D'], '.6g')}")
+    x = d["extrinsics"]
+    L.append(f"left to right ({x['convention']}, mm):")
+    L.append(f"  baseline  {x['baseline_mm']:.4f} mm")
+    L.append(f"  t         {row(x['t'], '.4f')} mm")
+    for i, r in enumerate(x["R"]):
+        L.append(("  R         " if i == 0 else "            ") + row(r, "+.6f"))
+    L.append(f"  rvec      {row(x['rvec_rad'], '+.6f')} rad = {row(x['rvec_deg'], '+.4f')} deg")
+    axis = x["rotation_axis"]
+    L.append(f"  rotation  {x['rotation_deg']:.4f} deg" + (f" about the axis {row(axis, '+.4f')}" if axis else ""))
+    if d["meta"]:
+        L.append("meta:     " + json.dumps(d["meta"], ensure_ascii=False, default=str))
+    return "\n".join(L)
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +485,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("add", help="install the calibration file for your camera").add_argument("file")
     sub.add_parser("list", help="show installed calibrations and the folder")
+    s = sub.add_parser("show", help="print what a calibration file holds (reads the file only)")
+    s.add_argument("target", nargs="?", help="an installed file's serial (S1-NNNN) or a file; default: the installed file")
+    s.add_argument("--json", action="store_true", help="print it as JSON")
+    s.add_argument("--synthetic", action="store_true", help="a generated calibration instead of a file")
     c = sub.add_parser("check", help="measure whether a calibration fits the connected camera (no pass/fail)")
     c.add_argument("--file", action="append", help="check this file instead of the installed one (repeat to compare)")
     c.add_argument("--all", action="store_true", help="compare every installed file")
@@ -378,10 +496,19 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--pairs-dir", help="check saved left/right PNG pairs in this folder instead of the camera")
     c.add_argument("--synthetic", action="store_true", help="generated frames, no camera")
     a = ap.parse_args(argv)
+    if a.cmd == "show" and a.synthetic and a.target:
+        ap.error("show --synthetic takes no serial or file")
+    for stream in (sys.stdout, sys.stderr):        # a file's meta or path with non-ASCII characters on a cp949 console
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     try:
         if a.cmd == "add":
             serial, status = add(a.file)
             print(f"{serial} calibration {status}: {store_dir() / (serial + '.json')}")
+        elif a.cmd == "show":
+            d = (_describe(_synthetic_calibration(), "generated", None, None, False, "no: generated, not a file")
+                 if a.synthetic else show(a.target))
+            print(json.dumps(d, indent=2, ensure_ascii=False, default=str) if a.json else _show_text(d))
         elif a.cmd == "check":
             return _check_cmd(a)
         else:
@@ -394,6 +521,8 @@ def main(argv: list[str] | None = None) -> int:
               "Without the camera: --pairs-dir FOLDER checks pairs you saved earlier.", file=sys.stderr)
         return 1
     except (LookupError, ValueError, OSError) as exc:
+        if a.cmd == "show" and a.json:            # a program reading stdout gets JSON either way
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False))
         print(exc, file=sys.stderr)
         return 1
 

@@ -1,0 +1,7 @@
+frame,host_ns,driver_ns,driver_clock
+0,1000000000,5000000000,media_foundation
+1,1011111111,5011111100,media_foundation
+2,1022222222,5022222200,media_foundation
+3,1033333333,5033333300,media_foundation
+4,1044444444,5044444400,media_foundation
+5,1055555555,,

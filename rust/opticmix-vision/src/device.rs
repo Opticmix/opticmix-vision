@@ -22,7 +22,9 @@ pub struct StereoFrame {
     pub host_ns: u64,
     /// Frame number from this Device, starting at 0 (not a device number). Counts delivered frames only:
     /// a skipped sample (see `Device::read`) takes no number, so a gap does not show here — see
-    /// `Device::undecodable_frames` and `Device::driver_missed_frames`.
+    /// `Device::undecodable_frames` and `Device::driver_missed_frames`. From a recording
+    /// (`Device::open_recording`): the frame's number in the file, and `host_ns` and the driver fields are the
+    /// recorded ones.
     pub index: u64,
     /// The capture driver's time stamp for this frame in ns, on the clock `driver_clock` names: Windows = Media
     /// Foundation sample time (not counted from the start of streaming — about 364,400 s at the first frame on
@@ -66,10 +68,10 @@ fn host_ns() -> u64 {
 /// the rule of the Python package's `Device.late_frames`, `estimated_missed_frames` and `actual_fps`: an
 /// interval longer than 1.5 frame periods (at the negotiated fps) is one late frame, and
 /// round(interval / period) - 1 frames (rounded half to even, as Python's `round`) are counted as missed.
-struct FrameStats {
+pub(crate) struct FrameStats {
     fps: f64,
-    late: u64,
-    missed: u64,
+    pub(crate) late: u64,
+    pub(crate) missed: u64,
     /// The last `FPS_WINDOW + 1` host times.
     recent: VecDeque<u64>,
 }
@@ -78,11 +80,17 @@ struct FrameStats {
 const FPS_WINDOW: usize = 30;
 
 impl FrameStats {
-    fn new(fps: f64) -> FrameStats {
+    pub(crate) fn new(fps: f64) -> FrameStats {
         FrameStats { fps, late: 0, missed: 0, recent: VecDeque::with_capacity(FPS_WINDOW + 1) }
     }
 
-    fn add(&mut self, ns: u64) {
+    /// The next time starts a new run: no interval to the time before it (a seek or loop in a recording, a pause
+    /// in recording) — Python `_FrameStats.add(..., restart=True)`.
+    pub(crate) fn restart(&mut self) {
+        self.recent.clear();
+    }
+
+    pub(crate) fn add(&mut self, ns: u64) {
         if let Some(&last) = self.recent.back().filter(|_| self.fps > 0.0) {
             let period = 1e9 / self.fps;
             let dt = ns.saturating_sub(last) as f64;
@@ -130,6 +138,34 @@ impl Device {
         Ok(Device::wrap(cfg, cap))
     }
 
+    /// Plays a recording — one `Recorder` wrote, or an MJPG `.avi` the Python package's `Recorder` wrote — as if it
+    /// were the camera: the same `read()` gives `StereoFrame`s, and after the last frame `SdkError::EndOfRecording`.
+    /// A frame's `index` is its number in the file, `host_ns` and the driver fields are the times recorded in the
+    /// CSV (see `recording`). The config is the recording's: side by side, left eye first, the recorded mode,
+    /// no stall check. `playback()` seeks, loops and paces. A recording has no controls (`controls()` gives
+    /// `SdkError::Unavailable`). Errors: `SdkError::Recording` (see `Playback::open`). Run without a camera only.
+    pub fn open_recording(path: impl AsRef<std::path::Path>) -> Result<Device> {
+        let p = crate::recording::Playback::open(path)?;
+        let m = p.mode();
+        let cfg = DeviceConfig {
+            layout: crate::stereo::Layout::Sbs,
+            lr_order: crate::stereo::LrOrder::FirstIsLeft,
+            device: crate::config::DeviceSelector::Path(p.path().display().to_string()),
+            api: crate::config::CaptureApi::Auto,
+            width: m.width,
+            height: m.height,
+            fps: if m.fps > 0.0 { m.fps } else { 30.0 },
+            stall_frames: 0,
+        };
+        Device::open_with(cfg, Box::new(p))
+    }
+
+    /// The recording this Device plays (`open_recording`): seek, loop, real-time pacing, frame count; `None` for a
+    /// camera.
+    pub fn playback(&mut self) -> Option<&mut crate::recording::Playback> {
+        self.cap.playback()
+    }
+
     /// Opens with your own capture backend (for tests and other capture paths).
     pub fn open_with(cfg: DeviceConfig, cap: Box<dyn Capture>) -> Result<Device> {
         cfg.validate()?;
@@ -150,6 +186,19 @@ impl Device {
         self.cap.mode()
     }
 
+    /// This camera's calibration: the file installed with `python -m opticmix_vision.calib add <file.json>`, when
+    /// exactly one is installed (`calib::resolve()`), after checking its eye size against `mode()`
+    /// (`StereoCalibration::check_eye_size`) — the rules of the Python package's `Device.calibration`. The crate
+    /// cannot check that the file belongs to this camera (no USB serial). Errors: `SdkError::CalibLookup` (none or
+    /// several installed, another mode), `SdkError::Calibration` (a broken file). Reads the file on each call.
+    /// Capture does not need a calibration.
+    pub fn calibration(&self) -> Result<crate::calib::StereoCalibration> {
+        let c = crate::calib::resolve()?;
+        let m = self.mode();
+        c.check_eye_size(m.width, m.height)?;
+        Ok(c)
+    }
+
     /// Name the opened device reports — confirms what was opened when opening by index (`DeviceSelector::Index`).
     pub fn device_name(&self) -> &str {
         self.cap.device_name()
@@ -167,7 +216,16 @@ impl Device {
     /// and in the frame statistics.
     fn sample(&mut self) -> Result<(Vec<u8>, u64, SampleInfo)> {
         let (b, info) = self.cap.read_sample()?;
-        let t = host_ns();
+        // a recording's frames carry their recorded time, and its statistics describe the recording
+        let t = match self.cap.playback() {
+            Some(p) => {
+                if p.starts_over() {
+                    self.stats.restart();
+                }
+                p.recorded_ns(p.position())
+            }
+            None => host_ns(),
+        };
         self.stats.add(t);
         if let Some(s) = info.driver_sequence {
             // A number that goes back or repeats (and a u32 wrap, years at 90 fps) restarts the count
@@ -211,7 +269,10 @@ impl Device {
         };
         let (left, right) = split_stereo(&g, self.cfg.layout, self.cfg.lr_order)?;
         self.stall.check(&left, &right)?;
-        let index = self.index;
+        let index = match self.cap.playback() {
+            Some(p) => p.position() as u64,
+            None => self.index,
+        };
         self.index += 1;
         Ok(StereoFrame {
             left,
@@ -283,6 +344,19 @@ impl Device {
     /// rate the capture backend hands samples over, not the rate `read()` returns frames when samples are skipped.
     pub fn actual_fps(&self) -> f64 {
         self.stats.fps()
+    }
+
+    /// Frames `read()` decoded since this Device was opened whose two eyes were both byte-identical to the frame
+    /// before, counted by the comparison the `stall_frames` check already makes, so it costs nothing more. A
+    /// frame that ends the call with the stall error counts too. `None` when `stall_frames` is 0 (no comparison
+    /// is made). The same name and meaning as the Python package's `Device.repeated_frames`. Unlike
+    /// `late_frames()`, which counts every sample, only the frames `read()` decoded are compared: samples it
+    /// skipped as undecodable and the bytes `read_raw()` returns are not. A count only, with no warning (the
+    /// Python package warns through OpenCV's Media Foundation backend only). Run with the camera once (one PC,
+    /// one camera, 2026-11-25, Media Foundation, 450 frames): 0, the same as the `measure_fps` example's own
+    /// per-eye counts (left 0, right 0). A count above 0: generated frames only.
+    pub fn repeated_frames(&self) -> Option<u64> {
+        self.stall.repeated()
     }
 
     /// This camera's controls (opened on first call). For writes, one `set_many` at startup is recommended.
@@ -548,7 +622,44 @@ mod tests {
         d.read().unwrap();
         d.read().unwrap();
         assert_eq!(d.read().unwrap_err(), SdkError::Device(stall_message("left", 3)));
+        assert_eq!(
+            d.repeated_frames(),
+            Some(2),
+            "the frame that ends in the stall error counts too"
+        );
         assert_eq!(d.read().unwrap().index, 2);
+    }
+
+    #[test]
+    fn repeated_frames_counts_frames_whose_two_eyes_both_repeat() {
+        let frames = vec![
+            sbs(10, 20),
+            sbs(10, 20), // both eyes repeat: 1
+            sbs(10, 30), // one eye repeats: not counted
+            sbs(40, 30), // the other eye repeats: not counted
+            sbs(40, 30), // both: 2
+            no_soi(),    // skipped, not compared
+            sbs(40, 30), // both, against the frame read() delivered before: 3
+            sbs(50, 60),
+        ];
+        let cfg = DeviceConfig { stall_frames: 90, ..cfg() };
+        let mut d = Device::open_with(cfg, Box::new(FakeCapture::new(frames, 16, 8))).unwrap();
+        assert_eq!(d.repeated_frames(), Some(0), "nothing read yet");
+        let counts: Vec<_> = (0..7)
+            .map(|_| d.read().map(|_| d.repeated_frames().unwrap()).unwrap())
+            .collect();
+        assert_eq!(counts, [0, 1, 1, 1, 2, 3, 3]);
+        assert_eq!(d.undecodable_frames(), 1);
+    }
+
+    #[test]
+    fn repeated_frames_is_none_when_the_stall_check_is_off() {
+        let cfg = DeviceConfig { stall_frames: 0, ..cfg() };
+        let mut d = Device::open_with(cfg, Box::new(FakeCapture::new(vec![sbs(10, 20); 4], 16, 8))).unwrap();
+        for _ in 0..4 {
+            d.read().unwrap();
+        }
+        assert_eq!(d.repeated_frames(), None);
     }
 
     /// A sample that starts without SOI and ends with FFD9, built here by removing the front of a normal MJPG.

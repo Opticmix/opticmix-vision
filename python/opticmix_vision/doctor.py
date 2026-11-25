@@ -14,7 +14,12 @@ can be in a different order, and when the Weevia S1's index differs a line says 
 
 With --open the camera is opened as `Device(DeviceConfig.weevia_s1(stall_frames=0))` does: the capture format
 (size, frame rate, pixel format) is set as on every open, and no camera control is written — the report
-prints the SDK's control-write count before and after to show it.
+prints the SDK's control-write count before and after to show it. --backend msmf opens it through OpenCV's
+Media Foundation backend instead (the camera found by name in Media Foundation's list); there, frames whose two
+eyes both repeated the previous image are a finding — seen through that path on one PC with one camera
+(2026-11-24), cause not established. --open --backend msmf has been run with the camera once (one PC, one
+camera, 2026-11-25, OpenCV 4.13.0; the finding said 276 of 904 frames); the other --backend values: run without
+a camera only.
 
 What this camera does not report is printed as such: it has no USB serial number, no verified way to read a
 firmware version (the USB device revision, bcdDevice, is shown instead; how it relates to the firmware version
@@ -439,6 +444,7 @@ def _measure(cam: Any, seconds: float, timestamps: str | Path | None) -> dict[st
             best = max(best, run)
         out[f"{eye}_identical_frames"] = sum(1 for r in rows if r[i])
         out[f"{eye}_longest_identical_run"] = best + 1 if best else 0      # images in a row, as stall_frames counts
+    out["both_identical_frames"] = sum(1 for r in rows if r[2] and r[3])
     out["stall_frames"] = stall
     out["stalled"] = [e for e in ("left", "right") if out[f"{e}_longest_identical_run"] >= stall]
     if timestamps:
@@ -465,7 +471,7 @@ def _controls(cam: Any) -> dict[str, Any]:
 
 
 def _camera(synthetic: bool, seconds: float, device: int | str | None, timestamps: str | Path | None,
-            _open: Callable[[], Any] | None, plat: str) -> dict[str, Any]:
+            _open: Callable[[], Any] | None, plat: str, backend: str | None = None) -> dict[str, Any]:
     from .device import WEEVIA_S1_NAME, Device, DeviceConfig
     out: dict[str, Any] = {"opened": False, "advertised_modes": None, "error": None}
     before = _writes()
@@ -486,6 +492,8 @@ def _camera(synthetic: bool, seconds: float, device: int | str | None, timestamp
             kw: dict[str, Any] = {"stall_frames": 0}         # the doctor counts identical frames itself
             if device is not None:
                 kw["device"] = device
+            if backend is not None:
+                kw["backend"] = backend
             cam = Device(DeviceConfig.weevia_s1(**kw)).open()
     except Exception as exc:  # noqa: BLE001 — "not found" / "failed to open" is the finding
         out["error"] = _err(exc)
@@ -507,7 +515,17 @@ def _camera(synthetic: bool, seconds: float, device: int | str | None, timestamp
 
 # ---- report -----------------------------------------------------------------------------------
 
+def _msmf(md: dict[str, Any]) -> bool:
+    return str(md.get("backend_name") or "").upper() == "MSMF"
+
+
+def _fourcc_text(s: str) -> str:
+    """The four characters, or the code in hex (0x00000016) when they are not all printable, as through MSMF."""
+    return s if s.isprintable() else f"0x{int.from_bytes(s.encode('latin-1'), 'little'):08x}"
+
+
 def _findings(r: dict[str, Any]) -> list[str]:
+    from .device import _MSMF_REPEAT_WARN
     f = []
     sdk = r["sdk"]
     if not sdk["core"]["present"]:
@@ -521,7 +539,11 @@ def _findings(r: dict[str, Any]) -> list[str]:
     if n == 0:
         f.append("No Weevia S1 in the video device list. Re-insert the USB cable.")
     elif n and n > 1:
-        f.append(f"{n} Weevia S1 are connected. They cannot be told apart (no USB serial number): connect one at a time.")
+        f.append(f"{n} Weevia S1 are connected. They cannot be told apart by name (no USB serial number): connect one "
+                 "at a time, or open one by its USB location (`location` below): "
+                 "DeviceConfig.weevia_s1(usb_location=...). A USB location is the port, not a serial number. Picking a "
+                 "camera by USB location has been run without a camera only (made-up device lists); it has not been "
+                 "run with a camera, and not run with two cameras.")
     needle = r["weevia_s1"]["name"].lower()
     for d in r["usb"]["devices"]:
         if needle not in (d["name"] or "").lower():         # the same partial match the device count uses
@@ -540,9 +562,11 @@ def _findings(r: dict[str, Any]) -> list[str]:
         md = cam.get("mode") or {}
         if md and not r["synthetic"]:
             # device.py records why: with the MJPG request dropped the stream negotiated YUY2 and ran far below 90 fps.
-            if md["fourcc"] != "MJPG":
-                f.append(f"The negotiated pixel format is {md['fourcc'] or 'not reported'}, not MJPG. The Weevia S1 "
-                         "is opened in MJPG for its 90 fps mode (DeviceConfig.weevia_s1()); in other formats the frame "
+            # Not through MSMF: there OpenCV reads back its own output format code (RGB32/RGB24), not the camera's.
+            if md["fourcc"] != "MJPG" and not _msmf(md):
+                f.append(f"The negotiated pixel format is {_fourcc_text(md['fourcc']) or 'not reported'}, not MJPG. "
+                         "The Weevia S1 is opened in MJPG for its 90 fps mode (DeviceConfig.weevia_s1()); in other "
+                         "formats the frame "
                          "rate falls short of it. If you pass your own settings, request MJPG (DeviceConfig sets it in the "
                          "order the backend needs). See the README, 'The frame rate is far below 90'.")
             # 0.8 is a judgment line, not a measured bound. For reference, one unit at 1600x800 MJPG read
@@ -556,6 +580,13 @@ def _findings(r: dict[str, Any]) -> list[str]:
         if m.get("stalled"):
             f.append(f"The {' and '.join(m['stalled'])} eye sent the same image {m['stall_frames']}+ frames in a row: "
                      "its stream stopped. Re-insert the USB cable.")
+        elif (md.get("backend_name", "").upper() == "MSMF" and m.get("frames")
+              and m["both_identical_frames"] > _MSMF_REPEAT_WARN * m["frames"]):
+            f.append(f"Repeated images (MSMF): {m['both_identical_frames']} of {m['frames']} frames repeated the "
+                     "previous image in both eyes through OpenCV's Media Foundation backend. Seen on one PC with one "
+                     "camera (2026-11-24): 276 of 900 frames per eye through this path; not seen through DirectShow "
+                     "(the default; 0 of 900) or the Rust crate (0 of 450); cause not established. driver_ns does "
+                     "not show whether a new image arrived.")
         w = cam["control_writes"]["by_this_run"]
         if w:
             f.append(f"{w} control writes happened during this run (expected 0).")
@@ -563,7 +594,7 @@ def _findings(r: dict[str, Any]) -> list[str]:
 
 
 def collect(*, open_camera: bool = False, synthetic: bool = False, seconds: float = 3.0,
-            device: int | str | None = None, timestamps: str | Path | None = None,
+            device: int | str | None = None, timestamps: str | Path | None = None, backend: str | None = None,
             _win_records: Any = None, _link: Any = None, _sysfs: str | None = None, _platform: str | None = None,
             _open: Callable[[], Any] | None = None) -> dict[str, Any]:
     """The report as a dict (JSON-ready). The camera is opened only with open_camera=True; synthetic=True reads
@@ -580,7 +611,7 @@ def collect(*, open_camera: bool = False, synthetic: bool = False, seconds: floa
             r.update(_hardware(synthetic, _win_records, _link, _sysfs, plat))
             r["not_available"] = dict(NOT_AVAILABLE)
             r["calibration"] = _calibration()
-            r["camera"] = _camera(synthetic, seconds, device, timestamps, _open, plat) if open_camera else None
+            r["camera"] = _camera(synthetic, seconds, device, timestamps, _open, plat, backend) if open_camera else None
     finally:
         lg.removeHandler(keep)
     r["log"] = keep.lines + [f"{w.category.__name__}: {w.message}" for w in caught]
@@ -680,6 +711,7 @@ def format_text(report: dict[str, Any]) -> str:
     L.append(f"folder:          {cal['folder']}")
     L.append(f"files:           {', '.join(cal['files']) or '(none)'}")
     L.append(f"check:           {cal['check']}")
+    L.append("details:         python -m opticmix_vision.calib show")
     cam = r["camera"]
     L.append("== Camera ==")
     if cam is None:
@@ -691,7 +723,11 @@ def format_text(report: dict[str, Any]) -> str:
         L.append(("error after opening: " if cam["opened"] else "open failed: ") + cam["error"])
     if cam["opened"] and "controls" in cam:
         md = cam["mode"]
-        L.append(f"negotiated mode: {md['width']}x{md['height']} {md['fourcc']} {md['fps']:g} fps ({md['backend_name']})")
+        L.append(f"negotiated mode: {md['width']}x{md['height']} {_fourcc_text(md['fourcc'])} {md['fps']:g} fps "
+                 f"({md['backend_name']})")
+        if _msmf(md):
+            L.append("format:          OpenCV's Media Foundation backend reports its output format code here, not the "
+                     "camera's format")
         m = cam["measure"]
         L.append(f"frames:          {m['frames']} in {m['seconds']:g} s, {_v(m['fps'])} fps (host clock; first frame "
                  "not counted)")
@@ -700,8 +736,8 @@ def format_text(report: dict[str, Any]) -> str:
             L.append(f"interval ms:     mean {i['mean']}  min {i['min']}  max {i['max']}; "
                      f"late (over 1.5x the median): {m['late_intervals']}")
         L.append(f"identical to the previous image: left {m['left_identical_frames']}, right "
-                 f"{m['right_identical_frames']}; longest run left {m['left_longest_identical_run']}, right "
-                 f"{m['right_longest_identical_run']} -> "
+                 f"{m['right_identical_frames']}, both eyes {m['both_identical_frames']}; longest run left "
+                 f"{m['left_longest_identical_run']}, right {m['right_longest_identical_run']} -> "
                  + (f"{' and '.join(m['stalled'])} eye stalled" if m["stalled"] else "no eye stalled")
                  + f" (threshold {m['stall_frames']})")
         if m["read_error"]:
@@ -741,18 +777,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seconds", type=float, default=3.0, help="how long --open reads frames (default 3)")
     ap.add_argument("--device", help="with --open: the device index or /dev/videoN instead of finding it by name")
     ap.add_argument("--timestamps", metavar="FILE", help="with --open: write each frame's host time to a CSV file")
+    ap.add_argument("--backend", choices=("dshow", "msmf", "v4l2"),
+                    help="with --open: the OpenCV capture backend (default: the Weevia S1 default for this OS)")
     ap.add_argument("--output", metavar="FILE", help="write the report to FILE in UTF-8 instead of printing it "
                                                      "(JSON when FILE ends in .json, or with --json)")
     a = ap.parse_args(argv)
     if a.seconds <= 0:
         ap.error("--seconds must be positive")
-    if (a.timestamps or a.device) and not a.open:
-        ap.error("--timestamps and --device need --open")
+    if (a.timestamps or a.device or a.backend) and not a.open:
+        ap.error("--timestamps, --device and --backend need --open")
     for stream in (sys.stdout, sys.stderr):                    # names with non-ASCII characters on a cp949 console
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     dev = int(a.device) if a.device and a.device.isdigit() else a.device
-    r = collect(open_camera=a.open, synthetic=a.synthetic, seconds=a.seconds, device=dev, timestamps=a.timestamps)
+    r = collect(open_camera=a.open, synthetic=a.synthetic, seconds=a.seconds, device=dev, timestamps=a.timestamps,
+                backend=a.backend)
     as_json = a.json or (a.output or "").lower().endswith(".json")
     text = json.dumps(r, indent=2, ensure_ascii=False) + "\n" if as_json else format_text(r)
     if a.output:                   # written here, not through `>`: PowerShell 5.1 redirection writes UTF-16

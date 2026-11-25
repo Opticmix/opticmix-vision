@@ -1,11 +1,13 @@
 # 01 · Hello Weevia
 
-Examples: [`list_devices.py`](../examples/list_devices.py), [`quickstart.py`](../examples/quickstart.py)
+Examples: [`list_devices.py`](../examples/list_devices.py), [`quickstart.py`](../examples/quickstart.py),
+[`open_by_usb_location.py`](../examples/open_by_usb_location.py)
 
 ## What you will do
 
 List the video devices on your computer, find the Weevia S1 among them by name, open it, print the mode the
-driver negotiated, and read frames split into a left and a right eye.
+driver negotiated, and read frames split into a left and a right eye. With two Weevia S1 connected, open one of
+them by its USB location.
 
 ## Before you start
 
@@ -25,6 +27,7 @@ python examples/list_devices.py                  # the video devices Windows rep
 python examples/list_devices.py --backend msmf   # the video devices in Media Foundation's order
 python examples/quickstart.py                    # open the camera, show both eyes; q quits, s saves a pair
 python examples/quickstart.py --no-window        # no window: read 100 frames and print the frame rate
+python examples/open_by_usb_location.py          # each Weevia S1 and its USB location; add --usb-location to open one
 ```
 
 Without a camera:
@@ -32,6 +35,7 @@ Without a camera:
 ```bash
 python examples/list_devices.py --synthetic
 python examples/list_devices.py --synthetic --backend msmf
+python examples/open_by_usb_location.py --synthetic
 ```
 
 `quickstart.py` has no `--synthetic` option. [Tutorial 02](02-live-view-and-frame-rate.md) runs the same read
@@ -43,22 +47,31 @@ The Rust crate has the same `list_devices` example. In a checkout of the reposit
 `rust/opticmix-vision`:
 
 ```bash
-cargo run --example list_devices                  # the video devices Windows reports
-cargo run --example list_devices -- --synthetic   # no camera: the made-up list below
+cargo run --example list_devices                                 # the video devices Windows reports (DirectShow)
+cargo run --example list_devices -- --backend msmf               # Media Foundation's list: the one capture opens from
+cargo run --example list_devices -- --synthetic                  # no camera: the made-up list below
+cargo run --example list_devices -- --synthetic --backend msmf   # no camera: the same devices, another order
+cargo run --release --features test-support --example open_by_usb_location -- --synthetic   # no camera: pick one of two
 ```
 
 ```text
 $ cargo run --example list_devices -- --synthetic
-3 video device(s):
-  [0] WN Dual Camera   <- Weevia S1
-  [1] Example Laptop Webcam
-  [2] WN Dual Camera   <- Weevia S1
+3 video device(s) in the DirectShow list:
+  [0] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)
+  [1] Example Laptop Webcam   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)
+  [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
 Weevia S1 ("WN Dual Camera") found: 2
-More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and opening by name stops with MultipleMatches instead of guessing. Using two units on one computer has not been tested — connect one at a time.
+More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and opening by name stops with MultipleMatches instead of guessing. Open one by the USB location shown above: cargo run --example open_by_usb_location -- --usb-location "<USB location>" (DeviceSelector::UsbLocation).
+A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+The Media Foundation list (--backend msmf) can be in a different order: an index goes only with the backend whose list it came from.
+Capture opens from the Media Foundation list: DeviceSelector::Index(n) is entry n of it (--backend msmf).
 ```
 
-Of the Rust examples, `list_devices` and `measure_fps` have been run with the camera once (one PC, one camera, 2026-11-24); the others have been run without a camera only (`--synthetic`). See the
-crate README, "Examples".
+The Rust crate captures through Media Foundation, so an index you pass as `DeviceSelector::Index` counts in the
+list `--backend msmf` prints, not in the default DirectShow one. Of the Rust examples, `list_devices` and
+`measure_fps` have been run with the camera once (one PC, one camera, 2026-11-24) — `list_devices` with its
+default DirectShow list; `--backend msmf` has been run without a camera only (a made-up list), not with the
+camera. The others have been run without a camera only (`--synthetic`). See the crate README, "Examples".
 
 ## What you should see
 
@@ -67,25 +80,35 @@ Output with `--synthetic` (generated frames); with the camera the numbers differ
 ```text
 $ python examples/list_devices.py --synthetic
 3 video device(s) in the DirectShow list:
-  [0] WN Dual Camera   <- Weevia S1
-  [1] Example Laptop Webcam
-  [2] WN Dual Camera   <- Weevia S1
+  [0] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)
+  [1] Example Laptop Webcam   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)
+  [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
 Weevia S1 ('WN Dual Camera') found: 2
-More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and DeviceConfig.weevia_s1() stops with an error instead of guessing. Using two units on one computer has not been tested — connect one at a time.
+More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and DeviceConfig.weevia_s1() stops with an error instead of guessing. Open one by the USB location shown above: DeviceConfig.weevia_s1(usb_location="<USB location>") (examples/open_by_usb_location.py).
+A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
 The Media Foundation list (--backend msmf) can be in a different order: an index goes only with the backend whose list it came from.
 $ python examples/list_devices.py --synthetic --backend msmf
 3 video device(s) in the Media Foundation list:
-  [0] Example Laptop Webcam
-  [1] WN Dual Camera   <- Weevia S1
-  [2] WN Dual Camera   <- Weevia S1
+  [0] Example Laptop Webcam   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(5)
+  [1] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)
+  [2] WN Dual Camera   <- Weevia S1   USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
 Weevia S1 ('WN Dual Camera') found: 2
-More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and DeviceConfig.weevia_s1() stops with an error instead of guessing. Using two units on one computer has not been tested — connect one at a time.
+More than one Weevia S1: the camera reports no USB serial number, so they cannot be told apart by name, and DeviceConfig.weevia_s1() stops with an error instead of guessing. Open one by the USB location shown above: DeviceConfig.weevia_s1(usb_location="<USB location>") (examples/open_by_usb_location.py).
+A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
 The DirectShow list (--backend dshow) can be in a different order: an index goes only with the backend whose list it came from.
+$ python examples/open_by_usb_location.py --synthetic
+Weevia S1 in the made-up list:
+  [0] USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)
+  [2] USB location: PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
+picked [2] at USB location PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)
+negotiated: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
+one frame: left 320x200, right 320x200
 ```
 
 The synthetic list is made up on purpose: it has two Weevia S1 and a webcam, so you see what happens when
-two units are connected. With your camera the list is the devices Windows reports, and one line should be
-marked `<- Weevia S1`.
+two units are connected. Its USB locations are made up too. With your camera the list is the devices Windows
+reports, and one line should be marked `<- Weevia S1`; a line ends with `USB location:` when Windows reports
+where that device is plugged in.
 
 The two made-up lists hold the same devices in a different order. Windows has two capture APIs, DirectShow
 and Media Foundation, and each has its own list of cameras. The two lists can be in a different order: on one PC with one camera (2026-11-24), `devices.list_devices(backend="msmf")` and `list_devices()` returned the same three cameras in a different order, once. The index is the one OpenCV opens
@@ -100,12 +123,27 @@ eye on the left and the right eye on the right; the window title shows the eye s
 `list_devices.py` reads the device list and marks every entry whose name contains the camera's USB name:
 
 ```python
-devices = list_devices(backend=a.backend, _raw=SYNTHETIC_LIST if a.synthetic else None)
+devices = list_devices(backend=a.backend)
 weevia = [d for d in devices if WEEVIA_S1_NAME.lower() in d.name.lower()]
 print(f"{len(devices)} video device(s) in the {LIST_NAME[a.backend]} list:")
 for d in devices:
-    print(f"  [{d.index}] {d.name}{'   <- Weevia S1' if d in weevia else ''}")
+    at = f"   USB location: {d.usb_location}" if d.usb_location else ""
+    print(f"  [{d.index}] {d.name}{'   <- Weevia S1' if d in weevia else ''}{at}")
 ```
+
+`open_by_usb_location.py` opens the Weevia S1 at the USB location you give and reads one frame:
+
+```python
+cam = Device(DeviceConfig.weevia_s1(usb_location=location)).open()
+...
+with cam:
+    print("negotiated:", cam.mode.to_dict())
+    f = cam.read()
+```
+
+`DeviceInfo.usb_location` is where Windows says the device is plugged in: the USB device's first location
+path, the same string `python -m opticmix_vision.doctor` prints as `location` (on Linux, the USB device's sysfs
+name, e.g. `1-4.2`). A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
 
 `quickstart.py` opens the camera with `DeviceConfig.weevia_s1()` when you give no `--device`, and reads
 from it:
@@ -129,8 +167,9 @@ with cam:
   the Rust implementation (since 0.0.3) has not yet been verified against the camera.
 - The driver may not give you the mode you asked for — read `cam.mode` rather than assuming.
 - `cam.read()` raises on failure and never returns an empty frame. `f.left` and `f.right` are the two eyes.
-- Two Weevia S1 on one computer are not supported yet: the camera reports no USB serial number, so finding
-  the camera by name stops when two match.
+- The camera reports no USB serial number, so finding the camera by name stops when two Weevia S1 match.
+  `DeviceConfig.weevia_s1(usb_location=...)` opens the one at that USB location instead. Using two cameras at
+  the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
 - `DeviceConfig.weevia_s1()` looks the name up in the list of the backend it opens with: DirectShow by
   default, Media Foundation with `backend="msmf"`.
 - `list_devices.py` is one of the six examples added in 0.0.4; it has been run without a camera only.
@@ -148,7 +187,8 @@ See [When something goes wrong](../README.md#when-something-goes-wrong) in the p
 particular:
 
 - **"Weevia S1 not found"** — the message lists the cameras Windows reported.
-- **Two Weevia S1 are connected** — connect one at a time.
+- **Two Weevia S1 are connected** — open one by its USB location (`DeviceConfig.weevia_s1(usb_location=...)`,
+  the locations are in `python examples/list_devices.py`), or connect one at a time. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
 - **"ControlsUnavailable: opticmix_vision._core (the compiled extension) is not installed"** — finding the
   camera by name on Windows needs the compiled extension that ships in the wheel; install the wheel with the same `python` you run the example with
   (`python -m pip install opticmix-vision`).

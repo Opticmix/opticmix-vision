@@ -362,6 +362,57 @@ def test_any_refuses_a_capture_another_backend_opened_on_windows(monkeypatch):
             assert cam.mode.backend_name == backend
 
 
+LOC_A = "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)"
+LOC_B = "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(4)#USB(2)"
+
+
+def _two_weevia_on_windows(monkeypatch, mf, dshow) -> None:
+    """Made-up Media Foundation and DirectShow lists of (name, USB location) on 'Windows' — nothing is enumerated."""
+    import sys
+
+    from opticmix_vision import devices
+
+    def no_ffmpeg():
+        raise FileNotFoundError("ffmpeg")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(devices, "_mf_devices", lambda: list(mf))
+    monkeypatch.setattr(devices, "_ffmpeg_devices", no_ffmpeg)
+    monkeypatch.setattr(devices, "_native_devices", lambda: list(dshow))
+
+
+def test_weevia_s1_opens_one_of_two_cameras_by_usb_location(monkeypatch):
+    # the two lists in different orders: each backend's index comes from its own list, at the same location
+    _two_weevia_on_windows(monkeypatch, mf=[("WN Dual Camera", LOC_B), ("Example Webcam", None), ("WN Dual Camera", LOC_A)],
+                           dshow=[("WN Dual Camera", LOC_A), ("WN Dual Camera", LOC_B)])
+    assert DeviceConfig.weevia_s1(usb_location=LOC_B).device == 1                     # DirectShow (the default)
+    assert DeviceConfig.weevia_s1(usb_location=LOC_B, backend="msmf").device == 0
+    assert DeviceConfig.weevia_s1(usb_location=LOC_A, backend="msmf").device == 2
+    with pytest.raises(DeviceError, match=r"2 cameras match 'WN Dual Camera' .*pick one by USB location"):
+        DeviceConfig.weevia_s1()
+    with pytest.raises(DeviceError, match=r"No camera matches 'WN Dual Camera' at USB location 'PCIROOT\(0\)#USB\(9\)'"):
+        DeviceConfig.weevia_s1(usb_location="PCIROOT(0)#USB(9)")
+    with pytest.raises(DeviceError, match=r"index 0 in the Media Foundation list but 1 in the DirectShow list"):
+        DeviceConfig.weevia_s1(usb_location=LOC_B, backend="any")
+    with pytest.raises(ValueError, match="device= or usb_location="):
+        DeviceConfig.weevia_s1(usb_location=LOC_A, device=0)
+    for backend in ("dshow", "msmf"):
+        with pytest.raises(ValueError, match=r"^usb_location is empty"):
+            DeviceConfig.weevia_s1(usb_location=" ", backend=backend)
+
+
+def test_weevia_s1_opens_one_of_two_cameras_by_usb_location_on_linux(monkeypatch, tmp_path):
+    import sys
+
+    from opticmix_vision import devices
+    from test_devices import TWO_ON_LINUX, _sysfs_usb
+    monkeypatch.setattr(devices, "SYSFS_V4L", _sysfs_usb(tmp_path, TWO_ON_LINUX))     # before 'linux': junctions
+    monkeypatch.setattr(sys, "platform", "linux")
+    cfg = DeviceConfig.weevia_s1(usb_location="1-4.2")
+    assert (cfg.device, cfg.backend) == ("/dev/video2", "v4l2")
+    with pytest.raises(ValueError, match=r"^usb_location is empty"):
+        DeviceConfig.weevia_s1(usb_location="")
+
+
 def test_weevia_s1_with_any_needs_the_same_index_in_both_lists(monkeypatch):
     # OpenCV's CAP_ANY tries MSMF, then DSHOW with the same index: only an index valid for both is safe
     _windows_lists(monkeypatch, mf=["Example Webcam", "WN Dual Camera"], dshow=["Example Webcam", "WN Dual Camera"])

@@ -17,8 +17,11 @@ the camera — from the start, from a given frame or time, at the recorded pace 
 - `record_video.py` (MJPG, 5 s) has been run with the camera once (one PC, one camera, 2026-11-24): it wrote
   443 frames with the CSV and JSON (estimated missed 22), and `play_recording.py` read the 443 frames back.
   Lossless recording's pixel values, and playback with seeking, speed and looping: generated frames only
-  (`record_video.py --synthetic`); not run with the camera.
-- Recording and playback are Python only; the Rust crate has no recording API yet.
+  (`record_video.py --synthetic`); not run with the camera. `--queue-frames` (encoding on a thread, as the
+  viewer's `v` does): run on generated frames only; not run with the camera.
+- The Rust crate writes and plays the same MJPG `.avi` recordings (`cargo run --release --example record_video`,
+  `--example play_recording`); it neither writes nor plays lossless FFV1. Rust recording and playback: generated
+  frames only; not run with the camera.
 
 ## Run it
 
@@ -28,6 +31,7 @@ With the camera:
 python examples/record_video.py                              # 5 s to recording.avi (MJPG)
 python examples/record_video.py --seconds 30 --out run1.avi
 python examples/record_video.py --lossless --out run2.mkv    # FFV1: keeps the pixel values the SDK delivered
+python examples/record_video.py --queue-frames 64           # encode on a thread; the last line counts dropped frames
 python examples/play_recording.py run1.avi                   # window; q or Esc quits
 python examples/play_recording.py run1.avi --real-time       # at the recorded pace (the CSV's frame times)
 ```
@@ -53,7 +57,7 @@ Output with `--synthetic` (generated frames); with the camera the numbers differ
 ```text
 $ python examples/record_video.py --synthetic --seconds 1
 negotiated: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
-wrote 96 frames (640x200, MJPG) to recording.avi, labelled 90 fps; frames arrived at 94.7 per second (host-measured); while recording: late 0, estimated missed 0; info in recording.json
+wrote 96 frames (640x200, MJPG) to recording.avi, labelled 90 fps; frames arrived at 94.7 per second (host-measured); while recording: late 0, estimated missed 0 (of which dropped by the write queue 0); info in recording.json
 
 $ python examples/play_recording.py recording.avi --headless
 recorded mode: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
@@ -79,7 +83,7 @@ frames read 0..53: late 0, estimated missed 0
 
 $ python examples/record_video.py --synthetic --seconds 1 --lossless --out lossless.mkv
 negotiated: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
-wrote 95 frames (640x200, FFV1, lossless) to lossless.mkv, labelled 90 fps; frames arrived at 93.9 per second (host-measured); while recording: late 0, estimated missed 0; info in lossless.json
+wrote 95 frames (640x200, FFV1, lossless) to lossless.mkv, labelled 90 fps; frames arrived at 93.9 per second (host-measured); while recording: late 0, estimated missed 0 (of which dropped by the write queue 0); info in lossless.json
 
 $ python examples/play_recording.py lossless.mkv --headless
 recorded mode: {'width': 640, 'height': 200, 'fps': 90.0, 'fourcc': 'SYNT', 'backend_name': 'synthetic'}
@@ -117,7 +121,8 @@ frames read 0..94: late 0, estimated missed 0
 `record_video.py` gives every frame to a `Recorder`, which writes the video, the CSV and the JSON:
 
 ```python
-with open_camera(a.synthetic, a.fps, a.backend, a.device) as cam, Recorder(out, cam, codec=codec) as rec:
+with open_camera(a.synthetic, a.fps, a.backend, a.device) as cam, \
+        Recorder(out, cam, codec=codec, queue_frames=a.queue_frames) as rec:
     print("negotiated:", cam.mode.to_dict())
     t_end = time.perf_counter() + a.seconds
     while True:
@@ -176,6 +181,8 @@ with Device(DeviceConfig.recording(a.video)) as cam:
   codec, and that the folder exists and is writable.
 - **"Frames were missed while recording"** — if it was lossless, record MJPG (leave out `--lossless`); ask a
   lower rate with `--fps`, or keep frames in memory with `capture_dataset_npz.py`.
+- **"OpenCV … failed to write frame … (FFV1)"** — seen now and then with the opencv-python 4.12 and 4.13
+  wheels (one Windows PC, generated frames), not with 4.14 or 5.1; upgrade OpenCV or record MJPG.
 - **"… has the same name: recording to … would overwrite …"** (exit code 3) — record to another name with
   `--out`, or move the other file and the files next to it to another folder.
 - **"….replaced is left from recording to … when the process stopped"** (exit code 3) — a recording to that

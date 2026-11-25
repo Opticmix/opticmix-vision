@@ -1,5 +1,176 @@
 # Changelog
 
+## 0.0.6 — 2026-11-25
+
+### Added
+
+- Picking one of two cameras that share a name by USB location. `DeviceInfo.usb_location` (Python) /
+  `DeviceInfo::usb_location` (Rust): on Windows the USB device's first `DEVPKEY_Device_LocationPaths` entry, read
+  from the device tree through cfgmgr32 without opening the device (the doctor's `location`); on Linux the USB
+  device's sysfs name, e.g. `1-4.2`; `None` when it cannot be read. Python: `DeviceConfig.weevia_s1(usb_location=)`,
+  `devices.resolve_by_name(..., usb_location=)`, `devices.pick_by_usb_location()` and
+  `devices.find_v4l2_node(..., usb_location=)`. Rust: `DeviceSelector::UsbLocation { name, usb_location }` (the
+  controls then find the camera at the same location), `devices::pick_by_usb_location()`,
+  `devices::list_mf_devices()`, `devices::list_dshow_devices()` and `DeviceInfo::new()`. An empty or blank USB
+  location is an error (Python `ValueError`, Rust `SdkError::InvalidValue`), never a match for a device whose
+  location could not be read. With two cameras of one name, `MultipleMatches`
+  now lists their USB locations when they are known. `examples/list_devices.py` and the Rust `list_devices`
+  example end each line with the device's USB location; new example `open_by_usb_location` (Python and Rust)
+  opens the camera at a location and reads one frame. A USB location is not a serial number: it names the port the camera is plugged into, and it changes when the camera is plugged into another port. Using two cameras at the same time is not supported. Picking a camera by USB location has been run without a camera only (made-up device lists); it has not been run with a camera, and not run with two cameras.
+- `python -m opticmix_vision.calib show [SERIAL|FILE]` and `calib.show()`: what a calibration file holds —
+  for each eye the model, size (and the mode it is for), fx fy cx cy and distortion k1..k4; between the eyes
+  the baseline, t, the full rotation matrix R, its Rodrigues vector (rad and degrees), angle and axis; the
+  file's sha256 (the value a recording's `.json` lists) and `meta`; and whether `Device.calibration` uses it.
+  It says `installed file, not matched to this camera (no USB serial)`, and what to do when no file or several
+  are installed. `--json` prints the same as JSON (on an error, `{"error": ...}`); `--synthetic` shows a
+  generated calibration. The doctor's Calibration section names the command. Reads the file only. Run
+  without a camera only (made-up calibration files); not run with the camera.
+- Rust: the `list_devices` example takes `--backend msmf` and prints Media Foundation's list
+  (`devices::enumerate_mf_video_devices()`), the list Rust capture opens from and `DeviceSelector::Index`
+  counts in; `--synthetic --backend msmf` prints the same made-up devices in another order. The crate
+  README's platform table says which list an index belongs to. The two lists can be in a different order —
+  seen once on one PC, with Python's `list_devices(backend="msmf")` — not with this example. `--backend msmf`:
+  run without a camera only (a made-up list); not run with the camera.
+- The bug report form asks, for a calibration problem, for the output of `python -m opticmix_vision.calib show`
+  as well as the doctor's.
+- The capture-info JSON says where its control values came from and when they were read: `controls_source`
+  (`"camera"`, `"simulated"`, `"given"` or `null`) and `controls_read_at` (ISO 8601); a recording's
+  `controls_at_end_source` says the same of `controls_at_end`. The viewer's `s` and `v` give the time it read
+  every control when it opened (`capture_info(..., controls_read_at=)`, `Recorder(..., controls_read_at=)`).
+  Run on generated frames only; not run with the camera.
+- `Device.repeated_frames`: the frames `read()` returned since `open()` whose two eyes were both
+  byte-identical to the frame before, counted by the comparison the `stall_frames` check already makes
+  (`None` with `stall_frames=0`). Through OpenCV's Media Foundation backend (`backend="msmf"`), `read()`
+  warns once per `open()` when more than 5 % of the last 300 frames repeated, naming DirectShow and the
+  Rust crate — on one PC with one camera (2026-11-24) 276 of 900 frames per eye did through that path and 0 of
+  900 through DirectShow; cause not established. The viewer's top line shows `repeated N`; `python -m
+  opticmix_vision.doctor --open` counts frames repeated in both eyes and takes `--backend`, and through
+  `msmf` repeated images are a finding. The warning and the count in `examples/measure_fps.py` have been run with the
+  camera once through each backend (one PC, one camera, 2026-11-25; the example's output does not record the OpenCV
+  version): through `msmf` the warning came once and 271 of 900 frames repeated in both eyes; through DirectShow 0 of
+  900, no warning. The doctor's `--open --backend msmf` once (same PC and camera, OpenCV 4.13.0): its finding said
+  276 of 904. The viewer's `repeated N`: run on generated frames only; not run with the camera.
+- Rust: `Device::repeated_frames() -> Option<u64>`, the name and meaning of the Python
+  `Device.repeated_frames`: the frames `read()` decoded since open whose two eyes were both byte-identical to
+  the frame before, counted by the stall check's comparison (`None` with `stall_frames` 0); samples `read()`
+  skipped as undecodable and those `read_raw()` returns are not compared. A count only, with no warning. The
+  `measure_fps` example prints it. Run with the camera once (one PC, one camera, 2026-11-25, Media Foundation, 450
+  frames): 0, the same as the `measure_fps` example's own per-eye counts (left 0, right 0). A count above 0:
+  generated frames only.
+- `examples/record_video.py --queue-frames N` (default 0) encodes on a thread through a queue of `N` frames, as
+  the viewer's `v` does; its last line gives the frames the write queue dropped (among the estimated missed
+  ones). Run on generated frames only; not run with the camera.
+- Rust: reading the installed calibration file — `calib::resolve()` and `Device::calibration()`, with
+  `calib::store_dir()`, `installed()`, `installed_file()` and `load(path)` — by the rules of the Python package's
+  `calib.resolve()` and `Device.calibration`: the same folder, the file used only when exactly one is installed,
+  the same checks and messages, and the eye size against the opened mode. Values: per eye the model (KB4), K,
+  D and the eye size; R, t and the baseline (mm); the file's `device` block and `meta`; the file's path. New errors
+  `SdkError::Calibration` and `SdkError::CalibLookup`. The `calibration_info` example (`--synthetic`: a made-up
+  calibration in a temporary folder). It reads files only (install with `python -m opticmix_vision.calib add`);
+  installed file, not matched to this camera (no USB serial). Run without a camera only (made-up calibration
+  files); not run with the camera.
+- Rust: points through a calibration's KB4 model — `Intrinsics::project` (a point in the eye's camera
+  coordinates to its pixel) and `Intrinsics::unproject` (a pixel to the unit ray), up to 92.5° from the optical
+  axis (`None` beyond, at the origin or for values not finite); the `calibration_info` example prints the pixel
+  of each eye's optical axis and one point projected into both eyes (`R·p + t`) and unprojected back.
+  Compared with OpenCV's `cv2.fisheye.projectPoints` and `cv2.fisheye.undistortPoints` on made-up values. For a
+  point behind the eye (Z < 0) within 92.5° the two differ: OpenCV divides by Z and returns the pixel of -p,
+  `project` returns the point's own pixel. Tutorial 08 shows the same calculation in Python with OpenCV. No
+  rectification or depth. Run without a camera only (made-up calibration files); not run with the camera.
+- Rust: recording and playback in the Python package's file format — `Recorder::create(path, &mut device)`,
+  `write(&frame)` and `close()` write the MJPG `.avi` (both eyes side by side, left eye first), the `.csv`
+  (`frame,host_ns,driver_ns,driver_clock`) and the `.json` (mode, the camera's layout and left/right order, control
+  values at the start and end, crate version, frame count, late / missed frame estimates); `Device::open_recording`
+  plays one through the same `read()` as a camera, with each frame's recorded `host_ns` and driver time and its
+  number in the file as `index`, and `SdkError::EndOfRecording` after the last frame; `Device::playback()` seeks
+  (by frame or seconds), loops, paces at the recorded intervals divided by a speed, and gives the frame count and
+  length. A recording the Rust crate wrote plays in Python (`DeviceConfig.recording`), and a Python MJPG recording
+  plays in Rust. The frames are encoded to JPEG again, as in Python, so pixel values change a little. As in
+  Python: a write queue (`Recorder::create_with_queue(path, &mut device, n)` encodes on a writing thread; a frame
+  that finds the queue full is dropped and counted in `dropped_frames()` and the JSON's `dropped_frames`, the
+  JSON's `write_queue` is `n`, a writing-thread error comes back from the next `write` or from `close`, `close`
+  writes the frames still queued), pausing a recording (`Recorder::pause` / `resume`, the JSON's `breaks`), and
+  pausing playback (`Playback::set_paused`, `Playback::status` → `PlaybackStatus`). Not in Rust: FFV1 (`.mkv`),
+  `note_control`, the calibration file list in the JSON, replacing a recording of the same name (refused), an
+  `.avi` over 2 GiB (`write` returns an error; record on to a new file). A V4L2 time Rust checked to be on
+  `CLOCK_MONOTONIC` is named `v4l2_monotonic` in the CSV, apart from Python's `v4l2`. New errors
+  `SdkError::Recording` and `SdkError::EndOfRecording`; new dependency `jpeg-encoder` with `capture` (license
+  `(MIT OR Apache-2.0) AND IJG`; without `capture`, as the Python extension is built, it is not a dependency).
+  Examples `record_video` (encodes on a writing thread, `--queue-frames`, default 64) and `play_recording`. Run
+  without a camera only (generated frames, and files the Python package wrote from generated frames with
+  opencv-python 4.14 on Windows); not run with the camera.
+
+### Changed
+
+- `python -m opticmix_vision.calib` prints UTF-8, as the doctor does, so a path or a file's `meta` with
+  non-ASCII characters no longer stops it on a console with another code page.
+- The viewer's `v` encodes on a thread while the window draws: `recording.Recorder(..., queue_frames=N)` hands
+  each frame to a writing thread through a queue of `N` frames (the viewer: 64). A frame that finds the queue
+  full is not recorded and is counted — `Recorder.dropped_frames`, the JSON's `dropped_frames`, the viewer's REC
+  line (`missed~N since start (dropped N)`) and its message when recording stops; `estimated_missed_frames`
+  includes `dropped_frames` (do not add them), and the message says so. Frame numbers (the CSV, `breaks`,
+  `control_changes`) stay those of the file. An error on the writing thread is raised by the next `write()` or
+  by `close()`; `close()` writes the frames still queued first. Without `queue_frames` `Recorder` writes as
+  before. A queue does not make lossless keep up with 90 fps: the frames it cannot take are dropped and
+  counted. The viewer's `v` may still not keep up with 90 fps; `examples/record_video.py` remains the first
+  thing to try to record every frame, unless the write queue dropped most of the missed frames (then the
+  message advises MJPG, a lower `--fps` or `examples/capture_dataset_npz.py`). Any error the encoder raises
+  ends the recording with a message and the window still closes. Run on generated frames only; not run with
+  the camera.
+- `Device.open()` starts the `stall_frames` check afresh: after `close()` and `open()` on the same `Device`
+  the first frame is no longer compared with the last frame before `close()`, and the count of identical
+  images in a row starts again from zero (before, it carried on). An eye that had already stopped before
+  `close()` is therefore reported up to `stall_frames` frames later than before. A new `Device` behaved
+  this way already. Run on generated frames only; not run with the camera.
+- `Recorder.write()` after `close()` raises `ValueError("recorder is closed")` (before: with a queue the
+  frames were taken without a word; without one, `AttributeError`).
+- Rust: code that matches `SdkError` exhaustively stops compiling: four variants were added
+  (`SdkError::Calibration`, `SdkError::CalibLookup`, `SdkError::Recording`, `SdkError::EndOfRecording`) and the enum
+  is now `#[non_exhaustive]` — add a wildcard arm.
+- Rust: code that builds a `devices::DeviceInfo` with a struct literal stops compiling: the field `usb_location`
+  was added and the struct is now `#[non_exhaustive]` — build one with `DeviceInfo::new(index, name, usb_location)`.
+  Its fields are still public to read.
+- Rust: code that matches `DeviceSelector` exhaustively stops compiling: the variant `DeviceSelector::UsbLocation`
+  was added and the enum is now `#[non_exhaustive]` — add a wildcard arm. Building a `DeviceSelector` is unchanged.
+- Python: `devices.resolve_by_name()` takes a new keyword `usb_location=`, and `DeviceConfig.weevia_s1()` a new
+  keyword-only `usb_location=` (with `device=` as well: `ValueError`); calls without it behave as before.
+  `devices.DeviceInfo` has a third field, `usb_location` (default `None`): `DeviceInfo(index, name)` still works,
+  but an entry of `list_devices()` whose USB location is known no longer equals `DeviceInfo(index, name)`.
+- With two cameras of one name, the `MultipleMatches` message ends with their USB locations when they are known
+  (Python and Rust; Rust's Media Foundation and V4L2 messages list each device's location, `None` where it could
+  not be read) — code that matches the old text needs updating.
+- The doctor's finding for two Weevia S1 and the explorer's tooltip on the USB details now say to open one by its
+  USB location (`DeviceConfig.weevia_s1(usb_location=...)`; the port, not a serial number) as well as to connect one
+  at a time, and that picking by USB location has been run without a camera only; not run with a camera or two
+  cameras.
+- Python: needs `opencv-python>=4.14` (before: `>=4.8`), because FFV1 writing failed now and then with the 4.12 and
+  4.13 wheels (see Fixed). `pip install -U opencv-python` if `pip` reports a conflict. With the 4.14 wheel on Windows
+  (one PC, one camera through a 2-level USB hub, 2026-11-25, two runs): `examples/measure_fps.py` read 900 frames at
+  88.2 frames per second with no repeated image (first run). In a second run after a USB re-insert, with a different
+  build of the native module: a 10 s MJPG recording (888 frames, 88.7 frames per second, estimated missed 29) and a
+  10 s `--lossless` recording (443 frames, 44.3 frames per second in the read-and-record loop, estimated missed 450,
+  no error) closed and played back with the same frame counts; and a separate 90-frame FFV1 file, read back by this
+  package, gave the pixel values `Device.read()` had delivered in 90 of 90 frames, both eyes. On Linux the camera has
+  been run with the 5.1 wheel for capture only (package 0.0.3, 2026-11-23); recording has not been run on Linux.
+
+### Fixed
+
+- `python -m opticmix_vision.doctor --open --backend msmf` no longer reports that the negotiated pixel format is
+  not MJPG and that the frame rate falls short of 90 fps: through OpenCV's Media Foundation backend
+  `CAP_PROP_FOURCC` reads back OpenCV's output format code (RGB32 `0x00000016`, RGB24 `0x00000014`), not the
+  camera's format, so the finding came from that code rather than the camera — seen on one PC with one camera
+  (2026-11-25), in a report that also counted 904 frames in 10 s (90.27 fps). The negotiated mode line now shows
+  such a code in hex and says what it is. DirectShow and V4L2 keep the finding. Run without a camera only (made-up captures).
+  The 0.0.5 notes say OpenCV has Media Foundation convert 'the MJPG' to RGB; which format reaches that conversion has
+  not been established (one PC, one camera, once, 2026-11-25).
+- FFV1 (lossless) recording with OpenCV before 4.14: when the encoder fails on a frame, `Recorder.write()` raises
+  `RuntimeError` saying to upgrade OpenCV (`pip install -U opencv-python`) or record MJPG, instead of OpenCV's bare
+  `Unknown C++ exception from OpenCV code`; the recording is closed with the frames written before it (read back after a failure with the 4.13 wheel and cv2 alone; with 4.12 not checked). On one Windows PC, with
+  generated grayscale frames, FFV1 writing failed now and then with the opencv-python 4.12 and 4.13 wheels and not
+  with 4.14 or 5.1. The failure happens with cv2 alone, without this package; whether it is in OpenCV or in the
+  FFmpeg its wheel bundles has not been established. Other OpenCV versions and Linux: not run. This changes only
+  the message. Not run with the camera.
+
 ## 0.0.5 — 2026-11-24
 
 ### Added

@@ -22,6 +22,8 @@ body:
         The doctor is in opticmix-vision 0.0.5 and newer — with an older version, run
         `pip install -U opticmix-vision` first. Using only the Rust crate: `pip install
         opticmix-vision` and run the doctor (it does not open the camera), or write "Rust only".
+        For a calibration problem, also paste `python -m opticmix_vision.calib show` (0.0.6 and newer):
+        what the installed calibration file holds, read from the file.
       render: shell
     validations:
       required: true

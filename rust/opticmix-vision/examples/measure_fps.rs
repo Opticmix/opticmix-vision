@@ -8,7 +8,8 @@
 //!
 //! Prints the mode the camera negotiated (read it rather than assuming the one you asked for), then the
 //! intervals between frames: mean, min, max, the rate they add up to, how many came late, how many frames
-//! repeated the previous image byte for byte, and how many MJPG samples `read()` skipped because they did
+//! repeated the previous image byte for byte (per eye, and `Device::repeated_frames`: both eyes, since open,
+//! not printed when `stall_frames` is 0), and how many MJPG samples `read()` skipped because they did
 //! not decode (`undecodable_frames`). Then the `Device` statistics since open, which use the negotiated rate
 //! rather than the median: `late_frames` (intervals over 1.5 frame periods), `estimated_missed_frames`
 //! (round(interval / period) - 1 for each) and `actual_fps` (over the last 30 intervals) — the same names and
@@ -44,6 +45,7 @@
 //! interval ms: mean 11.11  min 9.09  max 13.10  -> 90.0 frames per second
 //! intervals over 1.5x the median: 0
 //! frames identical to the previous one: left 0, right 0
+//! frames identical in both eyes (Device::repeated_frames): 0
 //! MJPG samples skipped because they did not decode: 0
 //! since open, at the negotiated rate: late_frames 0, estimated_missed_frames 0, actual_fps 89.9
 //! driver time stamps: none from this capture backend (synthetic)
@@ -51,7 +53,10 @@
 //! ```
 //!
 //! Camera: the same calls (open, mode, reading and timing 300 frames) were run on Windows on one camera in
-//! an internal check; this file has been run with the camera once (one PC, one camera, 2026-11-24).
+//! an internal check; this file has been run with the camera once (one PC, one camera, 2026-11-24). The
+//! `Device::repeated_frames` line came later: run with the camera once (one PC, one camera, 2026-11-25, Media
+//! Foundation, 450 frames): 0, the same as the `measure_fps` example's own per-eye counts (left 0, right 0). A
+//! count above 0: generated frames only.
 //! Writes to the camera: none.
 
 mod common;
@@ -101,6 +106,9 @@ fn run(synthetic: bool, frames: usize) -> Result<(), Box<dyn std::error::Error>>
     );
     println!("intervals over 1.5x the median: {late}");
     println!("frames identical to the previous one: left {same_left}, right {same_right}");
+    if let Some(both) = cam.repeated_frames() {
+        println!("frames identical in both eyes (Device::repeated_frames): {both}");
+    }
     println!(
         "MJPG samples skipped because they did not decode: {}",
         cam.undecodable_frames()

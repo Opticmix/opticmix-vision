@@ -24,10 +24,17 @@
 //! The default feature `capture` brings frame capture (`Device`). With `default-features = false`
 //! the crate keeps the camera controls (Windows DirectShow), `split_stereo`, the stall check and the LED.
 //!
+//! `Recorder` and `Device::open_recording` write and play recordings in the Python package's file format (MJPG
+//! `.avi` with its CSV and JSON; see `recording`).
+//!
+//! `calib` reads the calibration file installed for your camera (`calib::resolve()`, `Device::calibration()`), by
+//! the rules of the Python package's `opticmix_vision.calib`.
+//!
 //! The Python package `opticmix_vision` calls these controls through its PyO3 extension
 //! (`opticmix_vision._core`) — the control logic lives here only.
 
 pub mod backend;
+pub mod calib;
 #[cfg(feature = "capture")]
 pub mod capture;
 pub mod config;
@@ -42,8 +49,12 @@ pub mod dshow;
 pub mod error;
 pub mod guard;
 pub mod led;
+#[cfg(feature = "capture")]
+pub mod recording;
 #[cfg(all(feature = "capture", windows))]
 pub mod mf;
+// Python notation for the calibration messages (shared with the repository's geometry crate).
+mod pyrepr;
 pub mod spec;
 pub mod stall;
 pub mod stereo;
@@ -60,4 +71,8 @@ pub use convert::UserValue;
 pub use device::{Device, StereoFrame, MAX_UNDECODABLE_IN_A_ROW};
 pub use error::{Result, SdkError};
 pub use led::LedControl;
+#[cfg(feature = "capture")]
+pub use recording::{Playback, PlaybackStatus, Recorder};
 pub use stereo::{split_stereo, GrayImage, Layout, LrOrder};
+/// The JSON crate of `calib::StereoCalibration::meta` (a `serde_json::Value`), re-exported so you need not add it.
+pub use serde_json;

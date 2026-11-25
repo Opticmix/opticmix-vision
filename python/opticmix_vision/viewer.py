@@ -21,8 +21,15 @@ v writes the same files as examples/record_video.py: a video with both eyes side
 a CSV of frame, host_ns and a JSON of the mode and control values next to it (recording.Recorder); LED / exposure /
 gain changes made while recording are listed in the JSON. The default MJPG changes pixel values; --lossless keeps the
 values the SDK delivered (FFV1) but takes longer per frame and may not keep up with 90 fps — the REC line counts the
-frames missed since recording started. s writes a JSON next to each PNG pair too.
-The top line shows the frame index, frames per second and the late / missed frame estimates (from host times).
+frames missed since recording started. A thread encodes while the window draws (Recorder queue_frames=REC_QUEUE):
+a frame that finds its queue full is not recorded, and the REC line, the JSON (dropped_frames) and the message when
+recording stops count it (within the missed estimate, not on top of it); stopping (v, q, the end) writes the frames
+still queued first. s writes a JSON next to
+each PNG pair too. The JSON of s and v says where its control values come from and when the viewer read them
+(controls_source "given", controls_read_at).
+The top line shows the frame index, frames per second and the late / missed frame estimates (from host times),
+and "repeated N" once a frame's two eyes both repeated the previous image (Device.repeated_frames; run without a
+camera only).
 The "saturated" line is each eye's share of pixels at 255 (--saturation-level), for setting the LED and exposure.
 Every control is read from the camera once, when the viewer opens (controls.snapshot()). The LED / exposure / gain
 line (it ends with "(as opened + viewer's writes)") and the controls in the JSON of s and v are those values with
@@ -64,7 +71,7 @@ import numpy as np
 from . import presets
 from .controls import ControlStateError
 from .device import EndOfRecording, StereoFrame
-from .recording import LOSSLESS_CODEC, Recorder, write_capture_info
+from .recording import LOSSLESS_CODEC, Recorder, _now, write_capture_info
 
 __all__ = ["ViewerState", "compose_view", "run_viewer", "main", "KEY_HELP"]
 
@@ -96,6 +103,10 @@ _HUD = (("LED", "backlight_compensation", "CAP_PROP_BACKLIGHT"), ("exp", "exposu
         ("gain", "gain", "CAP_PROP_GAIN"))
 _HUD_SOURCE = "  (as opened + viewer's writes)"   # the line is not a live reading of the camera (_current)
 _CHAR_PX = 9        # overlay text (FONT_HERSHEY_SIMPLEX 0.5): 8.4 to 8.9 px per character measured on these lines
+# v: a thread encodes while the window draws (Recorder queue_frames). The queue holds this many frames (64 of
+# 1600x800 gray: about 82 MB); a frame that finds it full is dropped and counted (REC line, JSON, stop message).
+# Drawing and encoding in one loop recorded 392 frames with about 130 missed on a camera (2026-11-24).
+REC_QUEUE = 64
 
 
 @dataclass
@@ -121,6 +132,7 @@ class ViewerState:
     _preset_i: int = -1
     _loading: Any = None                    # (label, controls, results, PresetLoad) until every write has its result
     _opened: bool = False                   # every control was read once (_known_values)
+    _read_at: str | None = None             # when (ISO 8601): the JSON's controls_read_at
     _calib_lines: list[str] = field(default_factory=list)   # c: the calibration file, shown until c again
 
     def _say(self, msg: str, error: bool = False) -> None:
@@ -350,6 +362,7 @@ class ViewerState:
             try:
                 for name, v in c.snapshot().items():
                     self._known.setdefault(name, v)    # a write asked for before (--preset) keeps its value
+                self._read_at = _now()
             except Exception:                         # noqa: BLE001 - the JSON then has what the overlay reads
                 pass
         out: dict[str, Any] = {}
@@ -545,16 +558,17 @@ def _imwrite(path: Path, img: np.ndarray) -> None:
 
 
 def _save_pair(frame: StereoFrame, out_dir: Path, left: np.ndarray, right: np.ndarray,
-               source: Any = None, controls: dict[str, Any] | None = None) -> tuple[Path, Path]:
-    """left/right PNG and, next to them, the capture info JSON (mode, controls - the given ones, if any - this
-    frame's index and host_ns)."""
+               source: Any = None, controls: dict[str, Any] | None = None,
+               controls_read_at: str | None = None) -> tuple[Path, Path]:
+    """left/right PNG and, next to them, the capture info JSON (mode, controls - the given ones, if any, read at
+    controls_read_at - this frame's index and host_ns)."""
     if out_dir.exists() and not out_dir.is_dir():
         raise OSError(f"save path is not a directory: {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{time.strftime('%Y%m%d_%H%M%S')}_{frame.index:06d}"
     lp, rp = out_dir / f"{stem}_left.png", out_dir / f"{stem}_right.png"
     _imwrite(lp, left); _imwrite(rp, right)
-    write_capture_info(out_dir / f"{stem}.json", source, controls=controls,
+    write_capture_info(out_dir / f"{stem}.json", source, controls=controls, controls_read_at=controls_read_at,
                        frame={"index": frame.index, "host_ns": frame.host_ns, "left": lp.name, "right": rp.name})
     return lp, rp
 
@@ -571,15 +585,18 @@ def _overlay(frame: StereoFrame, source: Any, state: ViewerState, rec: Recorder 
     line = f"frame {frame.index}  fps {loop_fps if fps is None else fps:5.1f}"
     if getattr(source, "late_frames", None) is not None:
         line += f"  late {source.late_frames}  missed~{source.estimated_missed_frames}"
+    if getattr(source, "repeated_frames", None):        # images the same as the frame before, in both eyes
+        line += f"  repeated {source.repeated_frames}"
     texts = [line + f"  {eye.shape[1]}x{eye.shape[0]}/eye", *extra]
     pb = getattr(source, "playback", None)
     if pb is not None:              # fps / late / missed above describe the recording; this is the playback
         status = "" if pb.status == "playing" else f"  {pb.status.upper()}"
         texts.insert(0, f"PLAY {pb.position}/{max(pb.frame_count - 1, 0)}  {pb.position_s:.2f}/{pb.duration_s:.2f} s"
                         f"  {pb.speed:g}x{status}{'  loop' if pb.loop else ''}  shown {loop_fps:.1f}/s")
-    if rec is not None:
+    if rec is not None:             # frames written so far; missed~ includes those the full write queue dropped
         texts.insert(0, f"REC {rec.path.name}  {rec.frames} frames{'' if rec.compressed else '  lossless'}"
-                        f"  missed~{rec.estimated_missed_frames} since start  (v stops)")
+                        f"  missed~{rec.estimated_missed_frames} since start (dropped {rec.dropped_frames})"
+                        "  (v stops)")
     if pb is None:                  # a file has no LED or exposure
         vals = state._hud(source)   # read once when the viewer opens, then its own writes
         if any(v is not None for v in vals):
@@ -601,10 +618,39 @@ def _stopped(rec: Recorder) -> str:
     if not rec.frames:
         return "recorded nothing: no frame came before recording stopped (no file written)"
     msg = f"recorded {rec.frames} frames to {rec.path.name}"
-    if rec.missed_advice:                     # v records alongside the preview; record_video.py has no window
-        msg += (f"; about {rec.estimated_missed_frames} frames missed while recording. First try "
-                f"examples/record_video.py (it records with no preview window). {rec.missed_advice}")
+    missed, dropped = rec.estimated_missed_frames, rec.dropped_frames
+    if not (missed or dropped):
+        return msg
+    if dropped > missed:                      # the estimate comes from frame times and can fall below the exact count
+        msg += (f"; at least {dropped} frames not recorded (dropped by the write queue; the estimate from the frame"
+                f" times is {missed})")
+    else:
+        msg += f"; about {missed} frames missed while recording"
+        if dropped:                           # a dropped frame is a gap in the frame times: the estimate has it
+            msg += (f" (estimated from the frame times; the {dropped} frames the write queue dropped are among"
+                    " them, not in addition)")
+    if 2 * dropped > missed:                  # mostly the encoder falling behind: record_video.py encodes the same
+        msg += (". The writing did not keep up: " + ("ask a lower rate with --fps" if rec.compressed
+                                                       else "record MJPG (leave out --lossless)")
+                + ", or keep frames in memory with examples/capture_dataset_npz.py.")
+    else:                                     # v records alongside the preview; record_video.py has no window
+        msg += (f". First try examples/record_video.py (it records with no preview window). {rec.missed_advice}")
     return msg
+
+
+def _finish(rec: Recorder, state: ViewerState, failed: BaseException | None = None) -> None:
+    """Closes a recording (the frames still queued are written first) and says how it went: _stopped, or, when
+    writing failed (failed, or the error close() raises), the error with the frames written and dropped."""
+    try:
+        rec.close()
+    except Exception as exc:                  # noqa: BLE001 — any writing error: say it, and the window still closes
+        failed = failed or exc                # the first error says why
+    if failed is None:
+        state.messages.append(_stopped(rec))
+        print(f"[viewer] {state.messages[-1]}")
+    else:
+        state._say(f"recording failed: {failed} ({rec.frames} frames written to {rec.path.name}, "
+                   f"{rec.dropped_frames} dropped)", error=True)
 
 
 class _SeekBar:
@@ -723,7 +769,7 @@ def run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = 
                 # Even if view changed the display, saving uses the frames **as received** (frame.left/right). If changed images
                 # were saved, whatever uses those files as input would silently give wrong results (this actually happened).
                 try:
-                    lp, rp = _save_pair(frame, out, frame.left, frame.right, source, known())
+                    lp, rp = _save_pair(frame, out, frame.left, frame.right, source, known(), state._read_at)
                 except OSError as exc:
                     state.last_error = f"save failed: {exc}"
                     state.messages.append(state.last_error)
@@ -737,7 +783,8 @@ def run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = 
                     try:
                         # opens the files now; the recording starts with the next frame, since this one was
                         # read before they were open (writing it would put the opening time between frames 0 and 1)
-                        rec = Recorder(path, source, codec=LOSSLESS_CODEC if lossless else "MJPG", controls=known)
+                        rec = Recorder(path, source, codec=LOSSLESS_CODEC if lossless else "MJPG", controls=known,
+                                       controls_read_at=state._read_at, queue_frames=REC_QUEUE)
                     except OSError as exc:
                         rec = None
                         state._say(f"recording failed: {exc}", error=True)
@@ -745,31 +792,23 @@ def run_viewer(source: Any, *, headless: bool = False, max_frames: int | None = 
                         started = True
                         state.messages.append(f"recording {rec.path.name}")
                 else:
-                    rec.close()
-                    state.messages.append(_stopped(rec))
-                    print(f"[viewer] {state.messages[-1]}")
+                    _finish(rec, state)                           # waits for the frames still queued
                     rec = None
             elif action == "quit":
                 break
             if rec is not None and not started and not paused:   # a paused recording repeats its frame
                 try:
-                    rec.write(frame)          # a source whose frame size is known only now opens the files here
-                except OSError as exc:
-                    try:
-                        rec.close()             # e.g. the CSV failed mid-recording: release the video file
-                    except OSError:
-                        pass
+                    rec.write(frame)          # queued for the writing thread (REC_QUEUE), or dropped when it is full
+                except Exception as exc:      # noqa: BLE001 — what the writing thread met: e.g. the disk is full,
+                    _finish(rec, state, exc)  # the files could not open, or the encoder failed; the viewer goes on
                     rec = None
-                    state._say(f"recording failed: {exc}", error=True)
             if max_frames is not None and n >= max_frames:
                 state.commit(source, force=True)
                 break
     finally:
         state.poll(timeout=2.0)                                   # a preset still loading: its results go to the log
         if rec is not None:
-            rec.close()
-            state.messages.append(_stopped(rec))
-            print(f"[viewer] {state.messages[-1]}")
+            _finish(rec, state)
         if not headless:
             try:
                 cv2.destroyWindow(window)

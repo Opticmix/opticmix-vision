@@ -150,7 +150,10 @@ class ExplorerApp:
         sn.pack(side="right", padx=(8, 4))
         self._tooltip(sn, "VID:PID, USB device revision (bcdDevice) and USB link speed, read from the OS without\n"
                           "opening the camera. This camera reports no USB serial number: two units cannot be told\n"
-                          "apart in software — label them physically. python -m opticmix_vision.doctor prints more.")
+                          "apart by name — label them physically, or open one by its USB location (the port, not a\n"
+                          "serial number; the doctor's location): DeviceConfig.weevia_s1(usb_location=...).\n"
+                          "Picking by USB location: run without a camera only; not run with a camera or two cameras.\n"
+                          "python -m opticmix_vision.doctor prints more.")
 
         self.device_var = tk.StringVar()
         self.device_combo = ttk.Combobox(bar, textvariable=self.device_var, state="readonly",

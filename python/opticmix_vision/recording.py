@@ -9,8 +9,10 @@ A recording is three files with the same name:
                       synthetic source). A CSV of only frame, host_ns (earlier versions) plays back as before
   <name>.json         capture info (`capture_info`): the negotiated mode, the camera's layout and left/right
                       order, device name, installed calibration files, control values when recording started
-                      and ended and every change in between (`Recorder.note_control`), SDK version, codec,
-                      frame count, pauses, and the late / missed frame estimates over the recording
+                      and ended and every change in between (`Recorder.note_control`), where those values
+                      came from and when they were read (`controls_source`, `controls_read_at`), SDK version,
+                      codec, frame count, pauses, the frames a full write queue dropped, and the late / missed
+                      frame estimates over the recording
 
 The .csv and .json are named after the video without its extension, so two recordings in one folder need
 different names, not only different extensions: `Recorder` refuses (FileExistsError) rather than overwrite
@@ -19,13 +21,21 @@ another recording's files (or the .json of a `capture_dataset_npz.py` .npz).
 Codec "MJPG" (default) is compressed: pixel values change. "FFV1" (`LOSSLESS_CODEC`) keeps the pixel values the
 SDK delivered; each frame takes longer to write than MJPG, so it may not keep up with 90 fps — the recording's
 JSON and `Recorder.estimated_missed_frames` say how many frames were missed. FFV1 needs an OpenCV build with the
-FFV1 encoder (checked: the opencv-python 4.13 wheel on Windows; other builds not checked).
+FFV1 encoder (checked: the opencv-python 4.12, 4.13, 4.14 and 5.1 wheels on Windows; other builds not checked). With
+the 4.12 and 4.13 wheels, writing grayscale frames to FFV1 failed now and then (`cv2.error` on a frame, with cv2
+alone too, without this package; one PC, generated frames); with 4.14 and 5.1 it did not in the same test. Whether
+the failure is in OpenCV or in the FFmpeg its wheel bundles has not been established; other OpenCV versions and
+Linux have not been run. With OpenCV before 4.14 `write()` then raises RuntimeError saying to upgrade OpenCV or
+record MJPG.
 
 A recording that was not closed (the process stopped while recording): an MJPG .avi cannot be opened; an FFV1
 .mkv plays up to where it was written.
 
 Play a recording with `Device(DeviceConfig.recording(path))`; `Device.playback` is the `Playback` here (seek,
-speed, real-time pacing, loop, pause, status). Python only; the Rust crate has no recording API yet.
+speed, real-time pacing, loop, pause, status). The Rust crate (`opticmix-vision`: `Recorder`,
+`Device::open_recording`) writes and plays the same MJPG .avi files, CSV and JSON; it neither writes nor plays
+FFV1, and its recordings name a checked V4L2 clock "v4l2_monotonic" in the CSV. Rust recording and playback:
+generated frames only; not run with the camera.
 """
 
 from __future__ import annotations
@@ -34,6 +44,8 @@ import bisect
 import csv
 import hashlib
 import json
+import queue
+import threading
 import time
 import warnings
 from datetime import datetime
@@ -62,11 +74,20 @@ _GIVEN_NOTE = ("values known to the program that captured, not read from the cam
                "opened, then its own writes)")
 
 
-def capture_info(source: Any, *, controls: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
+def _now() -> str:
+    """Local wall-clock time, ISO 8601 to the millisecond."""
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def capture_info(source: Any, *, controls: dict[str, Any] | None = None, controls_read_at: str | None = None,
+                 **extra: Any) -> dict[str, Any]:
     """What was capturing: SDK version, wall-clock time, negotiated mode, the camera's layout and left/right
     order, device name and installed calibration files (camera only), and every control value
     (`controls.snapshot()`; simulated values for the synthetic source). `extra` is added as is.
-    `controls`: the values to write instead of reading the camera (controls_note then says so).
+    `controls`: the values to write instead of reading the camera (controls_note then says so), and
+    `controls_read_at` when the program read them from the camera (ISO 8601).
+    `controls_source` says where the values came from: "camera" (read here), "simulated" (the synthetic source),
+    "given" (`controls`), or None (no controls; controls_note says why); `controls_read_at` is when.
     Reads controls (unless given), never writes them."""
     from . import __version__
     mode = getattr(source, "mode", None)
@@ -96,12 +117,15 @@ def capture_info(source: Any, *, controls: dict[str, Any] | None = None, **extra
     try:
         if controls is not None:
             info["controls"], info["controls_note"] = dict(controls), _GIVEN_NOTE
+            info["controls_source"], info["controls_read_at"] = "given", controls_read_at
         else:
             info["controls"] = source.controls.snapshot()
+            info["controls_read_at"] = _now()
+            info["controls_source"] = "simulated" if info["source"] == "synthetic" else "camera"
         if controls is None and info["source"] == "synthetic":
             info["controls_note"] = "simulated values (synthetic source)"
     except Exception as exc:                     # no controls (a recording, or no compiled extension): say why
-        info["controls"] = None
+        info["controls"] = info["controls_source"] = info["controls_read_at"] = None
         info["controls_note"] = f"{type(exc).__name__}: {exc}"
     info.update(extra)
     return info
@@ -161,15 +185,31 @@ class Recorder:
     `fps`: the frame rate written into the file, a label only (default: the source's negotiated rate, or 30).
     `controls`: a function giving the control values for the JSON, called when the recorder is created and when it
     closes (`controls_at_end`), instead of reading the camera then; None from it reads the camera as without it.
+    `controls_read_at`: when those values were read from the camera (ISO 8601), for the JSON.
+
+    `queue_frames`: 0 (default): `write()` encodes the frame before it returns. N > 0: `write()` hands the frame
+    to a writing thread through a queue of N frames and returns at once, so encoding does not hold up the caller
+    (the viewer draws while a thread encodes). A frame that finds the queue full is not recorded: it is counted
+    in `dropped_frames` (and the JSON's), and the frame numbers stay those of the file. An error on the writing
+    thread is raised by the next `write()` (every later one too; nothing more is recorded) or, if none comes, by
+    `close()`; the frames given after it are counted as dropped. `close()` writes the frames still queued first.
+    The queued frames' arrays are kept until written: do not change them after `write()`. A queue does not make
+    an encoder that is slower than the camera keep up (FFV1 at 90 fps): the frames it cannot take are dropped
+    and counted. `write()` after `close()` raises ValueError.
 
     `late_frames` / `estimated_missed_frames`: over the frames written so far, from their host_ns intervals at
-    the source's negotiated rate (the same rule as `Device.late_frames`); a pause is not counted as a gap.
+    the source's negotiated rate (the same rule as `Device.late_frames`); a pause is not counted as a gap, a
+    dropped frame is (it leaves a gap in the recorded times): `estimated_missed_frames` includes
+    `dropped_frames` — do not add them.
     """
 
     def __init__(self, path: str | Path, source: Any, *, codec: str = "MJPG", fps: float | None = None,
-                 controls: Callable[[], dict[str, Any] | None] | None = None) -> None:
+                 controls: Callable[[], dict[str, Any] | None] | None = None, controls_read_at: str | None = None,
+                 queue_frames: int = 0) -> None:
         if len(codec) != 4:
             raise ValueError(f"codec takes four characters, e.g. MJPG or FFV1: {codec!r}")
+        if int(queue_frames) < 0:
+            raise ValueError(f"queue_frames is 0 (write before returning) or a number of frames: {queue_frames!r}")
         self.path = Path(path)
         self.csv_path = self.path.with_suffix(".csv")
         self.info_path = self.path.with_suffix(".json")
@@ -196,13 +236,24 @@ class Recorder:
         self._first_ns = self._last_ns = None
         self._stats = _FrameStats()
         self._resumed = False
-        self.info = capture_info(source, controls=None if controls is None else controls(), recording={
+        self._next = 0                  # the file's number for the next frame write() takes (written + queued)
+        self._full = self._failed = 0   # not recorded: the queue was full (caller) / writing failed (writing thread)
+        self._error: BaseException | None = None
+        self._told = False
+        self._closed = False
+        self._queue: queue.Queue | None = None
+        self.info = capture_info(source, controls=None if controls is None else controls(),
+                                 controls_read_at=controls_read_at, recording={
             "codec": codec, "compressed": self.compressed, "layout": "sbs", "lr_order": "first_is_left",
             "fps_label": self.fps, "frames": 0, "csv": self.csv_path.name, "closed": False,
-            "breaks": [], "control_changes": []})
+            "write_queue": int(queue_frames), "dropped_frames": 0, "breaks": [], "control_changes": []})
         size = _expected_size(source)
         if size is not None:
             self._open(size)
+        if queue_frames:
+            self._queue = queue.Queue(int(queue_frames))
+            self._thread = threading.Thread(target=self._drain, name=f"Recorder {self.path.name}", daemon=True)
+            self._thread.start()
 
     @property
     def late_frames(self) -> int:
@@ -211,6 +262,12 @@ class Recorder:
     @property
     def estimated_missed_frames(self) -> int:
         return self._stats.missed
+
+    @property
+    def dropped_frames(self) -> int:
+        """Frames `write()` took (not paused) that are not in the file: the write queue was full, or writing had
+        failed. Always 0 without a queue (`write()` then raises instead)."""
+        return self._full + self._failed
 
     @property
     def missed_advice(self) -> str:
@@ -296,18 +353,57 @@ class Recorder:
         self._kept = None
 
     def write(self, frame: Any) -> None:
-        """Appends one StereoFrame. Does nothing while paused. Raises OSError when the video file cannot be opened."""
+        """Appends one StereoFrame. Does nothing while paused. Raises OSError when the video file cannot be opened.
+        With a queue (`queue_frames`), hands the frame to the writing thread, or drops it when the queue is full,
+        and raises the error the writing thread met. Raises ValueError after `close()`."""
+        if self._closed:
+            raise ValueError("recorder is closed")
         if self.paused:
             return
+        if self._error is not None:
+            self._told = True
+            raise self._error
+        brk = self._resumed and self._next > 0
+        if self._queue is None:
+            self._write(frame, brk)
+        else:
+            try:
+                self._queue.put_nowait((frame, brk))
+            except queue.Full:
+                self._full += 1                  # a break still waiting goes with the next frame recorded
+                return
+        self._resumed = False
+        if brk:
+            self.info["recording"]["breaks"].append(self._next)
+        self._next += 1
+
+    def _drain(self) -> None:
+        """The writing thread: writes the queued frames in order until close() queues None."""
+        while (item := self._queue.get()) is not None:
+            if self._error is None:
+                try:
+                    self._write(*item)
+                    continue
+                except BaseException as exc:     # noqa: BLE001 — raised to the caller by write() or close()
+                    self._error = exc
+            self._failed += 1
+
+    def _write(self, frame: Any, brk: bool) -> None:
         if self.frames == 0:
             h, w = frame.left.shape[:2]
             if self._size != (w, h, frame.left.ndim == 3):    # not opened yet, or opened for another size
                 self._open((w, h, frame.left.ndim == 3))
-        brk = self._resumed and self.frames > 0
-        self._resumed = False
-        if brk:
-            self.info["recording"]["breaks"].append(self.frames)
-        self._writer.write(np.hstack([frame.left, frame.right]))
+        import cv2
+        try:
+            self._writer.write(np.hstack([frame.left, frame.right]))
+        except cv2.error as exc:
+            if self.compressed or tuple(int(v) for v in cv2.__version__.split(".")[:2]) >= (4, 14):
+                raise
+            raise RuntimeError(
+                f"OpenCV {cv2.__version__} failed to write frame {self.frames} to {self.path.name} (FFV1): {exc}. "
+                "On one Windows PC, with generated grayscale frames, FFV1 writing failed this way now and then "
+                "with the opencv-python 4.12 and 4.13 wheels and not with 4.14 or 5.1. Upgrade OpenCV "
+                "(pip install -U opencv-python) or record MJPG.") from exc
         # csv writes None as an empty cell; a frame-like object without driver_ns gets empty cells too
         self._rows.writerow([self.frames, frame.host_ns, getattr(frame, "driver_ns", None),
                              getattr(frame, "driver_clock", None)])
@@ -319,8 +415,9 @@ class Recorder:
 
     def note_control(self, name: str, value: Any, status: str | None = None) -> None:
         """Records a control change made while recording: {"frame", "name", "value"} (and "status" when given),
-        where frame is the number of the next frame written. The viewer calls it for its key changes."""
-        change: dict[str, Any] = {"frame": self.frames, "name": name, "value": value}
+        where frame is the number of the next frame written (counting the frames still queued). The viewer calls it
+        for its key changes."""
+        change: dict[str, Any] = {"frame": self._next, "name": name, "value": value}
         if status is not None:
             change["status"] = status
         self.info["recording"]["control_changes"].append(change)
@@ -341,13 +438,25 @@ class Recorder:
         r["first_host_ns"], r["last_host_ns"] = self._first_ns, self._last_ns
         r["duration_s"] = (self._last_ns - self._first_ns) / 1e9 if self._first_ns is not None else 0.0
         r["late_frames"], r["estimated_missed_frames"] = self.late_frames, self.estimated_missed_frames
+        r["dropped_frames"] = self.dropped_frames
         _dump(self.info_path, self.info)
 
     def close(self) -> None:
-        """Closes the files and writes the final frame count, the late / missed estimates and the control values
-        at the end into the JSON, and deletes the earlier recording it replaced. With no frame written, removes
-        its files instead (an empty video cannot be played) and puts back the recording it replaced. Safe to call
-        more than once."""
+        """Writes the frames still queued, closes the files and writes the final frame count, the late / missed
+        estimates and the control values at the end into the JSON, and deletes the earlier recording it replaced.
+        With no frame written, removes its files instead (an empty video cannot be played) and puts back the
+        recording it replaced. Then raises the writing thread's error if no `write()` raised it. Safe to call more
+        than once; `write()` after it raises ValueError."""
+        self._closed = True
+        if self._queue is not None and self._thread.is_alive():
+            self._queue.put(None)                # after the frames still queued
+            self._thread.join()
+        self._close_files()
+        if self._error is not None and not self._told:
+            self._told = True
+            raise self._error
+
+    def _close_files(self) -> None:
         if self._writer is None:
             return
         self._writer.release()
@@ -364,9 +473,13 @@ class Recorder:
             controls = self._source.controls
             controls.flush(timeout=1.0)          # let writes still queued land before reading the end values
             given = None if self._given is None else self._given()
-            r["controls_at_end"] = controls.snapshot() if given is None else given
+            if given is None:
+                r["controls_at_end"] = controls.snapshot()
+                r["controls_at_end_source"] = "simulated" if self.info["source"] == "synthetic" else "camera"
+            else:
+                r["controls_at_end"], r["controls_at_end_source"] = given, "given"
         except Exception:                        # noqa: BLE001 — no controls (synthetic without core, a recording)
-            r["controls_at_end"] = None
+            r["controls_at_end"] = r["controls_at_end_source"] = None
         r["closed"] = True
         self._write_info()
 

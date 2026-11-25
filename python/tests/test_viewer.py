@@ -292,6 +292,17 @@ def test_overlay_shows_frame_statistics_and_hides_led_for_a_recording(tmp_path: 
     assert not any(t.startswith("LED ") for t in lines)
 
 
+def test_overlay_shows_repeated_images_once_there_are_some():
+    from types import SimpleNamespace
+    from opticmix_vision.viewer import _overlay
+    src = SyntheticStereoSource(eye_size=(64, 32), fps=1000.0)
+    f = src.read()
+    for n, want in ((None, False), (0, False), (7, True)):
+        cam = SimpleNamespace(actual_fps=90.0, late_frames=0, estimated_missed_frames=0, repeated_frames=n)
+        line = _overlay(f, cam, ViewerState(), None, 90.0, f.left, [])[0]
+        assert ("  repeated 7  " in line) is want and ("repeated" in line) is want, line
+
+
 def test_cli_loops_a_recording(tmp_path: Path, capsys):
     avi = _recorded(tmp_path, 4)
     assert main(["--recording", str(avi), "--loop", "--headless", "--frames", "10"]) == 0
@@ -764,23 +775,245 @@ def test_cli_saturation_level_must_be_a_pixel_value():
 
 def test_a_recording_whose_csv_fails_midway_is_closed_and_the_viewer_goes_on(tmp_path: Path, monkeypatch):
     import json
+    import time
     from opticmix_vision import recording
     made = []
-    real_write = recording.Recorder.write
+    real_write = recording.Recorder._write
 
-    def write(self, frame):                     # the third frame's CSV row fails, e.g. the disk is full
+    def write(self, frame, brk):                # on the writing thread: the third frame fails, e.g. the disk is full
         made.append(self)
         if self.frames == 2:
             raise OSError(28, "No space left on device")
-        real_write(self, frame)
-    monkeypatch.setattr(recording.Recorder, "write", write)
+        real_write(self, frame, brk)
+    monkeypatch.setattr(recording.Recorder, "_write", write)
+
+    def keys():
+        yield from (ord("v"), -1, -1, -1)       # v, then frames 0, 1 and 2 to the recording
+        end = time.monotonic() + 10
+        while not (made and made[-1].dropped_frames == 1):     # frame 2 failed on the writing thread
+            assert time.monotonic() < end
+            time.sleep(0.005)
+        yield -1                                # frame 3: write() raises that error
+        yield ord("q")
     src = SyntheticStereoSource(eye_size=(64, 32), fps=1000.0)
-    stats = run_viewer(src, headless=True, out_dir=tmp_path, key_feed=[ord("v"), -1, -1, -1, -1, ord("q")])
-    assert stats["frames"] == 6 and stats["last_error"].startswith("recording failed")
+    stats = run_viewer(src, headless=True, out_dir=tmp_path, key_feed=keys())
+    assert stats["frames"] == 6 and stats["last_error"].startswith("recording failed: [Errno 28] No space left")
     rec = made[-1]
+    assert stats["last_error"].endswith(f"(2 frames written to {rec.path.name}, 1 dropped)")
     assert rec._writer is None                  # the video file was released
     r = json.loads(rec.info_path.read_text(encoding="utf-8"))["recording"]
-    assert r["closed"] is True and r["frames"] == 2
+    assert (r["closed"], r["frames"], r["dropped_frames"]) == (True, 2, 1)
+
+
+class _GatedWriter:
+    """cv2.VideoWriter replaced by a slow encoder: each write waits for `gate`; `got` counts the frames written and
+    `threads` the threads that wrote them. Encodes nothing."""
+
+    def __init__(self, monkeypatch, delay: float = 0.0):
+        import threading
+        import cv2
+        self.gate, self.entered, self.got, self.threads, self.delay = threading.Event(), threading.Event(), [], set(), delay
+        outer = self
+
+        class Writer:
+            def __init__(self, path, *a, **k):
+                Path(path).write_bytes(b"")
+
+            def isOpened(self):
+                return True
+
+            def write(self, img):
+                import time
+                outer.entered.set()
+                assert outer.gate.wait(10)
+                time.sleep(outer.delay)
+                outer.threads.add(threading.current_thread().name)
+                outer.got.append(img.shape)
+
+            def release(self):
+                pass
+        monkeypatch.setattr(cv2, "VideoWriter", Writer)
+
+
+def test_v_writes_on_its_own_thread_and_counts_the_frames_a_full_queue_dropped(tmp_path: Path, monkeypatch, capsys):
+    """The window drew and encoded in one loop: with the camera, v recorded 392 frames with about 130 missed
+    (2026-11-24). A thread now writes; a frame that finds the queue full is dropped and counted, not lost quietly."""
+    import json
+    import threading
+    from opticmix_vision import viewer
+    monkeypatch.setattr(viewer, "REC_QUEUE", 2)
+    enc = _GatedWriter(monkeypatch)
+
+    def keys():
+        yield ord("v")                          # frame 1: v opens the files; the recording starts with frame 2
+        yield -1                                # frame 2: the writing thread takes it and waits for the encoder
+        assert enc.entered.wait(10)
+        yield from (-1,) * 4                    # frames 3 and 4 fill the queue of 2; frames 5 and 6 are dropped
+        enc.gate.set()
+        yield ord("v")                          # frame 7: stop — the queued frames are written first
+    st = ViewerState()
+    stats = run_viewer(SyntheticStereoSource(eye_size=(64, 32), fps=1000.0), headless=True, out_dir=tmp_path,
+                       state=st, key_feed=keys())
+    assert stats["frames"] == 7 and stats["last_error"] == ""
+    assert len(enc.got) == 3 and threading.current_thread().name not in enc.threads
+    (js,) = tmp_path.glob("*.json")
+    r = json.loads(js.read_text(encoding="utf-8"))["recording"]
+    assert (r["frames"], r["dropped_frames"], r["write_queue"], r["closed"]) == (3, 2, 2, True)
+    assert len(_csv_rows(js.with_suffix(".csv"))) == 1 + 3
+    msg = next(m for m in st.messages if m.startswith("recorded "))
+    assert msg.startswith(f"recorded 3 frames to {js.with_suffix('.avi').name}; ")
+    # the estimate (from frame times) is either at least the 2 dropped, or the 2 dropped are given as the floor
+    assert ("the 2 frames the write queue dropped are among them, not in addition" in msg
+            or "at least 2 frames not recorded (dropped by the write queue" in msg)
+    assert f"[viewer] {msg}" in capsys.readouterr().out
+
+
+def test_q_while_frames_are_queued_writes_them_before_the_files_close(tmp_path: Path, monkeypatch):
+    import json
+    enc = _GatedWriter(monkeypatch, delay=0.02)
+
+    def keys():
+        yield from (ord("v"), -1)               # frame 2 goes to the writing thread, which waits
+        assert enc.entered.wait(10)
+        yield from (-1, -1)                     # frames 3 and 4 wait in the queue
+        enc.gate.set()
+        yield ord("q")
+    st = ViewerState()
+    run_viewer(SyntheticStereoSource(eye_size=(64, 32), fps=1000.0), headless=True, out_dir=tmp_path, state=st,
+               key_feed=keys())
+    (js,) = tmp_path.glob("*.json")
+    r = json.loads(js.read_text(encoding="utf-8"))["recording"]
+    assert (r["frames"], r["dropped_frames"], r["closed"]) == (3, 0, True) and len(enc.got) == 3
+    assert st.messages[-1].startswith("recorded 3 frames")
+
+
+def test_rec_line_shows_the_frames_the_recording_dropped():
+    from types import SimpleNamespace
+    from opticmix_vision.viewer import _overlay
+    src = SyntheticStereoSource(eye_size=(64, 32), fps=100.0)
+    f = src.read()
+    rec = SimpleNamespace(path=Path("r.avi"), frames=10, compressed=True, estimated_missed_frames=3, dropped_frames=2)
+    assert _overlay(f, src, ViewerState(), rec, 50.0, f.left, [])[0] == (
+        "REC r.avi  10 frames  missed~3 since start (dropped 2)  (v stops)")
+
+
+@pytest.mark.parametrize("compressed, missed, dropped, end", [
+    # mostly dropped by the write queue: the dropped frames are among the missed ones (the same frames)
+    (False, 130, 126, " (estimated from the frame times; the 126 frames the write queue dropped are among them, not"
+                      " in addition). The writing did not keep up: record MJPG (leave out --lossless), or keep frames"
+                      " in memory with examples/capture_dataset_npz.py."),
+    (True, 40, 30, " (estimated from the frame times; the 30 frames the write queue dropped are among them, not in"
+                   " addition). The writing did not keep up: ask a lower rate with --fps, or keep frames in memory"
+                   " with examples/capture_dataset_npz.py."),
+    # not the write queue: the window's loop fell behind
+    (True, 130, 0, ". First try examples/record_video.py (it records with no preview window). To record every"
+                   " frame: ask a lower rate with --fps, or keep frames in memory with"
+                   " examples/capture_dataset_npz.py."),
+])
+def test_the_stop_message_counts_dropped_frames_within_the_missed_ones(compressed, missed, dropped, end):
+    """A dropped frame is also a gap in the frame times: the message must not read as missed + dropped frames lost."""
+    from opticmix_vision.recording import Recorder
+    from opticmix_vision.viewer import _stopped
+    from types import SimpleNamespace
+    rec = SimpleNamespace(path=Path("r.avi"), frames=300, compressed=compressed, estimated_missed_frames=missed,
+                          dropped_frames=dropped)
+    rec.missed_advice = Recorder.missed_advice.fget(rec)
+    assert _stopped(rec) == f"recorded 300 frames to r.avi; about {missed} frames missed while recording{end}"
+
+
+def test_the_stop_message_gives_the_dropped_count_as_the_floor_when_it_exceeds_the_estimate():
+    """The missed figure is estimated from frame times and can come out below the exact dropped count (seen with
+    frames arriving faster than the nominal rate): then the dropped count is the floor, not "among" a smaller number."""
+    from opticmix_vision.viewer import _stopped
+    from types import SimpleNamespace
+    rec = SimpleNamespace(path=Path("r.mkv"), frames=231, compressed=False, estimated_missed_frames=71,
+                          dropped_frames=263, missed_advice="")
+    assert _stopped(rec) == ("recorded 231 frames to r.mkv; at least 263 frames not recorded (dropped by the write "
+                             "queue; the estimate from the frame times is 71). The writing did not keep up: record "
+                             "MJPG (leave out --lossless), or keep frames in memory with "
+                             "examples/capture_dataset_npz.py.")
+
+
+def test_an_encoder_raising_another_error_is_reported_and_the_window_still_closes(tmp_path: Path, monkeypatch):
+    import cv2
+    closed = []
+
+    class Writer:
+        def __init__(self, path, *a, **k):
+            Path(path).write_bytes(b"")
+
+        def isOpened(self):
+            return True
+
+        def write(self, img):
+            raise ValueError("encoder refused the frame")
+
+        def release(self):
+            pass
+    win = _FakeWindow([ord("v"), -1, -1, -1, -1, ord("q")])
+    win.install(monkeypatch)
+    monkeypatch.setattr(cv2, "VideoWriter", Writer)
+    monkeypatch.setattr(cv2, "destroyWindow", lambda w: closed.append(w))
+    stats = run_viewer(SyntheticStereoSource(eye_size=(64, 32), fps=1000.0), out_dir=tmp_path)
+    assert stats["last_error"].startswith("recording failed: encoder refused the frame (0 frames written to ")
+    assert closed == ["Weevia S1 Viewer"]
+
+
+@pytest.mark.parametrize("stop", ["v", "q"])
+def test_an_encoder_error_that_shows_only_when_recording_stops_is_reported_and_the_window_closes(
+        tmp_path: Path, monkeypatch, stop):
+    """No write() comes after the failure: close() raises it (v stops, or q ends the loop)."""
+    import threading
+    import cv2
+    gate, entered, closed = threading.Event(), threading.Event(), []
+
+    class Writer:
+        def __init__(self, path, *a, **k):
+            Path(path).write_bytes(b"")
+
+        def isOpened(self):
+            return True
+
+        def write(self, img):
+            entered.set()
+            assert gate.wait(10)
+            raise ValueError("encoder refused the frame")
+
+        def release(self):
+            pass
+
+    class Window(_FakeWindow):
+        def wait_key(self, ms):
+            key = super().wait_key(ms)
+            if self.calls == 3:               # the encoder fails only now, while v / q is handled
+                assert entered.wait(10)
+                gate.set()
+            return key
+    import itertools
+    from opticmix_vision import viewer
+    win = Window([ord("v"), -1, ord(stop), ord("q")])
+    win.install(monkeypatch)
+    monkeypatch.setattr(viewer, "_clock", itertools.count().__next__)   # keys a second apart: separate presses
+    monkeypatch.setattr(cv2, "VideoWriter", Writer)
+    monkeypatch.setattr(cv2, "destroyWindow", lambda w: closed.append(w))
+    stats = run_viewer(SyntheticStereoSource(eye_size=(64, 32), fps=1000.0), out_dir=tmp_path)
+    import re
+    assert re.fullmatch(r"recording failed: encoder refused the frame \(0 frames written to \d{8}_\d{6}_\d{6}\.avi,"
+                        r" 1 dropped\)", stats["last_error"])
+    assert closed == ["Weevia S1 Viewer"] and list(tmp_path.iterdir()) == []   # no frame: no files left
+
+
+def test_s_and_v_say_the_controls_were_given_and_when_the_viewer_read_them(tmp_path: Path):
+    import json
+    from datetime import datetime, timedelta
+    src = SyntheticStereoSource(eye_size=(64, 32), fps=1000.0)
+    t0 = datetime.now().astimezone()
+    run_viewer(src, headless=True, out_dir=tmp_path, key_feed=[ord("s"), ord("v"), -1, ord("v")])
+    infos = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(tmp_path.glob("*.json"))]
+    assert len(infos) == 2 and [i["controls_source"] for i in infos] == ["given", "given"]
+    (at,) = {i["controls_read_at"] for i in infos}                 # both: read once, when the viewer opened
+    assert t0 - timedelta(seconds=1) <= datetime.fromisoformat(at) <= datetime.now().astimezone()
+    assert [i["recording"]["controls_at_end_source"] for i in infos if "recording" in i] == ["given"]
 
 
 def _count_reads(monkeypatch, controls) -> dict[str, int]:

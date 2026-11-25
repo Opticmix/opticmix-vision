@@ -1,0 +1,81 @@
+{
+  "calibration_files": null,
+  "calibration_note": "not listed by the Rust crate",
+  "camera": {
+    "backend": "fake",
+    "device": "WN Dual Camera",
+    "device_name": "fake",
+    "layout": "sbs",
+    "lr_order": "first_is_right"
+  },
+  "controls": {
+    "auto_exposure": "manual",
+    "auto_exposure_priority": false,
+    "auto_white_balance": false,
+    "backlight_compensation": 32,
+    "brightness": 50,
+    "contrast": 50,
+    "exposure": -5,
+    "gain": 32,
+    "gamma": 50,
+    "hue": 64,
+    "power_line_frequency": "60hz",
+    "saturation": 36,
+    "sharpness": 28,
+    "white_balance": 128
+  },
+  "controls_read_at": "2026-11-24T16:32:30.365+00:00",
+  "controls_source": "simulated",
+  "created": "2026-11-24T16:32:30+00:00",
+  "host_clock": "host_ns is the recording process's monotonic clock (Rust std::time::Instant) when the frame was read, not a camera clock",
+  "mode": {
+    "backend_name": "fake",
+    "fourcc": "MJPG",
+    "fps": 90.0,
+    "height": 16,
+    "width": 64
+  },
+  "opticmix_vision": "0.0.5",
+  "recording": {
+    "breaks": [],
+    "closed": true,
+    "codec": "MJPG",
+    "compressed": true,
+    "control_changes": [],
+    "controls_at_end": {
+      "auto_exposure": "manual",
+      "auto_exposure_priority": false,
+      "auto_white_balance": false,
+      "backlight_compensation": 32,
+      "brightness": 50,
+      "contrast": 50,
+      "exposure": -5,
+      "gain": 32,
+      "gamma": 50,
+      "hue": 64,
+      "power_line_frequency": "60hz",
+      "saturation": 36,
+      "sharpness": 28,
+      "white_balance": 128
+    },
+    "controls_at_end_source": "simulated",
+    "csv": "rust_mjpg.csv",
+    "dropped_frames": 0,
+    "duration_s": 0.055555555,
+    "estimated_missed_frames": 0,
+    "eye_size": [
+      32,
+      16
+    ],
+    "first_host_ns": 1000000000,
+    "fps_label": 90.0,
+    "frames": 6,
+    "last_host_ns": 1055555555,
+    "late_frames": 0,
+    "layout": "sbs",
+    "lr_order": "first_is_left",
+    "write_queue": 0
+  },
+  "source": "camera",
+  "writer": "Rust crate opticmix-vision"
+}

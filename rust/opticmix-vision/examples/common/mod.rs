@@ -73,12 +73,14 @@ pub fn report(r: std::result::Result<(), Box<dyn std::error::Error>>) -> ExitCod
         Some(SdkError::NoMatch(_)) => eprintln!(
             "Connect the camera. Without a camera: \
              cargo run --release --features test-support --example {} -- --synthetic\n\
-             The devices Windows sees: cargo run --example list_devices",
+             The devices Windows sees: cargo run --example list_devices -- --backend msmf \
+             (the list capture opens from; without --backend, DirectShow's, where the controls look)",
             example_name()
         ),
         Some(SdkError::MultipleMatches(_)) => eprintln!(
-            "Connect one camera only: two cameras of the same name cannot be told apart \
-             (the camera reports no USB serial number)."
+            "Two cameras of the same name cannot be told apart by name (the camera reports no USB serial number). \
+             Connect one camera only, or open one by its USB location (the port, not a serial number): \
+             cargo run --example open_by_usb_location"
         ),
         _ => {}
     }

@@ -118,7 +118,9 @@ def test_no_weevia_and_two_weevias_are_findings(monkeypatch):
     assert "No Weevia S1 in the video device list. Re-insert the USB cable." in _windows(monkeypatch, names=("cam",))["findings"]
     r = _windows(monkeypatch, names=("WN Dual Camera", "WN Dual Camera"))
     assert r["weevia_s1"]["count"] == 2
-    assert any(f.startswith("2 Weevia S1 are connected") for f in r["findings"])
+    two = [f for f in r["findings"] if f.startswith("2 Weevia S1 are connected")]
+    assert len(two) == 1 and "DeviceConfig.weevia_s1(usb_location=...)" in two[0], two
+    assert two[0].endswith("not run with two cameras."), two
 
 
 def test_a_failing_device_listing_is_reported_not_raised(monkeypatch):
@@ -382,7 +384,8 @@ def test_the_write_log_setting_is_reported(no_hardware, monkeypatch, tmp_path):
     assert doctor.collect(synthetic=True)["sdk"]["write_log"].endswith("w.jsonl")
 
 
-@pytest.mark.parametrize("argv", [["--timestamps", "x.csv"], ["--device", "0"], ["--open", "--seconds", "0"]])
+@pytest.mark.parametrize("argv", [["--timestamps", "x.csv"], ["--device", "0"], ["--backend", "msmf"],
+                                  ["--open", "--seconds", "0"]])
 def test_cli_refuses_options_that_need_open(argv):
     with pytest.raises(SystemExit) as e:
         doctor.main(argv)
@@ -402,6 +405,10 @@ def test_calibration_section_lists_the_folder_and_checks_the_file(_scratch_calib
     cal = doctor.collect(synthetic=True)["calibration"]
     assert cal["files"] == ["S1-0042.json"] and cal["installed"] == ["S1-0042"]
     assert cal["check"] == "ok — S1-0042, 800x800 eyes"
+    text = doctor.format_text(doctor.collect(synthetic=True)).splitlines()
+    i = text.index("== Calibration ==")
+    assert text[i + 3:i + 5] == ["check:           ok — S1-0042, 800x800 eyes",
+                                 "details:         python -m opticmix_vision.calib show"]
     (_scratch_calib / "S1-0043.json").write_text(c.to_json())
     assert doctor.collect(synthetic=True)["calibration"]["check"].startswith("2 calibrations installed")
 
@@ -515,6 +522,154 @@ def test_yuy2_and_a_slow_stream_are_two_findings():
     assert "well below the negotiated 90 fps. Check the USB link speed" in got[1]
 
 
+class _FourccCapture:
+    """Reports a backend name and a CAP_PROP_FOURCC code; every frame is new."""
+
+    def __init__(self, backend, code):
+        import cv2
+        self.cv2, self.backend, self.code = cv2, backend, code
+        self.rng = np.random.default_rng(3)
+
+    def isOpened(self):  # noqa: N802
+        return True
+
+    def getBackendName(self):  # noqa: N802
+        return self.backend
+
+    def get(self, pid):
+        c = self.cv2
+        return {c.CAP_PROP_FRAME_WIDTH: 16, c.CAP_PROP_FRAME_HEIGHT: 8, c.CAP_PROP_FPS: 90.0,
+                c.CAP_PROP_FOURCC: float(self.code)}.get(pid, -1.0)
+
+    def set(self, pid, v):
+        return True
+
+    def read(self):
+        return True, self.rng.integers(0, 255, (8, 16), dtype=np.uint8)
+
+    def release(self):
+        pass
+
+
+def _yuy2():
+    import cv2
+    return cv2.VideoWriter_fourcc(*"YUY2")
+
+
+# OpenCV's MSMF backend reads back its output format code (RGB32 = 0x16, RGB24 = 0x14), not the camera's format:
+# 904 frames in 10 s (90.27 fps) came with 0x16 on one PC with one camera (2026-11-25).
+@pytest.mark.parametrize("backend,code,finding", [("MSMF", 0x16, False), ("MSMF", 0x14, False),
+                                                  ("DSHOW", None, True), ("V4L2", None, True)])
+def test_the_not_mjpg_finding_is_not_made_from_msmf_output_format_codes(backend, code, finding):
+    code = _yuy2() if code is None else code
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left", stall_frames=0)
+    r = doctor.collect(open_camera=True, seconds=0.2, _platform="darwin",
+                       _open=lambda: Device(cfg, capture=_FourccCapture(backend, code)).open())
+    got = [f for f in r["findings"] if "not MJPG" in f]
+    if finding:
+        assert got and got[0].startswith("The negotiated pixel format is YUY2, not MJPG."), r["findings"]
+    else:
+        assert got == [], r["findings"]
+
+
+@pytest.mark.parametrize("code,shown", [(0x16, "0x00000016"), (0x14, "0x00000014")])
+def test_the_msmf_format_line_is_readable_and_says_what_the_code_is(code, shown):
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left", stall_frames=0)
+    r = doctor.collect(open_camera=True, seconds=0.1, _platform="darwin",
+                       _open=lambda: Device(cfg, capture=_FourccCapture("MSMF", code)).open())
+    text = doctor.format_text(r)
+    assert f"negotiated mode: 16x8 {shown} 90 fps (MSMF)\n" in text
+    assert ("format:          OpenCV's Media Foundation backend reports its output format code here, not the "
+            "camera's format\n") in text
+    assert "\x00" not in text
+
+
+def test_the_dshow_format_line_is_unchanged():
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left", stall_frames=0)
+    r = doctor.collect(open_camera=True, seconds=0.1, _platform="darwin",
+                       _open=lambda: Device(cfg, capture=_FourccCapture("DSHOW", _yuy2())).open())
+    text = doctor.format_text(r)
+    assert "negotiated mode: 16x8 YUY2 90 fps (DSHOW)\n" in text and "format:   " not in text
+
+
+class _RepeatingCapture:
+    """Read i (from 0): i % 4 == 1 repeats the previous frame in both eyes, i % 4 == 3 in the left half only."""
+
+    def __init__(self, backend):
+        import cv2
+        self.cv2, self.backend, self.i = cv2, backend, -1
+        self.rng = np.random.default_rng(8)
+        self.frame = self.rng.integers(0, 255, (8, 16), dtype=np.uint8)
+
+    def isOpened(self):  # noqa: N802
+        return True
+
+    def getBackendName(self):  # noqa: N802
+        return self.backend
+
+    def get(self, pid):
+        c = self.cv2
+        return {c.CAP_PROP_FRAME_WIDTH: 16, c.CAP_PROP_FRAME_HEIGHT: 8, c.CAP_PROP_FPS: 90.0,
+                c.CAP_PROP_FOURCC: float(c.VideoWriter_fourcc(*"MJPG"))}.get(pid, -1.0)
+
+    def set(self, pid, v):
+        return True
+
+    def read(self):
+        self.i += 1
+        if self.i % 4 == 3:
+            self.frame = np.hstack([self.frame[:, :8], self.rng.integers(0, 255, (8, 8), dtype=np.uint8)])
+        elif self.i % 4 != 1:
+            self.frame = self.rng.integers(0, 255, (8, 16), dtype=np.uint8)
+        return True, self.frame.copy()
+
+    def release(self):
+        pass
+
+
+@pytest.mark.parametrize("backend", ["MSMF", "DSHOW"])
+def test_frames_repeated_in_both_eyes_are_counted_and_a_finding_through_msmf_only(backend):
+    cfg = DeviceConfig(layout="sbs", lr_order="first_is_left", stall_frames=0)
+    r = doctor.collect(open_camera=True, seconds=0.2, _platform="darwin",
+                       _open=lambda: Device(cfg, capture=_RepeatingCapture(backend)).open())
+    m = r["camera"]["measure"]
+    reads = range(1, m["frames"] + 1)                       # read 0 is the first frame, compared with nothing
+    assert m["both_identical_frames"] == m["right_identical_frames"] == sum(1 for i in reads if i % 4 == 1)
+    assert m["left_identical_frames"] == sum(1 for i in reads if i % 4 in (1, 3)) and m["stalled"] == []
+    got = [f for f in r["findings"] if f.startswith("Repeated images (MSMF)")]
+    if backend == "MSMF":
+        assert got == [f"Repeated images (MSMF): {m['both_identical_frames']} of {m['frames']} frames repeated the "
+                       "previous image in both eyes through OpenCV's Media Foundation backend. Seen on one PC with "
+                       "one camera (2026-11-24): 276 of 900 frames per eye through this path; not seen through "
+                       "DirectShow (the default; 0 of 900) or the Rust crate (0 of 450); cause not established. "
+                       "driver_ns does not show whether a new image arrived."]
+    else:
+        assert got == []
+    assert f"both eyes {m['both_identical_frames']};" in doctor.format_text(r)
+
+
+def test_msmf_repeats_at_5_percent_or_fewer_are_no_finding():
+    r = {"sdk": {"core": {"present": True}, "distributions": {}, "opticmix_vision": "x"}, "synthetic": False,
+         "weevia_s1": {"count": None, "name": "WN Dual Camera"}, "usb": {"devices": []},
+         "camera": {"error": None, "opened": True, "control_writes": {"by_this_run": 0},
+                    "mode": {"fourcc": "MJPG", "fps": 90.0, "backend_name": "MSMF"},
+                    "measure": {"frames": 300, "fps": 90.0, "both_identical_frames": 15, "stalled": []}}}
+    assert doctor._findings(r) == []
+    r["camera"]["measure"]["both_identical_frames"] = 16
+    assert [f[:40] for f in doctor._findings(r)] == ["Repeated images (MSMF): 16 of 300 frames"]
+
+
+def test_backend_is_passed_to_the_weevia_s1_config(monkeypatch):
+    seen = {}
+
+    def config(**kw):
+        seen.update(kw)
+        raise RuntimeError("no camera in this test")
+    monkeypatch.setattr(DeviceConfig, "weevia_s1", staticmethod(config))
+    r = doctor.collect(open_camera=True, backend="msmf", _platform="darwin")
+    assert seen == {"stall_frames": 0, "backend": "msmf"} and r["camera"]["opened"] is False
+
+
 def test_a_synthetic_run_gets_no_mode_findings(no_hardware):
     pytest.importorskip("opticmix_vision._core")
     r = doctor.collect(open_camera=True, synthetic=True, seconds=0.1)
@@ -586,3 +741,19 @@ def test_usb_summary_for_the_explorer(monkeypatch):
     assert doctor._usb_summary(synthetic=True) == "synthetic · no serial"
     monkeypatch.setattr(doctor, "_hardware", lambda *a, **k: real(False, [], None, None, "win32", **k))
     assert doctor._usb_summary() == "USB: — · no serial"
+
+
+def test_issue_form_and_readme_ask_for_the_doctor():
+    """The bug report form makes the doctor's output a required field, and the README's troubleshooting starts with it."""
+    sdk = Path(__file__).resolve().parents[2]
+    form = sdk / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml"
+    if not (sdk / ".github").is_dir():
+        pytest.skip("not a repository tree (no .github)")
+    text = form.read_text(encoding="utf-8")
+    field = text[text.index("id: doctor"):]
+    field = field[:field.index("- type:")]                      # up to the next field
+    assert "python -m opticmix_vision.doctor" in field and "required: true" in field
+    assert "python -m opticmix_vision.calib show" in field
+    readme = (sdk / "python" / "README.md").read_text(encoding="utf-8")
+    first = readme.split("## When something goes wrong", 1)[1].strip().splitlines()[0]
+    assert first.startswith("- **Opening an issue?**") and "python -m opticmix_vision.doctor" in first

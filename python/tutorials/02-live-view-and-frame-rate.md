@@ -52,16 +52,19 @@ negotiated: 1600x800 MJPG 90.0 fps (synthetic)
 interval ms: mean 11.11  min 9.70  max 12.40  -> 90.0 frames per second
 intervals over 1.5x the median: 0
 frames identical to the previous one: left 0, right 0
+frames identical in both eyes (Device::repeated_frames): 0
 MJPG samples skipped because they did not decode: 0
 since open, at the negotiated rate: late_frames 0, estimated_missed_frames 0, actual_fps 90.0
 driver time stamps: none from this capture backend (synthetic)
 driver sequence numbers: none from this capture backend
 ```
 
-The "MJPG samples skipped" line counts the samples `read()` skipped because they did not decode. The next
+The "both eyes" line is `Device::repeated_frames()`, the Rust count with the meaning of the Python
+`cam.repeated_frames` (no warning). The "MJPG samples skipped" line counts the
+samples `read()` skipped because they did not decode. The next
 line is `Device::late_frames()`, `estimated_missed_frames()` and `actual_fps()`: the same statistics, with the
 same rule, as the Python `Device.late_frames`, `estimated_missed_frames` and `actual_fps`. The Rust
-`measure_fps` has been run with the camera once (one PC, one camera, 2026-11-24); the output above is `--synthetic` (generated frames
+`measure_fps` has been run with the camera once (one PC, one camera, 2026-11-24); its `Device::repeated_frames` line came later: run with the camera once (one PC, one camera, 2026-11-25, Media Foundation, 450 frames): 0, the same as the `measure_fps` example's own per-eye counts (left 0, right 0); a count above 0: generated frames only; the output above is `--synthetic` (generated frames
 paced in software).
 See the crate README, "Examples".
 
@@ -128,10 +131,16 @@ print(f"interval ms: mean {dt.mean():.2f}  min {dt.min():.2f}  max {dt.max():.2f
   (2026-11-24, once) the first Media Foundation time was about 364,400 s — not the start of streaming; on this
   PC it was within a few seconds of Python's `time.perf_counter_ns()` (compared across two runs by file
   times, not within one process), but what the clock's zero is has not been established. Use differences between frames, not the absolute value.
-- With `--backend msmf`, OpenCV asks Media Foundation to convert the camera's MJPG to RGB, and `driver_ns` is
+- With `--backend msmf`, OpenCV asks Media Foundation to convert the camera's format to RGB, and `driver_ns` is
   the time Media Foundation gave with that converted sample (OpenCV 4.13 `cap_msmf.cpp`; `negotiated:` then
   shows the RGB type's code — RGB32 is `'\x16\x00\x00\x00'` — not `MJPG`; lines 1153–1159, 2170–2171,
   2181–2182). The Rust example reads the MJPG samples from Media Foundation without conversion. Run with the camera once (one PC, one camera, 2026-11-24; `examples/measure_fps.py`, Media Foundation, 900 frames): 276 of 900 frames per eye repeated the previous image, and the intervals between `driver_ns` times were 11.11 ms (mean, min and max), so on this path `driver_ns` does not show whether a new image arrived; the cause has not been established. On the same PC and camera, DirectShow gave 0 of 900 and 0 of 450 repeated images, and the Rust crate's `measure_fps` (Media Foundation, no conversion) gave 0 of 450 with driver-time intervals from 0.01 to 16.90 ms (mean 11.23). Host-measured rates: 90.1 frames per second (Python, Media Foundation) and 89.1 (Rust). V4L2 driver times have not been run with the camera.
+- `cam.repeated_frames` counts the frames whose two eyes both repeated the previous image, and through
+  `--backend msmf` `read()` warns once when more than 5 % of the last 300 frames did (the warning names
+  DirectShow and the Rust crate). Run with the camera once through each backend (one PC, one camera,
+  2026-11-25; `examples/measure_fps.py`, whose output does not record the OpenCV version): through
+  `--backend msmf` the warning came once and 271 of 900 frames repeated in both eyes; through DirectShow 0 of
+  900, no warning.
 - Request the fourcc: without `fourcc="MJPG"` taking effect, the stream has run at 9.3 fps (measured
   2026-09-13, one unit). `DeviceConfig.weevia_s1()` requests it for you.
 - On the units we have tested, one eye's stream has occasionally stopped. `read()` raises `DeviceError`
@@ -144,6 +153,9 @@ print(f"interval ms: mean {dt.mean():.2f}  min {dt.min():.2f}  max {dt.max():.2f
 See [When something goes wrong](../README.md#when-something-goes-wrong) in the package README:
 
 - **The frame rate is far below 90** — check that the mode is MJPG (`cam.mode`).
+- **A warning that frames repeated the previous image, with `--backend msmf`** — repeats were not seen
+  through DirectShow (the default; 0 of 900) or the Rust crate (0 of 450) on one PC with one camera; the
+  cause has not been established.
 - **One eye goes black or stops moving** — re-inserting the USB cable brought it back on the units we have
   tested.
 - **"frame read failed (timeout or camera unplugged)"** — check that the camera is still connected, then open
