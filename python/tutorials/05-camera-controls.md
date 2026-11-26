@@ -206,8 +206,11 @@ r = c.load_preset(a.load)               # one set_many(), then waits for the res
   with `include_mono=True`.
 - `python -m opticmix_vision.presets` saves, loads and lists presets in a folder next to the calibration
   folder; the explorer's Settings window has `Save preset…` and `Load preset…` ([tools](tools.md)).
-- Presets have been run without a camera only (simulated controls); not run with the camera. Loading a
-  preset writes several controls at once — load once, at startup.
+- Presets with the camera: `python -m opticmix_vision.presets save` has been run once with the published 0.0.8
+  wheel (one PC, one camera, 2026-11-26: 14 controls saved); before that, save, `--dry-run` and a load of the
+  preset just saved were run once (one PC, one camera, 2026-11-24: every control was already at the preset's
+  value or left to auto, and the SDK counted 0 writes). A load that changes values has not been run with the
+  camera. Loading a preset writes several controls at once — load once, at startup.
 
 To change controls by hand instead, the [viewer and the explorer](tools.md) write once when you stop
 pressing a key or release a slider.
@@ -266,10 +269,12 @@ control writes by this process: 0
   `--synthetic` output are under Run it above.
 - `brightness_stats`: the Rust version of `brightness_stats.py` — the same columns
   (`index,host_ns,left_mean,left_min,left_max,left_saturated,right_…`) and summary. With `--synthetic` the
-  generated image's brightness says nothing about the camera. Run without a camera only (generated frames); not run with the camera.
+  generated image's brightness says nothing about the camera. Run with the camera once (one PC, one camera,
+  2026-11-26, from the 0.0.8 source; the example has not changed since).
 - `presets`: the steps of `presets.py` that do not write — every control saved to a preset file
   (`Controls::save_preset`) and what loading a preset would change (`Controls::plan_preset`, as `--load FILE
   --dry-run`), with `--list` for the preset folder. It reads the preset files the Python package saves, and the
   Python package reads the ones it saves; a preset that does not fit stops with the Python package's message.
-  Applying a preset to the camera is not in the Rust crate yet (Python: `presets load`). Run without a camera only
-  (simulated controls, preset files written by the Python package); not run with the camera.
+  Applying a preset to the camera is not in the Rust crate yet (Python: `presets load`). Run with the camera once
+  (one PC, one camera, 2026-11-26, from the 0.0.8 source): saving, and `--plan` on a preset the Python package
+  saved. A load that changes values: not run.

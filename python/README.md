@@ -16,7 +16,7 @@ pip install opticmix-vision
 
 On Windows x64 this installs a wheel — one abi3 wheel for Python 3.10 and newer;
 installed and tested on 3.10, 3.12 and 3.14 (no camera). The same file is
-attached to the GitHub release [v0.0.8](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.8).
+attached to the GitHub release [v0.0.9](https://github.com/Opticmix/opticmix-vision/releases/tag/v0.0.9).
 On Windows, verified on Windows 11 only. On Linux x86_64 it installs a
 manylinux wheel — experimental, see Linux (experimental) below.
 There is no wheel for macOS, and macOS has not been run. Elsewhere pip tries to
@@ -107,7 +107,7 @@ with Device(DeviceConfig.weevia_s1()) as cam:
 measured on it: both eyes side by side, the first half is the **right** eye
 (measured on one unit, 2026-09-16), 1600×800 MJPG at 90 fps. It does not pick a camera by index — plugging in any
 other camera shifts the order, and a laptop webcam is often listed first.
-Override any field, e.g. `DeviceConfig.weevia_s1(fps=60)`. Finding the camera by name: measured with the earlier Python implementation; the Rust implementation (since 0.0.3) has not yet been verified against the camera. On Linux it reads `/sys/class/video4linux` instead (run with the camera once, one PC, one camera, 2026-11-25).
+Override any field, e.g. `DeviceConfig.weevia_s1(fps=60)`. Finding the camera by name (in the Rust core since 0.0.3): verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only, with one camera of that name connected; refusing two cameras of the same name has not been run with two cameras. On Linux it reads `/sys/class/video4linux` instead (run with the camera once, one PC, one camera, 2026-11-25).
 
 Each frame carries `host_ns`, the host clock when it was read. For the capture driver's own time stamp
 (`frame.driver_ns`), open with `DeviceConfig.weevia_s1(backend="msmf")` on Windows — the camera is found by
@@ -119,7 +119,7 @@ the 0.0.6 wheel).
 
 `examples/quickstart.py` runs this end to end; `python -m opticmix_vision.viewer`
 and `python -m opticmix_vision.explorer` open the same camera in a window.
-Step-by-step: the [tutorials](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/tutorials/README.md)
+Step-by-step: the [tutorials](https://github.com/Opticmix/opticmix-vision/blob/v0.0.9/python/tutorials/README.md)
 (the `tutorials/` folder next to this README).
 
 In the viewer, `s` saves a left/right PNG pair and `v` starts and stops a
@@ -318,7 +318,7 @@ frames (`python -m opticmix_vision.explorer --synthetic`): the window, keys and
 saving run with nothing attached; the camera's own capture path does not. It is a
 generator, not measured data. The examples
 that open a camera, other than `quickstart.py`, take `--synthetic` as well;
-`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/examples/README.md).
+`torch_dataloader.py` needs no camera — see [examples/README.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.9/python/examples/README.md).
 
 A recording written by `examples/record_video.py` or the viewer's `v` key can be read
 back the same way as the camera: `Device(DeviceConfig.recording("recording.avi"))` — see
@@ -336,7 +336,7 @@ gives the late / missed estimates over the whole recording, and `status`
 looping: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub,
 two USB re-insertions, read-only (the files were written and read back with the same frame count — not that both eyes showed the scene in every recording: see "One eye goes black or stops moving"); the speed factor: not verified; pausing and playback in the viewer:
 generated recordings only (`record_video.py --synthetic`). Every public name is in
-[API.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/API.md).
+[API.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.9/python/API.md).
 
 ## Calibration
 
@@ -446,11 +446,15 @@ Linux, and two cameras on one computer have not been run.
   `read()` raises `DeviceError` saying which eye once it has sent the byte-identical
   image 90 frames in a row. Turn the check off with
   `DeviceConfig.weevia_s1(stall_frames=0)`.
-  The check needs 90 frames: a shorter capture can end without an error with one eye black. Seen once (one
-  unit, one PC, 2026-11-25, the published 0.0.7 wheel): on the third and fourth opens after a USB re-insertion,
-  two 0.6 s recordings made with `examples/record_video.py` (48 and 33 frames) had the left eye at 0 in every
-  pixel from the first frame, and no error was raised; the cause has not been established. Look at both eyes
-  of a recording before relying on it.
+  The check needs 90 frames: a shorter capture can end without an error with one eye black, or both. Seen on
+  one unit and one PC: on 2026-11-25 (the published 0.0.7 wheel), on the third and fourth opens after a USB
+  re-insertion, two 0.6 s recordings made with `examples/record_video.py` (48 and 33 frames) had the left eye
+  at 0 in every pixel from the first frame; on 2026-11-26 (the published 0.0.8 wheel), on the third open after
+  a USB re-insertion, a 10 s recording made with `examples/record_video.py` had 11 frames, about one a second,
+  with both eyes at 0 in every pixel from the second frame - the example printed the arrival rate (1.0 per
+  second) and the estimated missed frames, exited normally and raised no error; the recording after the next
+  re-insertion had 906 frames at 90.5 per second. The cause has not been established. Look at both eyes and
+  the arrival rate of a recording before relying on it.
 - **The frame rate is far below 90.** Check that the mode is MJPG (`cam.mode`).
 - **"… frames repeated the previous image in both eyes, read through OpenCV's Media Foundation
   backend".** On one PC with one camera (2026-11-24), 276 of 900 frames per eye read with
@@ -485,7 +489,7 @@ Linux, and two cameras on one computer have not been run.
   `python examples/list_devices.py --backend msmf` prints the Media Foundation list, and
   `python -m opticmix_vision.doctor` prints both and a line when the Weevia S1's index
   differs. `DeviceConfig.weevia_s1(backend="msmf")` finds the camera by name in the
-  Media Foundation list. `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run without a camera only (made-up lists); they have not been run with the camera.
+  Media Foundation list. `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run with the camera in two USB re-insert cycles (one Weevia S1 unit, one PC, 2026-11-25, the published 0.0.7 wheel): they listed the Weevia S1 by name.
 - **Which USB port.** Connect to a USB 3 port directly. The figures on this page whose
   USB link was recorded were measured over SuperSpeed; USB 2 is not qualified.
 - **pip finds no version, or tries to build.** Python older than 3.10: pip finds no
@@ -545,7 +549,7 @@ Linux, and two cameras on one computer have not been run.
 We reply to issues and email within 2 business days (Korea time).
 
 We aim to release about once a month; what changed in each release is in
-[CHANGELOG.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/CHANGELOG.md).
+[CHANGELOG.md](https://github.com/Opticmix/opticmix-vision/blob/v0.0.9/python/CHANGELOG.md).
 
 ## What is in this package, and what is not
 
@@ -553,7 +557,8 @@ Run against the camera: capture, stereo split, the illuminator, and camera
 controls — all fourteen read through the native path on one unit (with ranges
 and defaults, while streaming). Native writes have been checked on one unit for power line
 frequency and the auto-exposure mode; writes of exposure, gain and the
-illuminator were checked earlier through OpenCV. Reading the fourteen controls, with the ranges and defaults the camera reports: also verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only. The 0.0.8 wheel itself has not been run with the camera. The writes: measured with the earlier Python implementation; with the Rust implementation (since 0.0.3) they have not yet been verified against the camera.
+illuminator were checked earlier through OpenCV. Reading the fourteen controls, with the ranges and defaults the camera reports: also verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only. The published 0.0.8 wheel, installed from PyPI into a new environment (its sha256 checked against PyPI's), has been run with the camera once (one Weevia S1 unit, Windows 11, one PC, two-level USB hub, 2026-11-26, after one USB re-insertion, read-only): it opened the camera by name at 1600x800 MJPG, read 300 frames at 90.7 frames per second with neither eye repeating, read the fourteen controls with their ranges and defaults, and wrote none. The 0.0.9 wheel itself has not been run with the camera. The writes: measured with the earlier Python implementation; with the Rust implementation (since 0.0.3) they have not yet been verified against the camera.
+2D export (left/right PNG pairs from save_stereo_pairs.py and the viewer's s key, an .npz from capture_dataset_npz.py, PNG pairs from MJPG and FFV1 camera recordings with export_recording.py, PGM pairs from an MJPG camera recording with the Rust export_recording): verified with the published 0.0.7 wheel (Rust: the crates.io 0.0.7 source) on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only. Every image was one eye at 800x800, 8-bit gray; the counts equalled the rows of pairs.csv where there is one and, for the exports, the rows of the recording's CSV; covering one lens at a time (left and right as seen from behind the camera, looking where it looks) removed the scene from the SDK eye of the same name. Not verified: Linux, a second unit, a direct USB connection.
 Calibration files (install and read): run on two cameras on Windows, once each —
 see Calibration. The calibration check (`calib check`): run without a camera only
 (generated frames); not run with the camera. `calib show`: run without a camera
@@ -585,6 +590,6 @@ extension. Install the wheel into that environment as well.
 
 ## License
 
-Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/LICENSE). The compiled extension also contains Rust
+Apache-2.0. See [LICENSE](https://github.com/Opticmix/opticmix-vision/blob/v0.0.9/python/LICENSE). The compiled extension also contains Rust
 crates under MIT / Apache-2.0; their notices are in
-[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.8/python/THIRD_PARTY_NOTICES.txt).
+[THIRD_PARTY_NOTICES.txt](https://github.com/Opticmix/opticmix-vision/blob/v0.0.9/python/THIRD_PARTY_NOTICES.txt).

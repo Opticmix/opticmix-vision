@@ -1,6 +1,6 @@
 [package]
 name = "opticmix-vision"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2021"
 rust-version = "1.88"
 description = "Rust API for the Weevia S1 stereo-IR camera (preview): device lookup, MJPG capture, stereo split, camera controls, the installed calibration file"

@@ -38,7 +38,10 @@
 //! exported 30 of 30 frames from synthetic.avi to synthetic_frames
 //! ```
 //!
-//! Camera: does not open one. Run with generated recordings only; not run with a camera recording.
+//! Camera: does not open one. Run with generated recordings. On Windows with one camera (one PC, 2-level USB hub,
+//! 2026-11-25, 0.0.7): from an MJPG camera recording it wrote 800x800 8-bit left/right images; covering one lens
+//! at a time (left and right as seen from behind the camera, looking where it looks) removed the scene from the SDK
+//! eye of the same name. Not run with a camera: Linux; a second unit.
 
 mod common;
 

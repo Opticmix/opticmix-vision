@@ -22,7 +22,8 @@
 //! saved left/right_000099.pgm
 //! ```
 //!
-//! Camera: run without a camera only (generated frames); not run with the camera. Writes to the camera: none.
+//! Camera: run with the camera once (one PC, one camera, 2026-11-26, from the 0.0.8 source; the example has not
+//! changed since). Writes to the camera: none.
 
 mod common;
 

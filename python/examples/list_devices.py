@@ -40,9 +40,13 @@ DeviceConfig.weevia_s1() looks them up (a UVC camera's metadata node is left out
 says where the lists are instead of printing an empty one. --synthetic --backend v4l2 gives the same made-up
 devices as V4L2 lists them (made-up /dev/videoN numbers and sysfs names).
 
-examples/list_devices.py --backend msmf, the USB locations, --verbose and the doctor's Media Foundation list have
-been run without a camera only (made-up lists); they have not been run with the camera. --backend v4l2: run without
-a camera only (made-up sysfs trees); not run with the camera on Linux.
+examples/list_devices.py --backend msmf and the doctor's Media Foundation list have been run with the camera in two
+USB re-insert cycles (one Weevia S1 unit, one PC, 2026-11-25, the published 0.0.7 wheel): they listed the Weevia S1
+by name. --verbose, reading the USB IDs and the link speed: run with the camera in two USB re-insert cycles (one
+Weevia S1 unit, Windows 11, one PC, two-level USB hub, 2026-11-25, the published 0.0.7 wheel; not opened). The
+USB locations: the DirectShow list has been run with the camera once (one PC, one camera, 2026-11-25, with the
+0.0.6 code): with one camera connected, the list showed its USB location. --backend v4l2: run without a camera
+only (made-up sysfs trees); not run with the camera on Linux.
 Needs: opticmix-vision.
 Writes to the camera: none.
 """

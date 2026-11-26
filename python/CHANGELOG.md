@@ -1,10 +1,66 @@
 # Changelog
 
+## 0.0.9 — 2026-11-26
+
+### Added
+
+- Rust `measure_fps -- --csv FILE` (off by default) also writes one row per frame `read()` returned, the first one
+  too (`index,host_ns,left_same,right_same,left_max,right_max`: each eye byte-identical to the frame before, 0 on the
+  first row, and its largest pixel value), and prints the negotiated fps and `actual_fps` in full. When no sample
+  was skipped as undecodable (the example prints how many did not decode), the `Device` statistics can be counted
+  again from the file: the `Device` also counts the times of skipped samples, which have no row. Run with the
+  camera in two USB re-insert cycles (one PC, one camera, 2026-11-26), from this release's source before release.
+
+### Changed
+
+- Documentation: what was run with the camera after 0.0.8 is said, with its scope. Verified with the published
+  0.0.7 wheel (Rust: the crates.io 0.0.7 source) on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two
+  USB re-insertions, read-only: 2D export (left/right PNG pairs from `save_stereo_pairs.py` and the viewer's `s`
+  key, an `.npz` from `capture_dataset_npz.py`, PNG pairs from MJPG and FFV1 camera recordings with
+  `export_recording.py`, PGM pairs from an MJPG camera recording with the Rust `export_recording`), and finding the
+  camera by name (in the Rust core since 0.0.3) with one camera of that name connected. Run with the camera in two
+  USB re-insert cycles (one Weevia S1 unit, Windows 11, one PC, two-level USB hub, 2026-11-25; the published 0.0.7
+  wheel, Rust: the crates.io 0.0.7 source): `examples/list_devices.py --backend msmf`, its `--verbose` and the
+  doctor's Media Foundation list, the Rust `list_devices -- --backend msmf`, reading the USB IDs and the link speed
+  into `DeviceInfo` (not opened), and the Python `Device` frame statistics. The published 0.0.8 wheel, installed
+  from PyPI into a new environment (its sha256 checked against PyPI's), has been run with the camera once (one
+  Weevia S1 unit, Windows 11, one PC, two-level USB hub, 2026-11-26, after one USB re-insertion, read-only). The
+  Rust examples `quickstart`, `brightness_stats`, `capture_dataset` and `presets` (saving, and `--plan`): run with
+  the camera once (one PC, one camera, 2026-11-26, from the 0.0.8 source); a preset load that changes values: not
+  run. Not verified: Linux, a second unit, a direct USB connection. The 0.0.9 wheel itself has not been run with
+  the camera.
+- Documentation: the left/right sentence of `export_recording` (Python and Rust) says which way left and right are
+  seen: "covering one lens at a time (left and right as seen from behind the camera, looking where it looks)
+  removed the scene from the SDK eye of the same name" (0.0.8: "… from the eye of that name"). The Media Foundation
+  listing and `doctor --json` sentences no longer call the runs of 2026-11-24 and 2026-11-25 "one camera": one
+  camera was connected in each run, not known to be the same unit in all of them. The `Device` statistics sentence
+  no longer says Python and Rust use "the same rule" without saying they count different inputs.
+- Documentation: pages that said less than others about the same run now say the same — Rust recording and
+  playback (`API.md`, tutorial 04: "have been run with the camera once", as the README said), the doctor's
+  paragraph in `API.md` (the `doctor --open` scope of the README), `export_recording` on a Windows camera
+  recording (Python and Rust), the Media Foundation name lookup (`resolve_by_name(backend="msmf")`), the Rust
+  examples' footnote, and the camera controls line of `examples/README.md`; the CHANGELOG's 0.0.8 entry gives the
+  number of Rust examples as seventeen (it said sixteen).
+- README, "One eye goes black or stops moving": a second short recording that ended without an error is
+  described (2026-11-26, the published 0.0.8 wheel, the third open after a USB re-insertion: 11 frames about one a
+  second, both eyes 0 in every pixel from the second frame); look at both eyes and the arrival rate of a recording
+  before relying on it.
+
+### Fixed
+
+- `THIRD_PARTY_NOTICES.txt` covers the Linux wheel's build as well as the Windows wheel's; a crate in one of the
+  two builds only is marked "(Windows wheel only)". Up to 0.0.8 the file was generated for the Windows build only
+  — its first paragraph named `_core.pyd` and `x86_64-pc-windows-msvc` — and the Linux wheels of 0.0.4 to 0.0.8
+  carried it as it was: it listed Windows-only crates (`windows` and the crates it is built from) that their
+  extension does not contain. No crate those Linux extensions link was missing from it: they are built without
+  the crate's `capture` feature, so `v4l` and `v4l2-sys-mit` are not in them.
+
 ## 0.0.8 — 2026-11-25
 
 ### Added
 
-- Rust examples `quickstart`, `brightness_stats` and `capture_dataset` (sixteen Rust examples, from thirteen).
+- Rust examples `quickstart`, `brightness_stats` and `capture_dataset` (with `presets` below, seventeen Rust examples,
+  from thirteen; this item said "sixteen" as published in 0.0.8 — corrected in 0.0.9).
   `quickstart` does the steps of `quickstart.py` without its window (a window needs a GUI crate, which the crate
   does not depend on): it opens the camera by name, prints the negotiated mode, reads 100 frames and prints the
   rate they came at, saves the last frame's two eyes as `left_000099.pgm` and `right_000099.pgm`, and closes the
@@ -111,7 +167,11 @@
   MJPG `.avi` recordings only. `--synthetic` records generated frames first (Python: lossless FFV1; Rust: `--features
   test-support`). From an MJPG recording the images hold what it decodes to, not the camera's pixel values. Run with
   generated recordings; the Python example also with a camera recording once on Linux, from source before release.
-  Not run with a camera recording on Windows, and the Rust example not with a camera recording.
+  When 0.0.7 was published, not run with a camera recording on Windows, and the Rust example not with a camera
+  recording. After that, on Windows with one camera (one PC, 2-level USB hub, 2026-11-25, 0.0.7): from camera
+  recordings (Python MJPG and FFV1, Rust MJPG) they wrote 800x800 8-bit left/right images; covering one lens at a
+  time (left and right as seen from behind the camera, looking where it looks) removed the scene from the SDK eye of
+  the same name. Not run with a camera: Linux left/right; the Rust example on Linux; a second unit.
 - `DeviceInfo` has the USB IDs and link speed of a listed device: `vid`, `pid` and `bcd_device` (`int`; the USB
   vendor ID, product ID and device revision, from the USB device's hardware IDs in the Windows device tree) and
   `link_speed` (`"Low"`, `"Full"`, `"High"`, `"Super"` or `"Super+"`, as the USB hub driver reports the

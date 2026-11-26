@@ -28,8 +28,9 @@
 //! Each `--synthetic` run starts from the same simulated values, so the preset just saved changes nothing. A preset
 //! that differs prints one line per control (`name  current -> preset`), then what loading would leave alone.
 //!
-//! Camera: run without a camera only (simulated controls, preset files written by the Python package); not run
-//! with the camera. Writes to the camera: none — the last line prints this process's control-write count.
+//! Camera: run with the camera once (one PC, one camera, 2026-11-26, from the 0.0.8 source; the example has not
+//! changed since): saving, and `--plan` on a preset the Python package saved. A load that changes values: not
+//! run. Writes to the camera: none — the last line prints this process's control-write count.
 
 mod common;
 

@@ -1,6 +1,6 @@
 # opticmix-vision API reference
 
-Reference for the public Python API of `opticmix_vision` 0.0.8. It lists every
+Reference for the public Python API of `opticmix_vision` 0.0.9. It lists every
 public name, with its signature as `inspect.signature` reports it. What has been
 run against the camera, and on which platform, is stated in [README.md](README.md)
 and not repeated here.
@@ -38,7 +38,7 @@ works. `opticmix_vision.__all__`:
 
 | Name | Defined in |
 |---|---|
-| `__version__` | package — the version string, `"0.0.8"` |
+| `__version__` | package — the version string, `"0.0.9"` |
 | `Device`, `DeviceConfig`, `DeviceError`, `EndOfRecording`, `NegotiatedMode`, `StereoFrame`, `split_stereo`, `LAYOUTS`, `LR_ORDERS` | [`opticmix_vision.device`](#opticmix_visiondevice) |
 | `LedControl`, `LedControlUnavailable`, `DEFAULT_LED_PROP` | [`opticmix_vision.led`](#opticmix_visionled) |
 | `Controls`, `ControlInfo`, `WriteResult`, `ControlsUnavailable`, `ControlStateError`, `CONTROLS`, `write_counts`, `reset_write_counts` | [`opticmix_vision.controls`](#opticmix_visioncontrols) |
@@ -185,8 +185,8 @@ real-time pacing, loops and pauses; `mode` is the mode the recording was made in
 is the time the frame was read back, unless `playback.recorded_time` is set (then it
 is the time recorded in the CSV). A compressed (MJPG) recording does not have the
 camera's pixel values; the lossless (FFV1) file keeps the pixel values the SDK
-delivered (generated frames only; not run with the camera).
-Recording with `Recorder` and reading a recording back, seeking and looping: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only (the files were written and read back with the same frame count — not that both eyes showed the scene in every recording: see "One eye goes black or stops moving"). The speed factor (`set_speed`): not verified; pausing: generated frames only; not run with the camera. The Rust crate (`opticmix-vision`: `Recorder`, `Device::open_recording`) writes and plays the same MJPG `.avi` files, CSV and JSON; it neither writes nor plays FFV1, and its recordings name a checked V4L2 clock `v4l2_monotonic` in the CSV. Rust recording and playback: generated frames only; not run with the camera.
+delivered (with the camera: 90 frames from `Device.read()`, written to an FFV1 file and read back by this package, were equal in both eyes in each of two USB re-insert cycles — one Weevia S1 unit, Windows 11, one PC, two-level USB hub, 2026-11-25, the published 0.0.7 wheel; not checked with a second decoder).
+Recording with `Recorder` and reading a recording back, seeking and looping: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only (the files were written and read back with the same frame count — not that both eyes showed the scene in every recording: see "One eye goes black or stops moving"). The speed factor (`set_speed`): not verified; pausing: generated frames only; not run with the camera. The Rust crate (`opticmix-vision`: `Recorder`, `Device::open_recording`) writes and plays the same MJPG `.avi` files, CSV and JSON; it neither writes nor plays FFV1, and its recordings name a checked V4L2 clock `v4l2_monotonic` in the CSV. Rust recording and playback have been run with the camera once (one PC, one camera, 2026-11-25): `record_video` 10 s, 881 frames, estimated missed 5, dropped by the write queue 0; Rust and Python played the same file back as 881 frames.
 
 Raises `DeviceError` when the file does not exist.
 
@@ -363,10 +363,12 @@ Property. Frames estimated missing since `open()`: for each late interval,
 Property. Frames per second over the last 30 frames, from host times; `0.0` until
 two frames in a row are read. For a recording, the recorded rate.
 
-The three statistics have been run on generated frames only; not run with the
-camera. The Rust crate has the same three, with the same rule: `Device::late_frames()`,
-`estimated_missed_frames()` and `actual_fps()` (Rust `measure_fps` printed them with the camera once: one PC, one camera, 2026-11-24). Rust counts every sample,
-including those `read_raw()` returns and those that did not decode; Python counts the frames `read()` returns.
+With the camera, Python Device printed the three after 90 frames in two USB re-insert cycles (one Weevia S1 unit,
+Windows 11, one PC, two-level USB hub, 2026-11-25, the published 0.0.7 wheel): late_frames 3 and 4,
+estimated_missed_frames 3 and 4, actual_fps 91.0 and 89.3. The Rust crate has the same three:
+`Device::late_frames()`, `estimated_missed_frames()` and `actual_fps()` (Rust `measure_fps` printed them with the
+camera once: one PC, one camera, 2026-11-24). Rust counts every sample, including those `read_raw()` returns,
+those that did not decode and one on which `read()` ends with an error; Python counts the frames `read()` returns.
 
 #### `Device.repeated_frames`
 
@@ -530,8 +532,9 @@ the USB location only too. A `DeviceInfo` you build yourself has them `None` unl
 you pass them. Not reported by the camera, so there is no field for
 them: a USB serial number, a firmware version (no verified way to read it) and a
 temperature (no readout is known). Reading the USB IDs and the link speed into
-these fields has been run without a camera only (made-up device lists; on Linux
-made-up sysfs trees); it has not been run with the camera.
+these fields has been run with the camera in two USB re-insert cycles (one Weevia S1
+unit, Windows 11, one PC, two-level USB hub, 2026-11-25, the published 0.0.7 wheel;
+not opened); on Linux run without a camera only (made-up sysfs trees).
 
 ### `Mode(fourcc: str, width: int, height: int, max_fps: float)`
 
@@ -567,9 +570,12 @@ OpenCV's backend of that name takes. Built-in webcams are included.
   indexes in (OpenCV 4.13.0 `modules/videoio/src/cap_msmf.cpp`,
   `CvCapture_MSMF::open(int)`). Activates no device. An empty list off Windows.
   Microsoft does not document the order, or that two listings agree; a camera plugged
-  in between listing and opening can shift it. Run with the camera once (one PC, one
-  camera, 2026-11-24): it listed the camera by name; `resolve_by_name(backend="msmf")`
-  run without a camera only.
+  in between listing and opening can shift it. Run with the camera on one PC: it listed the camera by name on
+  2026-11-24, and on 2026-11-25 in four more runs (one camera connected in each; not known to be the same unit in
+  all of them), in the same order as the Rust crate's Media Foundation list. On 2026-11-25
+  `resolve_by_name(backend="msmf")` found the camera by name and
+  `examples/measure_fps.py --backend msmf` opened it at 1600x800, in two USB re-insert
+  cycles (one PC, one camera, the published 0.0.7 wheel).
 - `backend="v4l2"`: Linux. The video capture nodes in `/sys/class/video4linux`,
   chosen as `find_v4l2_node` chooses them (sysfs `index` 0, so a UVC camera's
   metadata node is left out), in `/dev/videoN` order; the index is N, the device
@@ -580,7 +586,7 @@ OpenCV's backend of that name takes. Built-in webcams are included.
 
 The two lists can be in a different order: on one PC with one camera (2026-11-24), `devices.list_devices(backend="msmf")` and `list_devices()` returned the same three cameras in a different order, once. An index goes only with the backend whose list it came from.
 `examples/list_devices.py --backend msmf` prints the Media Foundation list, and
-`python -m opticmix_vision.doctor` prints both. `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run without a camera only (made-up lists); they have not been run with the camera. Any other `backend`
+`python -m opticmix_vision.doctor` prints both. `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run with the camera in two USB re-insert cycles (one Weevia S1 unit, one PC, 2026-11-25, the published 0.0.7 wheel): they listed the Weevia S1 by name. Any other `backend`
 raises `ValueError`. An extension (`opticmix_vision._core`) built from an older source
 than these Python files raises `ControlsUnavailable` saying to rebuild it.
 
@@ -1136,7 +1142,7 @@ The next generated frame (eye size = the calibration's).
 
 Recording frames to a file, playing a recording back, and the capture-info JSON
 saved next to captures. Recording with `Recorder` and reading a recording back, seeking and looping: verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only (the files were written and read back with the same frame count — not that both eyes showed the scene in every recording: see "One eye goes black or stops moving"). The speed factor (`set_speed`): not verified; pausing: generated frames only; not run with the camera.
-The Rust crate (`opticmix-vision`: `Recorder`, `Device::open_recording`) writes and plays the same MJPG `.avi` files, CSV and JSON; it neither writes nor plays FFV1, and its recordings name a checked V4L2 clock `v4l2_monotonic` in the CSV. Rust recording and playback: generated frames only; not run with the camera.
+The Rust crate (`opticmix-vision`: `Recorder`, `Device::open_recording`) writes and plays the same MJPG `.avi` files, CSV and JSON; it neither writes nor plays FFV1, and its recordings name a checked V4L2 clock `v4l2_monotonic` in the CSV. Rust recording and playback have been run with the camera once (one PC, one camera, 2026-11-25): `record_video` 10 s, 881 frames, estimated missed 5, dropped by the write queue 0; Rust and Python played the same file back as 881 frames.
 
 A recording is three files with the same name. The `.csv` and `.json` are named
 after the video without its extension, so two recordings in one folder need
@@ -1151,7 +1157,7 @@ overwrite another recording's files):
 
 The codec `"MJPG"` (default) is compressed: pixel values change. `"FFV1"`
 (`LOSSLESS_CODEC`): the lossless file keeps the pixel values the SDK delivered
-(generated frames only; not run with the camera). Its files are larger, and each
+(with the camera: 90 frames from `Device.read()`, written to an FFV1 file and read back by this package, were equal in both eyes in each of two USB re-insert cycles — one Weevia S1 unit, Windows 11, one PC, two-level USB hub, 2026-11-25, the published 0.0.7 wheel; not checked with a second decoder). Its files are larger, and each
 frame takes longer to write than MJPG, so it may not keep up with 90 fps: the JSON's
 `estimated_missed_frames` and `Recorder.estimated_missed_frames` say how many frames
 were missed; then record MJPG, ask a lower frame rate, or keep frames in memory
@@ -1422,7 +1428,7 @@ times recorded in the recording's CSV), a copy of the recording's JSON as `captu
 `frames.npz` (`left`, `right`, `host_ns`, as `examples/capture_dataset_npz.py` writes it). From an MJPG recording
 the PNGs hold what it decodes to, not the camera's pixel values. A recording without its `.csv` has no recorded
 times: `host_ns` in `pairs.csv` is then frame number / the file's frame rate and the driver columns are empty, and
-the example prints a line saying so. Run with generated recordings, and with a camera recording once on Linux, from source before release; not run with a camera recording on Windows.
+the example prints a line saying so. Run with generated recordings, and with a camera recording once on Linux, from source before release. On Windows with one camera (one PC, 2-level USB hub, 2026-11-25, 0.0.7): from MJPG and FFV1 camera recordings it wrote 800x800 8-bit left/right images; covering one lens at a time (left and right as seen from behind the camera, looking where it looks) removed the scene from the SDK eye of the same name. Not run with a camera: Linux left/right; a second unit.
 
 ---
 
@@ -2072,7 +2078,7 @@ or `--synthetic`. The report's Camera section then begins with that USB location
 The explorer's top bar shows the same USB line for the Weevia S1 (VID:PID, USB
 device revision, link speed, no serial), read without opening the camera.
 
-`--open` has been run with the camera once (one PC, one camera, 2026-11-24); `--open --backend msmf` once (one PC, one camera, 2026-11-25, OpenCV 4.13.0: the repeated-images finding said 276 of 904); without `--open`, `--json`, the other `--backend` values and Linux: run without a camera only
+`doctor --open` (its report includes everything the doctor prints without `--open`): verified with the published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions, read-only; not verified on Linux. `--open --backend msmf` has been run with the camera once (one PC, one camera, 2026-11-25, OpenCV 4.13.0: the repeated-images finding said 276 of 904); `--json` without `--open` has been run with the camera on one PC: on 2026-11-24 (one camera, the 0.0.5 wheel) it gave the same report as JSON, with `"synthetic": false`, the Weevia S1 in the Media Foundation list and no findings; on 2026-11-25 in two more runs (one camera, not known to be the unit of 2026-11-24), exit code 0. The other `--backend` values: run without a camera only
 (generated frames, and fake device lists on Windows and Linux).
 
 ---

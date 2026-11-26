@@ -70,8 +70,8 @@ Capture opens from the Media Foundation list: DeviceSelector::Index(n) is entry 
 The Rust crate captures through Media Foundation, so an index you pass as `DeviceSelector::Index` counts in the
 list `--backend msmf` prints, not in the default DirectShow one. Of the Rust examples, `list_devices` and
 `measure_fps` have been run with the camera once (one PC, one camera, 2026-11-24) — `list_devices` with its
-default DirectShow list; `--backend msmf` has been run without a camera only (a made-up list), not with the
-camera. `open_by_usb_location`, `record_video` and `play_recording` have been run with the camera once (one PC, one
+default DirectShow list; `--backend msmf`: run with the camera in two USB re-insert cycles (one PC, one camera,
+2026-11-25, the crates.io 0.0.7 source), in the same order as Python's list. `open_by_usb_location`, `record_video` and `play_recording` have been run with the camera once (one PC, one
 camera, 2026-11-25). The others: see the crate README, "Examples".
 
 ## What you should see
@@ -164,8 +164,10 @@ with cam:
 - `DeviceConfig.weevia_s1()` finds the camera **by name** and applies the settings measured on it: both eyes
   side by side, the first half is the **right** eye (measured on one unit, 2026-09-16), 1600×800 MJPG at
   90 fps. It does not pick a camera by index — plugging in any other camera shifts the order, and a laptop
-  webcam is often listed first. Finding the camera by name: measured with the earlier Python implementation;
-  the Rust implementation (since 0.0.3) has not yet been verified against the camera.
+  webcam is often listed first. Finding the camera by name (in the Rust core since 0.0.3): verified with the
+  published 0.0.7 wheel on one Weevia S1 unit, Windows 11, one PC, two-level USB hub, two USB re-insertions,
+  read-only, with one camera of that name connected; refusing two cameras of the same name has not been run with
+  two cameras.
 - The driver may not give you the mode you asked for — read `cam.mode` rather than assuming.
 - `cam.read()` raises on failure and never returns an empty frame. `f.left` and `f.right` are the two eyes.
 - The camera reports no USB serial number, so finding the camera by name stops when two Weevia S1 match.
@@ -174,7 +176,7 @@ with cam:
 - `DeviceConfig.weevia_s1()` looks the name up in the list of the backend it opens with: DirectShow by
   default, Media Foundation with `backend="msmf"`.
 - `list_devices.py` is one of the six examples added in 0.0.4; its DirectShow list has been run with the camera once (one PC, one camera, 2026-11-25, with the 0.0.6 code): with one camera connected, the list showed its USB location.
-  `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run without a camera only (made-up lists); they have not been run with the camera.
+  `examples/list_devices.py --backend msmf` and the doctor's Media Foundation list have been run with the camera in two USB re-insert cycles (one Weevia S1 unit, one PC, 2026-11-25, the published 0.0.7 wheel): they listed the Weevia S1 by name.
 - Linux: `python examples/list_devices.py` lists the V4L2 capture nodes (`--backend v4l2`, the default there) — the
   index is the N of `/dev/videoN`, the USB location the USB device's sysfs name (e.g. `2-1`). Run without a camera only (made-up sysfs trees); not run with the camera on Linux.
 
@@ -248,7 +250,8 @@ saved left/right_000099.pgm
   crate does not depend on): it finds the camera by name and opens it, prints the negotiated mode, reads 100
   frames and prints the rate they came at (as `quickstart.py --no-window` does), saves the last frame's two eyes
   as `left_000099.pgm` and `right_000099.pgm` (what the `s` key saves, as 8-bit gray PGM), and closes the
-  camera. Run without a camera only (generated frames); not run with the camera.
+  camera. Run with the camera once (one PC, one camera, 2026-11-26, from the 0.0.8 source; the example has not
+  changed since).
 - Rust `--synthetic` uses the crate's test doubles: generated 1600×800 frames paced at 90 per second in
   software, so the eyes are 800×800 here.
 - `open_by_usb_location` lists each Weevia S1 with its USB location from Media Foundation's list, the one Rust

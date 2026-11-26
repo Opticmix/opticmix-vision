@@ -14,8 +14,10 @@ refused (Python DirectShow, Rust Media Foundation); not run with two cameras.
 Windows: parsing the ffmpeg output and picking by name run in the Rust core (`devices.rs`). Running ffmpeg,
 and falling back to enumerating DirectShow directly, stay here in Python so a caller can swap that step.
 `backend="msmf"` lists Media Foundation's video sources instead (Rust core), in the order OpenCV's CAP_MSMF
-counts device indexes. Media Foundation listing: run with the camera once (one PC, one camera, 2026-11-24);
-picking by name in that list (`resolve_by_name(backend="msmf")`): run without a camera only.
+counts device indexes. Media Foundation listing: run with the camera on one PC (2026-11-24, and four more runs on
+2026-11-25; one camera connected in each run, not known to be the same unit in all of them). Picking by name in that list (`resolve_by_name(backend="msmf")`): on 2026-11-25 it found
+the camera by name and `examples/measure_fps.py --backend msmf` opened it at 1600x800, in two USB re-insert cycles
+(one PC, one camera, the published 0.0.7 wheel).
 
 Linux: `find_v4l2_node()` and `list_devices(backend="v4l2")` (the default there) read `/sys/class/video4linux`
 (no extension needed). Linux name lookup: run with the camera once (one PC, one camera, 2026-11-25).
@@ -26,8 +28,9 @@ Rust core, from the device tree and the USB hub driver. Linux: from sysfs (`idVe
 `speed`), by the function the doctor uses. `resolve_by_name()`, which `DeviceConfig.weevia_s1()` uses to find
 the camera before opening it on Windows, and `find_v4l2_node()`, which it uses on Linux, read the USB location only,
 as 0.0.6 did. The camera reports no USB serial number, no firmware version and no temperature, so there are no
-fields for them. Reading the USB IDs and the link speed into these fields has been run without a camera only (made-up
-device lists; on Linux made-up sysfs trees); it has not been run with the camera.
+fields for them. Reading the USB IDs and the link speed into these fields has been run with the camera in two USB
+re-insert cycles (one Weevia S1 unit, Windows 11, one PC, two-level USB hub, 2026-11-25, the published 0.0.7 wheel;
+not opened); on Linux run without a camera only (made-up sysfs trees).
 """
 from __future__ import annotations
 

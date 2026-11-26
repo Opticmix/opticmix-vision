@@ -18,7 +18,7 @@ commands, what you should see, how the code works, what to do if it does not wor
 | 8 | [Calibration file](08-calibration-file.md) | install your camera's calibration file, print it, and check in numbers whether it fits the camera | `calibration_info.py`, `calibration_check.py` | `calibration_check.py` only; `--synthetic` needs no camera and no file | none |
 
 The commands run from the `python/` folder of the repository, where `examples/` is. Check out the tag of the
-version you installed (`python -m pip show opticmix-vision`, then for example `git checkout v0.0.8`) and use
+version you installed (`python -m pip show opticmix-vision`, then for example `git checkout v0.0.9`) and use
 the same `python` you ran `pip install` with: the examples load the package from this folder and the compiled
 extension from the installed wheel, so both must be the same version. With `--synthetic` an
 example uses generated frames and simulated controls with made-up ranges: it shows that the code runs, and its
@@ -28,11 +28,11 @@ frame rate, ranges and brightness say nothing about the camera. Of the six examp
 `calibration_check.py`, added in 0.0.5; `list_devices.py`: its DirectShow list has been run with the camera once (one PC, one camera, 2026-11-25, with the 0.0.6 code): with one camera connected, the list showed its USB location. Platform: Windows; on Linux (experimental) `measure_fps.py`, `record_video.py`, `play_recording.py`, `save_stereo_pairs.py`, `list_controls.py` and `open_by_usb_location.py` have been run once with one camera (2026-11-25), and `export_recording.py` with a camera recording once, from source before release; the viewer, the explorer and the others have not.
 
 Tutorials 01, 02, 05 and 08 also show the Rust version of their examples (`cargo run --example …` in
-`rust/opticmix-vision`), run without a camera only — except `list_devices` and `measure_fps`, run with the camera once (one PC, one camera, 2026-11-24), and `open_by_usb_location`, run with the camera once (one PC, one camera, 2026-11-25).
+`rust/opticmix-vision`), run without a camera only — except `list_devices` and `measure_fps`, run with the camera once (one PC, one camera, 2026-11-24), `open_by_usb_location`, run with the camera once (one PC, one camera, 2026-11-25), `list_controls` and `measure_fps` on Windows in two USB re-insert cycles (one PC, one camera, 2026-11-25, the crates.io 0.0.7 source), and `quickstart`, `brightness_stats` and `presets` (saving, and `--plan`) once on Windows (one PC, one camera, 2026-11-26, from the 0.0.8 source).
 
 Every tutorial ends with a **Rust** section: for each step that has a Rust example, the `cargo run` command and
 its output without a camera (`--synthetic`), and for each step that has none, a line saying so. Of the Rust
-example files, `list_devices` and `measure_fps` have been run with the camera once (one PC, one camera, 2026-11-24), and `open_by_usb_location`, `record_video` and `play_recording` once (one PC, one camera, 2026-11-25); on Linux, `measure_fps`, `record_video`, `play_recording` and `list_controls` once (one PC, one camera, 2026-11-25, crate 0.0.6); the others not yet.
+example files, `list_devices` and `measure_fps` have been run with the camera once (one PC, one camera, 2026-11-24), and `open_by_usb_location`, `record_video` and `play_recording` once (one PC, one camera, 2026-11-25); `list_controls` and `measure_fps` on Windows in two USB re-insert cycles (one PC, one camera, 2026-11-25, the crates.io 0.0.7 source); `export_recording` on an MJPG camera recording on Windows (one PC, one camera, 2-level USB hub, 2026-11-25, the crates.io 0.0.7 source); `quickstart`, `brightness_stats`, `capture_dataset` and `presets` (saving, and `--plan`) once on Windows (one PC, one camera, 2026-11-26, from the 0.0.8 source); on Linux, `measure_fps`, `record_video`, `play_recording` and `list_controls` once (one PC, one camera, 2026-11-25, crate 0.0.6); the others not yet.
 
 The two windows that come with the package, the viewer and the explorer, are described in
 [Viewer and explorer](tools.md).

@@ -3,6 +3,7 @@
 //! ```text
 //! cargo run --release --example measure_fps                        # 450 frames
 //! cargo run --release --example measure_fps -- --frames 2700       # a longer run
+//! cargo run --release --example measure_fps -- --csv frames.csv    # also one row per frame read
 //! cargo run --release --features test-support --example measure_fps -- --synthetic   # no camera
 //! ```
 //!
@@ -18,6 +19,13 @@
 //! frames too; when frames are missed the example prints what to try. `--synthetic` gives generated frames
 //! paced in software, not measured data.
 //! Build with `--release`: in a debug build, decoding the frames is much slower than the camera sends them.
+//!
+//! `--csv FILE` (off by default) also writes one row per frame `read()` returned, the first one too
+//! (`index,host_ns,left_same,right_same,left_max,right_max`: each eye byte-identical to the frame before, 0 on the
+//! first row, and its largest pixel value), and prints the negotiated fps and `actual_fps` in full. When no sample
+//! was skipped as undecodable (the example prints how many did not decode), the `Device` statistics can be counted
+//! again from the file: the `Device` also counts the times of skipped samples, which have no row. Run with the
+//! camera in two USB re-insert cycles (one PC, one camera, 2026-11-26), from this release's source before release.
 //!
 //! Times are `host_ns`: this process's monotonic clock right after each frame was read, not a camera
 //! timestamp, so they include the host's scheduling jitter. Where the capture driver puts its own time stamp on
@@ -61,28 +69,47 @@
 
 mod common;
 
-const USAGE: &str = "usage: measure_fps [--frames N] [--synthetic]";
+const USAGE: &str = "usage: measure_fps [--frames N] [--csv FILE] [--synthetic]";
 
 fn main() -> std::process::ExitCode {
-    let a = common::Args::parse(USAGE, &["--frames", "--synthetic"]);
+    let a = common::Args::parse(USAGE, &["--frames", "--csv", "--synthetic"]);
     let frames: usize = a.value("--frames", 450);
     if frames < 2 {
         a.fail("--frames needs at least 2");
     }
-    common::report(run(a.flag("--synthetic"), frames))
+    let csv = a.flag("--csv").then(|| std::path::PathBuf::from(a.value("--csv", String::new())));
+    common::report(run(a.flag("--synthetic"), frames, csv))
 }
 
-fn run(synthetic: bool, frames: usize) -> Result<(), Box<dyn std::error::Error>> {
+/// One `--csv` row: index, host_ns, left / right byte-identical to the frame before (0 on the first), left / right
+/// largest pixel value.
+type Row = (u64, u64, bool, bool, u8, u8);
+
+fn row(f: &opticmix_vision::StereoFrame, same: (bool, bool)) -> Row {
+    let max = |g: &opticmix_vision::GrayImage| g.data.iter().copied().max().unwrap_or(0);
+    (f.index, f.host_ns, same.0, same.1, max(&f.left), max(&f.right))
+}
+
+fn run(synthetic: bool, frames: usize, csv: Option<std::path::PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let mut cam = common::open_camera(synthetic)?;
     let mode = cam.mode();
     println!("negotiated: {}", common::mode_line(&mode));
     let mut prev = cam.read()?; // the first frame carries start-up delay; time from the next one
+    // --csv keeps every frame read() returned, the first one too: the rows the Device statistics counted
+    let mut rows: Vec<Row> = Vec::with_capacity(if csv.is_some() { frames + 1 } else { 0 });
+    if csv.is_some() {
+        rows.push(row(&prev, (false, false)));
+    }
     let mut got = Vec::with_capacity(frames);
     let (mut same_left, mut same_right) = (0, 0);
     for _ in 0..frames {
         let f = cam.read()?;
-        same_left += usize::from(f.left == prev.left);
-        same_right += usize::from(f.right == prev.right);
+        let same = (f.left == prev.left, f.right == prev.right);
+        if csv.is_some() {
+            rows.push(row(&f, same));
+        }
+        same_left += usize::from(same.0);
+        same_right += usize::from(same.1);
         got.push((
             f.host_ns as i64,
             f.driver_ns,
@@ -119,6 +146,17 @@ fn run(synthetic: bool, frames: usize) -> Result<(), Box<dyn std::error::Error>>
         cam.estimated_missed_frames(),
         cam.actual_fps()
     );
+    if let Some(path) = &csv {
+        // the rate and actual_fps as the statistics used them (shortest text that reads back to the same f64)
+        println!("negotiated fps (full precision): {}", mode.fps);
+        println!("actual_fps since open (full precision): {}", cam.actual_fps());
+        let mut text = String::from("index,host_ns,left_same,right_same,left_max,right_max\n");
+        for (i, t, l, r, lm, rm) in &rows {
+            text += &format!("{i},{t},{},{},{lm},{rm}\n", u8::from(*l), u8::from(*r));
+        }
+        std::fs::write(path, text)?;
+        println!("per-frame CSV: {} ({} rows)", path.display(), rows.len());
+    }
     if cam.estimated_missed_frames() > 0 {
         println!(
             "Frames were late or missed. Host times cannot tell a slow read loop from frames lost on the camera \

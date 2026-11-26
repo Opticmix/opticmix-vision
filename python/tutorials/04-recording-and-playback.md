@@ -22,8 +22,9 @@ write a recording's frames out as PNG pairs.
   (`record_video.py --synthetic`); not run with the camera. `--queue-frames` (encoding on a thread, as the
   viewer's `v` does): run on generated frames only; not run with the camera.
 - The Rust crate writes and plays the same MJPG `.avi` recordings (`cargo run --release --example record_video`,
-  `--example play_recording`); it neither writes nor plays lossless FFV1. Rust recording and playback: generated
-  frames only; not run with the camera.
+  `--example play_recording`); it neither writes nor plays lossless FFV1. Rust recording and playback have
+  been run with the camera once (one PC, one camera, 2026-11-25): `record_video` 10 s, 881 frames, estimated missed
+  5, dropped by the write queue 0; Rust and Python played the same file back as 881 frames.
 
 ## Run it
 
@@ -184,7 +185,10 @@ and writes each frame as a left/right PNG pair into a new folder, with `pairs.cs
 `save_stereo_pairs.py`, holding the times recorded in the recording's CSV), a copy of the recording's JSON as
 `capture_info.json`, and with `--npz` the frames in `frames.npz` (the format of `capture_dataset_npz.py`).
 `--start`, `--every` and `--count` pick the frames. Run with generated recordings, and with a camera recording
-once on Linux, from source before release; not run with a camera recording on Windows.
+once on Linux, from source before release. On Windows with one camera (one PC, 2-level USB hub, 2026-11-25,
+0.0.7): from MJPG and FFV1 camera recordings it wrote 800x800 8-bit left/right images; covering one lens at a
+time (left and right as seen from behind the camera, looking where it looks) removed the scene from the SDK eye
+of the same name. Not run with a camera: Linux left/right; a second unit.
 
 With a recording made with the camera:
 
@@ -297,4 +301,7 @@ exported 30 of 30 frames from synthetic.avi to synthetic_frames
   `--synthetic` first records 30 generated frames to `synthetic.avi`, then exports them.
 - Rust recording and playback have been run with the camera once (one PC, one camera, 2026-11-25): `record_video`
   10 s, 881 frames, estimated missed 5, dropped by the write queue 0; Rust and Python played the same file back as
-  881 frames. `export_recording` (Rust): run with generated recordings only; not run with a camera recording.
+  881 frames. `export_recording` (Rust): run with generated recordings. On Windows with one camera (one PC, 2-level
+  USB hub, 2026-11-25, 0.0.7): from an MJPG camera recording it wrote 800x800 8-bit left/right images; covering one
+  lens at a time (left and right as seen from behind the camera, looking where it looks) removed the scene from the
+  SDK eye of the same name. Not run with a camera: Linux; a second unit.

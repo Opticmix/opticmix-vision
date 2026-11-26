@@ -29,8 +29,11 @@ when it wrote another number than it counted.
 
 An MJPG recording does not hold the camera's pixel values: the PNGs hold what it decodes to. A lossless recording
 (record_video.py --lossless) keeps the values the SDK delivered, and the PNGs keep them too (generated frames only).
-Run with generated recordings, and with a camera recording once on Linux, from source before release; not run with a
-camera recording on Windows.
+Run with generated recordings, and with a camera recording once on Linux, from source before release. On Windows
+with one camera (one PC, 2-level USB hub, 2026-11-25, 0.0.7): from MJPG and FFV1 camera recordings it wrote 800x800
+8-bit left/right images; covering one lens at a time (left and right as seen from behind the camera, looking
+where it looks) removed the scene from the SDK eye of the same name. Not run with a camera: Linux left/right; a
+second unit.
 
 Needs: opencv-python (installed with opticmix-vision).
 Writes to the camera: no camera is opened.

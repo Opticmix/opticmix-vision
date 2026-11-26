@@ -151,6 +151,7 @@ saved 20 frames of 800x800 per eye to stereo_dataset (0.21 s from first to last 
   crate does not depend on): it keeps the frames in memory, then writes left/right PGM pairs, `pairs.csv`
   (`index,host_ns,left,right`) and `capture_info.json` (`write_capture_info`; the frame count, one eye's size and
   the late / estimated missed frames under `pgm_pairs`) into a new or empty folder (`--out`, default
-  `stereo_dataset`). Run without a camera only (generated frames); not run with the camera.
+  `stereo_dataset`). Run with the camera once (one PC, one camera, 2026-11-26, from the 0.0.8 source; the example
+  has not changed since).
 - `torch_dataloader.py`: no Rust example yet.
-- With the camera: not run yet.
+- With the camera: `save_stereo_pairs` not run yet.

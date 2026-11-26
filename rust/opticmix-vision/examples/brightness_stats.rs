@@ -22,7 +22,8 @@
 //! right: mean 103.4 (frames 99.4..107.4)  min 0  max 207  saturated 0.000 % of pixels
 //! ```
 //!
-//! Camera: run without a camera only (generated frames); not run with the camera. Writes to the camera: none.
+//! Camera: run with the camera once (one PC, one camera, 2026-11-26, from the 0.0.8 source; the example has not
+//! changed since). Writes to the camera: none.
 
 mod common;
 

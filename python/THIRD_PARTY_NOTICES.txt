@@ -1,10 +1,12 @@
-Third-party software in opticmix-vision 0.0.8
+Third-party software in opticmix-vision 0.0.9
 ==============================================================================
 
-The extension opticmix_vision/_core.pyd is compiled from the Rust crates in rust/
-(Apache-2.0, this repository) and statically links the 18 crates below — the
-dependencies of opticmix-vision-py built for x86_64-pc-windows-msvc with the wheel's feature
-extension-module, at the versions in rust/Cargo.lock. Each crate's license files follow,
+The extension (opticmix_vision/_core.pyd in the Windows wheel, opticmix_vision/_core.abi3.so
+in the Linux wheel) is compiled from the Rust crates in rust/ (Apache-2.0, this repository)
+and statically links the 18 crates below — the dependencies of opticmix-vision-py
+built for x86_64-pc-windows-msvc and x86_64-unknown-linux-gnu with the wheel's
+feature extension-module, at the versions in rust/Cargo.lock; a crate in one of the two
+builds only is marked with that wheel. Each crate's license files follow,
 as published with the crate. Where a crate is offered under a choice of licenses, both
 texts are reproduced.
 
@@ -56,39 +58,39 @@ serde_json 1.0.154 — MIT OR Apache-2.0
   https://github.com/serde-rs/json
   No copyright line in the crate's license files.
 
-windows 0.62.2 — MIT OR Apache-2.0
+windows 0.62.2 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
-windows-collections 0.3.2 — MIT OR Apache-2.0
+windows-collections 0.3.2 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
-windows-core 0.62.2 — MIT OR Apache-2.0
+windows-core 0.62.2 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
-windows-future 0.3.2 — MIT OR Apache-2.0
+windows-future 0.3.2 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
-windows-link 0.2.1 — MIT OR Apache-2.0
+windows-link 0.2.1 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
-windows-numerics 0.3.1 — MIT OR Apache-2.0
+windows-numerics 0.3.1 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
-windows-result 0.4.1 — MIT OR Apache-2.0
+windows-result 0.4.1 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
-windows-strings 0.5.1 — MIT OR Apache-2.0
+windows-strings 0.5.1 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
-windows-threading 0.2.1 — MIT OR Apache-2.0
+windows-threading 0.2.1 — MIT OR Apache-2.0 (Windows wheel only)
   https://github.com/microsoft/windows-rs
   Copyright (c) Microsoft Corporation.
 
@@ -109,8 +111,8 @@ quote 1.0.47 — MIT OR Apache-2.0
 syn 2.0.119 — MIT OR Apache-2.0
 target-lexicon 0.13.5 — Apache-2.0 WITH LLVM-exception
 unicode-ident 1.0.27 — (MIT OR Apache-2.0) AND Unicode-3.0
-windows-implement 0.60.2 — MIT OR Apache-2.0
-windows-interface 0.59.3 — MIT OR Apache-2.0
+windows-implement 0.60.2 — MIT OR Apache-2.0 (Windows wheel only)
+windows-interface 0.59.3 — MIT OR Apache-2.0 (Windows wheel only)
 
 
 ==============================================================================
